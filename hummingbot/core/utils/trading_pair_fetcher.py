@@ -40,6 +40,7 @@ class TradingPairFetcher:
         self.ready = False
         self.trading_pairs: Dict[str, Any] = {}
         self._fetch_pairs_from_all_exchanges = client_config_map.fetch_pairs_from_all_exchanges
+        # print(f"{self._fetch_pairs_from_all_exchanges}")
         self.paper_trades_in_conf = client_config_map.paper_trade.paper_trade_exchanges
         self._fetch_task = safe_ensure_future(self.fetch_all(client_config_map))
 
@@ -56,11 +57,15 @@ class TradingPairFetcher:
             connector_setting: ConnectorSetting,
             conn_setting: AllConnectorSettings.get_connector_settings(),
             conn_name: Optional[str] = None,
-            connector_name: Optional[str] = None):
+            connector_name: Optional[str] = None,
+            filtered_data_list: Optional[Dict[str, Any]] = None):
         conn_name = conn_name or conn_setting.name
         connector_name = connector_name or connector_setting.name
         connector = connector_setting.non_trading_connector_instance_with_default_configuration()
-        safe_ensure_future(self.call_fetch_pairs(connector.all_trading_pairs(), conn_name))
+        filtered_data = filter(lambda s: "api_keys" in s, conn_setting.config_keys)
+        filtered_data_list = list(filtered_data)
+        # print(f"{filtered_data_list}")
+        safe_ensure_future(self.call_fetch_pairs(connector.all_trading_pairs(), filtered_data_list.conn_name))
 
     async def fetch_all(self, client_config_map: ClientConfigAdapter):
         connector_settings = self._all_connector_settings()
@@ -69,17 +74,21 @@ class TradingPairFetcher:
              # data source module for them.
             try:
                 if self._fetch_pairs_from_all_exchanges:
-                    if 'api_keys' in conn_setting.config_keys or conn_setting.base_name().endswith("paper_trade"):
+                    if 'api_keys' in conn_setting.config_keys and conn_setting.base_name().endswith("paper_trade"):
                         self._fetch_from_filtered(
                             connector_setting=connector_settings[conn_setting.parent_name],
                             connector_name=conn_setting.name
                         )
+                        # print(f"_fetch_from_filtered")
+                        # print(f"{conn_setting}")
                 else:
                     if conn_setting.base_name().endswith("paper_trade"):
                         self._fetch_pairs_from_connector_setting(
                             connector_setting=connector_settings[conn_setting.parent_name],
                             connector_name=conn_setting.name
                         )
+                        # print(f"fetch_pairs_from_connector_setting")
+                        # print(f"{conn_setting}")
                     else:
                         self._fetch_pairs_from_connector_setting(connector_setting=conn_setting)
             except ModuleNotFoundError:
