@@ -40,6 +40,7 @@ class TradingPairFetcher:
 
     async def fetch_all(self, client_config_map: ClientConfigAdapter):
         connector_settings = self._all_connector_settings()
+        # print(f"{connector_settings}")
         for conn_setting in connector_settings.values():
             # XXX(martin_kou): Some connectors, e.g. uniswap v3, aren't completed yet. Ignore if you can't find the
             # data source module for them.
@@ -49,8 +50,16 @@ class TradingPairFetcher:
                         connector_setting=connector_settings[conn_setting.parent_name],
                         connector_name=conn_setting.name
                     )
+                    # print("basename endswith paper_trade")
+                    # print(" ******************************* ")
+                    # print(f"{conn_setting}")
+                    # print(" ******************************* ")
                 else:
                     self._fetch_pairs_from_connector_setting(connector_setting=conn_setting)
+                    # print("basename")
+                    # print(" ******************************* ")
+                    # print(f"{conn_setting}")
+                    # print(" ******************************* ")
             except ModuleNotFoundError:
                 continue
             except Exception:
@@ -63,6 +72,7 @@ class TradingPairFetcher:
         try:
             pairs = await fetch_fn
             self.trading_pairs[exchange_name] = pairs
+            # print(f"{pairs}")
         except Exception:
             self.logger().error(f"Connector {exchange_name} failed to retrieve its trading pairs. "
                                 f"Trading pairs autocompletion won't work.", exc_info=True)
