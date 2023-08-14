@@ -59,7 +59,7 @@ class TradingPairFetcher:
         XXX(martin_kou): Some connectors, e.g. uniswap v3, aren't completed yet. Ignore if you can't find the
         data source module for them.
         """
-        if fetch_pairs_from_all_exchanges:
+        if not fetch_pairs_from_all_exchanges:
             for conn_set in connector_settings.values():
                 c = f"{conn_set.config_keys}"
                 try:
