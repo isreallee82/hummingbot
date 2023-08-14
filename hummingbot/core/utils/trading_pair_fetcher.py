@@ -81,7 +81,6 @@ class TradingPairFetcher:
                             connector_name=conn_set.name)
                     else:
                         self._fetch_pairs_from_connector_setting(connector_setting=conn_set)
-                        print("All exchanges")
                 except ModuleNotFoundError:
                     continue
                 except Exception:
