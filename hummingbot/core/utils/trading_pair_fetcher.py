@@ -32,18 +32,6 @@ class TradingPairFetcher:
         self.paper_trades_in_conf = client_config_map.paper_trade.paper_trade_exchanges
         self._fetch_task = safe_ensure_future(self.fetch_all(client_config_map))
 
-    def _fetch_pairs_from_connected(
-            self,
-            connector_settings: Dict[str, ConnectorSetting],
-            conn_name: Optional[str] = None):
-        connector_settings = self._all_connector_settings()
-        for conn_set in connector_settings.values():
-            c = f"{conn_set.config_keys}"
-            if "SecretStr" in c and conn_set.base_name().endswith("paper_trade"):
-                conn_name = f"{conn_set.config_keys.connector}"
-                connector = conn_set.non_trading_connector_instance_with_default_configuration()
-                safe_ensure_future(self.call_fetch_pairs(connector.all_trading_pairs(), conn_name))
-
     def _fetch_pairs_from_connector_setting(
             self,
             connector_setting: ConnectorSetting,
@@ -62,11 +50,17 @@ class TradingPairFetcher:
         if not fetch_pairs_from_all_exchanges:
             for conn_set in connector_settings.values():
                 c = f"{conn_set.config_keys}"
+                connector = f"{conn_set.config_keys.connector}"
                 try:
-                    if conn_set.base_name().endswith("paper_trade") and "SecretStr" in c:
+                    if "SecretStr" in c or conn_set.base_name().endswith("paper_trade"):
                         self._fetch_pairs_from_connector_setting(
-                            connector_setting=connector_settings[conn_set.parent_name],
+                            connector_setting=connector_settings[connector],
                             connector_name=conn_set.name)
+                    else:
+                        if conn_set.base_name().endswith("paper_trade"):
+                            self._fetch_pairs_from_connector_setting(
+                                connector_setting=connector_settings[connector],
+                                connector_name=conn_set.name)
                 except ModuleNotFoundError:
                     continue
                 except Exception:
