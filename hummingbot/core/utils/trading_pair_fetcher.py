@@ -28,7 +28,7 @@ class TradingPairFetcher:
     def __init__(self, client_config_map: ClientConfigAdapter):
         self.ready = False
         self.trading_pairs: Dict[str, Any] = {}
-        self.fetch_pairs_from_all_exchanges: bool = client_config_map.fetch_pairs_from_all_exchanges
+        self.fetch_pairs_from_all_exchanges = client_config_map.fetch_pairs_from_all_exchanges
         self.paper_trades_in_conf = client_config_map.paper_trade.paper_trade_exchanges
         self._fetch_task = safe_ensure_future(self.fetch_all(client_config_map))
 
@@ -42,12 +42,11 @@ class TradingPairFetcher:
 
     async def fetch_all(self, client_config_map: ClientConfigAdapter):
         connector_settings = self._all_connector_settings()
-        fetch_pairs_from_all_exchanges = client_config_map.fetch_pairs_from_all_exchanges
         """
         XXX(martin_kou): Some connectors, e.g. uniswap v3, aren't completed yet. Ignore if you can't find the
         data source module for them.
         """
-        if not fetch_pairs_from_all_exchanges:
+        if not self.fetch_pairs_from_all_exchanges:
             for conn_set in connector_settings.values():
                 c = f"{conn_set.config_keys}"
                 connector = f"{conn_set.config_keys.connector}"
