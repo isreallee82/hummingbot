@@ -54,11 +54,6 @@ class TradingPairFetcher:
                         self._fetch_pairs_from_connector_setting(
                             connector_setting=connector_settings[conn_set.config_keys.connector],
                             connector_name=conn_set.name)
-                    else:
-                        if conn_set.base_name().endswith("paper_trade"):
-                            self._fetch_pairs_from_connector_setting(
-                                connector_setting=connector_settings[conn_set.parent_name],
-                                connector_name=conn_set.name)
                 except ModuleNotFoundError:
                     continue
                 except Exception:
