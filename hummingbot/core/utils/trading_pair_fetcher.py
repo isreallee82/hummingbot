@@ -50,7 +50,11 @@ class TradingPairFetcher:
             for conn_set in connector_settings.values():
                 c = f"{conn_set.config_keys}"
                 try:
-                    if "SecretStr" in c or conn_set.base_name().endswith("paper_trade"):
+                    if "SecretStr" in c:
+                        self._fetch_pairs_from_connector_setting(
+                            connector_setting=connector_settings[conn_set.config_keys.connector],
+                            connector_name=conn_set.name)
+                    elif conn_set.base_name().endswith("paper_trade"):
                         self._fetch_pairs_from_connector_setting(
                             connector_setting=connector_settings[conn_set.config_keys.connector],
                             connector_name=conn_set.name)
@@ -79,6 +83,7 @@ class TradingPairFetcher:
         try:
             pairs = await fetch_fn
             self.trading_pairs[exchange_name] = pairs
+            print(pairs)
         except Exception:
             self.logger().error(f"Connector {exchange_name} failed to retrieve its trading pairs. "
                                 f"Trading pairs autocompletion won't work.", exc_info=True)
