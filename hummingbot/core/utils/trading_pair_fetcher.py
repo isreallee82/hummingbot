@@ -46,19 +46,18 @@ class TradingPairFetcher:
         XXX(martin_kou): Some connectors, e.g. uniswap v3, aren't completed yet. Ignore if you can't find the
         data source module for them.
         """
-        if not self.fetch_pairs_from_all_exchanges:
+        if self.fetch_pairs_from_all_exchanges:
             for conn_set in connector_settings.values():
                 c = f"{conn_set.config_keys}"
-                connector = f"{conn_set.config_keys.connector}"
                 try:
                     if "SecretStr" in c or conn_set.base_name().endswith("paper_trade"):
                         self._fetch_pairs_from_connector_setting(
-                            connector_setting=connector_settings[connector],
+                            connector_setting=connector_settings[conn_set.config_keys.connector],
                             connector_name=conn_set.name)
                     else:
                         if conn_set.base_name().endswith("paper_trade"):
                             self._fetch_pairs_from_connector_setting(
-                                connector_setting=connector_settings[connector],
+                                connector_setting=connector_settings[conn_set.parent_name],
                                 connector_name=conn_set.name)
                 except ModuleNotFoundError:
                     continue
