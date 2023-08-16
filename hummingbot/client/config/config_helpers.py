@@ -145,10 +145,6 @@ class ClientConfigAdapter:
     def hb_config(self) -> BaseClientModel:
         return self._hb_config
 
-    # @property
-    # def fetch_pairs_from_all_exchanges(self) -> bool:
-    #     return False
-
     @property
     def title(self) -> str:
         return self._hb_config.Config.title
