@@ -83,7 +83,6 @@ class TradingPairFetcher:
         try:
             pairs = await fetch_fn
             self.trading_pairs[exchange_name] = pairs
-            print(pairs)
         except Exception:
             self.logger().error(f"Connector {exchange_name} failed to retrieve its trading pairs. "
                                 f"Trading pairs autocompletion won't work.", exc_info=True)
