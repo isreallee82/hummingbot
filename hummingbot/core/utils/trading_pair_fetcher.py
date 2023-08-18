@@ -40,22 +40,30 @@ class TradingPairFetcher:
         connector = connector_setting.non_trading_connector_instance_with_default_configuration()
         safe_ensure_future(self.call_fetch_pairs(connector.all_trading_pairs(), connector_name))
 
+    def _fetch_pairs_from_connected(
+            self,
+            connector_setting: ConnectorSetting,
+            connector_name: Optional[str] = None):
+        connector_name = connector_setting.config_keys.connector
+        connector = connector_setting.non_trading_connector_instance_with_default_configuration()
+        safe_ensure_future(self.call_fetch_pairs(connector.all_trading_pairs(), connector_name))
+
     async def fetch_all(self, client_config_map: ClientConfigAdapter):
         connector_settings = self._all_connector_settings()
         """
         XXX(martin_kou): Some connectors, e.g. uniswap v3, aren't completed yet. Ignore if you can't find the
         data source module for them.
         """
-        if not self.fetch_pairs_from_all_exchanges:
-            for conn_set in connector_settings.values():
+        for conn_set in connector_settings.values():
+            if not self.fetch_pairs_from_all_exchanges:
                 c = f"{conn_set.config_keys}"
                 try:
                     if "SecretStr" in c:
-                        self._fetch_pairs_from_connector_setting(
+                        self._fetch_pairs_from_connected(
                             connector_setting=connector_settings[conn_set.config_keys.connector],
                             connector_name=conn_set.name)
                     elif conn_set.base_name().endswith("paper_trade"):
-                        self._fetch_pairs_from_connector_setting(
+                        self._fetch_pairs_from_connected(
                             connector_setting=connector_settings[conn_set.parent_name],
                             connector_name=conn_set.name)
                 except ModuleNotFoundError:
@@ -63,8 +71,7 @@ class TradingPairFetcher:
                 except Exception:
                     self.logger().exception(f"An error occurred when fetching trading pairs for {conn_set.name}. "
                                             "Please check the logs")
-        else:
-            for conn_set in connector_settings.values():
+            else:
                 try:
                     if conn_set.base_name().endswith("paper_trade"):
                         self._fetch_pairs_from_connector_setting(

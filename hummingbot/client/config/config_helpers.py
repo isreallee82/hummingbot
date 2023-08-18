@@ -116,6 +116,10 @@ class ClientConfigAdapter:
     def __init__(self, hb_config: BaseClientModel):
         self._hb_config = hb_config
 
+    # @property
+    # def fetch_pairs_from_all_exchanges(self) -> bool:
+    #     return self.client_config_map.fetch_pairs_from_all_exchanges
+
     def __getattr__(self, item):
         value = getattr(self._hb_config, item)
         if isinstance(value, BaseClientModel):
