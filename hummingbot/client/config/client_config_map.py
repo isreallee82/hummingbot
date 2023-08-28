@@ -857,9 +857,9 @@ class ClientConfigMap(BaseClientModel):
     )
     fetch_pairs_from_all_exchanges: bool = Field(
         default=False,
-        description="Fetch trading pairs from all exchanges if True, otherwise only from configured exchanges.",
+        description="Fetch trading pairs from all exchanges if True, otherwise fetch only from connected exchanges.",
         client_data=ClientFieldData(
-            prompt=lambda cm: f"Where would you like to fetch trading pairs from all exchanges? ({'/'.join(list(AutofillImportBool))})",
+            prompt=lambda cm: "Would you like to fetch trading pairs from all exchanges? (True/False)",
         ),
     )
     log_level: str = Field(default="INFO")
@@ -1062,12 +1062,6 @@ class ClientConfigMap(BaseClientModel):
             raise ValueError(f"The value must be one of {', '.join(list(AutofillImportEnum))}.")
         return v
 
-    @validator("fetch_pairs_from_all_exchanges", pre=False)
-    def validate_fetch_pairs_from_all_exchanges(cls, v: Union[str, AutofillImportBool]):
-        if isinstance(v, str) and v not in AutofillImportBool.__members__:
-            raise ValueError(f"The value must be one of {', '.join(list(AutofillImportBool))}.")
-        return v
-
     @validator("telegram_mode", pre=True)
     def validate_telegram_mode(cls, v: Union[(str, Dict) + tuple(TELEGRAM_MODES.values())]):
         if isinstance(v, tuple(TELEGRAM_MODES.values()) + (Dict,)):
@@ -1079,6 +1073,15 @@ class ClientConfigMap(BaseClientModel):
         else:
             sub_model = TELEGRAM_MODES[v].construct()
         return sub_model
+
+    @validator("fetch_pairs_from_all_exchanges", pre=True)
+    def validate_fetch_pairs_from_all_exchanges(cls, v: str):
+        """Used for client-friendly error output."""
+        if isinstance(v, str):
+            r = validate_bool(v)
+            if r is not None:
+                raise ValueError(r)
+        return v
 
     @validator("send_error_logs", pre=True)
     def validate_bool(cls, v: str):
