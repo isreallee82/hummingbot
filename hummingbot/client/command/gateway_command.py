@@ -447,49 +447,98 @@ class GatewayCommand(GatewayChainApiManager):
 
     async def _get_balances(self):
         network_connections = GatewayConnectionSetting.load()
+        gateway_instance = GatewayHttpClient.get_instance(self.client_config_map)
 
         self.notify("Updating gateway balances, please wait...")
         network_timeout = float(self.client_config_map.commands_timeout.other_commands_timeout)
+
         try:
             all_ex_bals = await asyncio.wait_for(
                 self.all_balances_all_exc(self.client_config_map), network_timeout
             )
-        except asyncio.TimeoutError:
-            self.notify("\nA network error prevented the balances to update. See logs for more details.")
-            raise
 
-        for exchange, bals in all_ex_bals.items():
-            # Flag to check if exchange data has been found
-            exchange_found = False
+            allowance_tasks = []
+            allowance_responses = {}
 
             for conf in network_connections:
-                if exchange == (f'{conf["chain"]}_{conf["network"]}'):
-                    exchange_found = True
-                    address = conf["wallet_address"]
-                    rows = []
-                    for token, bal in bals.items():
-                        rows.append({
-                            "Symbol": token.upper(),
-                            "Balance": round(bal, 4),
-                        })
-                    df = pd.DataFrame(data=rows, columns=["Symbol", "Balance"])
-                    df.sort_values(by=["Symbol"], inplace=True)
+                chain, network, address, conn_type = (
+                    conf["chain"],
+                    conf["network"],
+                    conf["wallet_address"],
+                    conf["trading_type"],
+                )
 
-                    self.notify(f"\nChain_network: {exchange}")
-                    self.notify(f"Wallet_Address: {address}")
+                if conn_type != "CLOB_SPOT":
+                    tokens_str = conf.get("tokens", "")
+                    all_token = [token.strip() for token in tokens_str.split(',')] if tokens_str else []
 
-                    if df.empty:
-                        self.notify("You have no balance on this exchange.")
-                    else:
-                        lines = [
-                            "    " + line for line in df.to_string(index=False).split("\n")
-                        ]
-                        self.notify("\n".join(lines))
-                    # Exit loop once exchange data is found
-                    break
+                    connector_chain_network = [w for w in network_connections if w["chain"] == chain and
+                                               w["connector"] == conf["connector"] and
+                                               w["network"] == network and
+                                               w["trading_type"] == conn_type
+                                               ]
 
-            if not exchange_found:
-                self.notify(f"No configuration found for exchange: {exchange}")
+                    allowance_resp: Dict[str, Decimal] = gateway_instance.get_allowances(
+                        chain, network, address, all_token, connector_chain_network[0]["connector"],
+                    )
+                    allowance_tasks.append(allowance_resp)
+
+            # Gather allowance responses asynchronously
+            allowance_responses_list = await asyncio.gather(*allowance_tasks)
+
+            # Map gathered responses to their respective exchanges
+            for idx, conf in enumerate(network_connections):
+                if conf["trading_type"] == "CLOB_SPOT":
+                    continue
+                chain, network = conf["chain"], conf["network"]
+                exchange_key = f'{chain}_{network}'
+                allowance_responses[exchange_key] = allowance_responses_list[idx]
+
+            for exchange, bals in all_ex_bals.items():
+                # Flag to check if exchange data has been found
+                for exchange, bals in all_ex_bals.items():
+                    # Flag to check if exchange data has been found
+                    exchange_found = False
+
+                    for conf in network_connections:
+                        chain, network, address = conf["chain"], conf["network"], conf["wallet_address"]
+                        exchange_key = f'{chain}_{network}'
+
+                        if exchange == exchange_key:
+                            exchange_found = True
+                            allowance_data = {}
+                            allowance_resp = allowance_responses[exchange_key] if exchange_key in allowance_responses else {}
+
+                            rows = []
+                            for token, bal in bals.items():
+                                allowance_data[token] = Decimal(str(allowance_resp["approvals"].get(token, 0)))
+                                rows.append({
+                                    "Symbol": token.upper(),
+                                    "Balance": round(bal, 4),
+                                    "Allowance": round(allowance_data[token], 4) if exchange_key in allowance_responses else "N/A",
+                                })
+
+                            df = pd.DataFrame(data=rows, columns=["Symbol", "Balance", "Allowance"])
+                            df.sort_values(by=["Symbol"], inplace=True)
+
+                            self.notify(f"\nChain_network: {exchange}")
+                            self.notify(f"Wallet_Address: {address}")
+
+                            if df.empty:
+                                self.notify("You have no balance on this exchange.")
+                            else:
+                                lines = [
+                                    "    " + line for line in df.to_string(index=False).split("\n")
+                                ]
+                                self.notify("\n".join(lines))
+                            break  # Exit loop once exchange data is found
+
+                    if not exchange_found:
+                        self.notify(f"No configuration found for exchange: {exchange}")
+
+        except asyncio.TimeoutError:
+            self.notify("\nA network error prevented the balances from updating. See logs for more details.")
+            raise
 
     def connect_markets(exchange, client_config_map: ClientConfigMap, **api_details):
         connector = None
@@ -626,9 +675,9 @@ class GatewayCommand(GatewayChainApiManager):
         return balances
 
     async def balance(self, exchange, client_config_map: ClientConfigMap, *symbols) -> Dict[str, Decimal]:
-        if await self.update_exchange_balance(exchange, client_config_map) is None:
+        if await self.update_exchange_balances(exchange, client_config_map) is None:
             results = {}
-            for token, bal in self.all_balances(exchange).items():
+            for token, bal in self.all_balance(exchange).items():
                 matches = [s for s in symbols if s.lower() == token.lower()]
                 if matches:
                     results[matches[0]] = bal
