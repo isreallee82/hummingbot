@@ -1,25 +1,19 @@
 #!/usr/bin/env python
-from os.path import join, realpath
-import sys; sys.path.insert(0, realpath(join(__file__, "../../../")))
-import pandas as pd
-from typing import (
-    List,
-    Dict,
-    Tuple)
 import unittest
-from hummingsim.backtest.binance_order_book_loader_v2 import BinanceOrderBookLoaderV2
+from os.path import join, realpath
+from typing import Dict, List, Tuple
+
+import pandas as pd
 from hummingsim.backtest.backtest_market import BacktestMarket
+from hummingsim.backtest.binance_order_book_loader_v2 import BinanceOrderBookLoaderV2
 from hummingsim.backtest.market import Market, OrderType
 from hummingsim.strategy.unit_test_strategy import UnitTestStrategy
-from hummingbot.core.clock import (
-    ClockMode,
-    Clock
-)
-from hummingbot.core.event.events import (
-    MarketEvent,
-    OrderExpiredEvent,
-)
+
+from hummingbot.core.clock import Clock, ClockMode
 from hummingbot.core.event.event_listener import EventListener
+from hummingbot.core.event.events import MarketEvent, OrderExpiredEvent
+
+import sys; sys.path.insert(0, realpath(join(__file__, "../../../")))
 
 
 class OrderExpirationTestStrategy(UnitTestStrategy):
@@ -82,7 +76,7 @@ class OrderExpirationTest(unittest.TestCase):
     def setUp(self):
         # self.weth_dai_data = DDEXOrderBookLoader("WETH-DAI", "WETH", "DAI")
         self.pair_data = BinanceOrderBookLoaderV2(self.market_name, "ETH", "USDT")
-        # self.pair_data = HuobiOrderBookLoader(self.market_name, "", "")
+        # self.pair_data = HtxOrderBookLoader(self.market_name, "", "")
         self.clock = Clock(ClockMode.BACKTEST, 1.0, self.start.timestamp(), self.end.timestamp())
         self.market = BacktestMarket()
         # self.market.add_data(self.weth_dai_data)

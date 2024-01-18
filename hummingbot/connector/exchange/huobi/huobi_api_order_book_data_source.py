@@ -13,16 +13,16 @@ from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 from hummingbot.logger import HummingbotLogger
 
 if TYPE_CHECKING:
-    from hummingbot.connector.exchange.huobi.huobi_exchange import HuobiExchange
+    from hummingbot.connector.exchange.huobi.huobi_exchange import HtxExchange
 
 
-class HuobiAPIOrderBookDataSource(OrderBookTrackerDataSource):
+class HtxAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     _logger: Optional[HummingbotLogger] = None
 
     def __init__(self,
                  trading_pairs: List[str],
-                 connector: 'HuobiExchange',
+                 connector: 'HtxExchange',
                  api_factory: WebAssistantsFactory,
                  ):
         super().__init__(trading_pairs)
@@ -43,14 +43,13 @@ class HuobiAPIOrderBookDataSource(OrderBookTrackerDataSource):
     async def listen_for_order_book_snapshots(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
         """
         Suppressing call to this function as the orderbook snapshots are handled by
-        listen_for_order_book_diffs() for Huobi
+        listen_for_order_book_diffs() for Htx
         """
         pass
 
     def snapshot_message_from_exchange(self,
                                        msg: Dict[str, Any],
                                        metadata: Optional[Dict] = None) -> OrderBookMessage:
-
         """
         Creates a snapshot message with the order book snapshot message
         :param msg: the response from the exchange when requesting the order book snapshot

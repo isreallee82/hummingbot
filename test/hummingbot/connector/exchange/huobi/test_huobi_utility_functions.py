@@ -7,7 +7,7 @@ from hummingbot.connector.exchange.huobi import (
 )
 
 
-class HuobiUtilsTestCases(unittest.TestCase):
+class HtxUtilsTestCases(unittest.TestCase):
 
     def test_public_rest_url(self):
         path_url = CONSTANTS.SERVER_TIME_URL
