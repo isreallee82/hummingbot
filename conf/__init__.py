@@ -55,8 +55,8 @@ coinbase_pro_passphrase = os.getenv("COINBASE_PRO_PASSPHRASE")
 
 
 # Htx Tests
-huobi_api_key = os.getenv("HTX_API_KEY")
-huobi_secret_key = os.getenv("HTX_SECRET_KEY")
+htx_api_key = os.getenv("HTX_API_KEY")
+htx_secret_key = os.getenv("HTX_SECRET_KEY")
 
 # Bittrex Tests
 bittrex_api_key = os.getenv("BITTREX_API_KEY")

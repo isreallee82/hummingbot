@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 
-from hummingbot.connector.exchange.huobi.huobi_api_user_stream_data_source import HtxAPIUserStreamDataSource
-from hummingbot.connector.exchange.huobi.huobi_auth import HtxAuth
-from hummingbot.connector.exchange.huobi.huobi_web_utils import build_api_factory
+from hummingbot.connector.exchange.htx.htx_api_user_stream_data_source import HtxAPIUserStreamDataSource
+from hummingbot.connector.exchange.htx.htx_auth import HtxAuth
+from hummingbot.connector.exchange.htx.htx_web_utils import build_api_factory
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 
 
@@ -48,7 +48,7 @@ class HtxAPIUserStreamDataSourceTests(unittest.TestCase):
                             secret_key="someSecretKey",
                             time_provider=self.time_synchronizer)
         self.api_factory = build_api_factory()
-        self.data_source = HtxAPIUserStreamDataSource(huobi_auth=self.auth,
+        self.data_source = HtxAPIUserStreamDataSource(htx_auth=self.auth,
                                                       trading_pairs=[self.trading_pair],
                                                       connector=self.connector,
                                                       api_factory=self.api_factory,)
@@ -187,7 +187,7 @@ class HtxAPIUserStreamDataSourceTests(unittest.TestCase):
         self.assertIn(expected_trades_channel_subscription, subscription_requests_sent)
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    @patch("hummingbot.connector.exchange.huobi.huobi_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
+    @patch("hummingbot.connector.exchange.htx.htx_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
     def test_listen_for_user_stream_raises_cancelled_error(self, _, ws_connect_mock):
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
         ws_connect_mock.side_effect = asyncio.CancelledError
@@ -199,7 +199,7 @@ class HtxAPIUserStreamDataSourceTests(unittest.TestCase):
         self.assertEqual(0, msg_queue.qsize())
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    @patch("hummingbot.connector.exchange.huobi.huobi_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
+    @patch("hummingbot.connector.exchange.htx.htx_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
     def test_listen_for_user_stream_logs_exception(self, _, ws_connect_mock):
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
 
@@ -236,7 +236,7 @@ class HtxAPIUserStreamDataSourceTests(unittest.TestCase):
         self._is_logged("ERROR", "Unexpected error with Htx WebSocket connection. Retrying after 30 seconds...")
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    @patch("hummingbot.connector.exchange.huobi.huobi_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
+    @patch("hummingbot.connector.exchange.htx.htx_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
     def test_listen_for_user_stream_handle_ping(self, _, ws_connect_mock):
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
 
@@ -277,7 +277,7 @@ class HtxAPIUserStreamDataSourceTests(unittest.TestCase):
         self.assertTrue(any(["pong" in str(payload) for payload in sent_json]))
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    @patch("hummingbot.connector.exchange.huobi.huobi_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
+    @patch("hummingbot.connector.exchange.htx.htx_api_user_stream_data_source.HtxAPIUserStreamDataSource._sleep")
     def test_listen_for_user_stream_enqueues_updates(self, _, ws_connect_mock):
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
 

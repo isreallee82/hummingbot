@@ -1,8 +1,8 @@
 import asyncio
 from typing import TYPE_CHECKING, List, Optional
 
-import hummingbot.connector.exchange.huobi.huobi_constants as CONSTANTS
-from hummingbot.connector.exchange.huobi.huobi_auth import HtxAuth
+import hummingbot.connector.exchange.htx.htx_constants as CONSTANTS
+from hummingbot.connector.exchange.htx.htx_auth import HtxAuth
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.web_assistant.connections.data_types import WSJSONRequest, WSResponse
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
@@ -10,18 +10,18 @@ from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 from hummingbot.logger import HummingbotLogger
 
 if TYPE_CHECKING:
-    from hummingbot.connector.exchange.huobi.huobi_exchange import HtxExchange
+    from hummingbot.connector.exchange.htx.htx_exchange import HtxExchange
 
 
 class HtxAPIUserStreamDataSource(UserStreamTrackerDataSource):
 
     _logger: Optional[HummingbotLogger] = None
 
-    def __init__(self, huobi_auth: HtxAuth,
+    def __init__(self, htx_auth: HtxAuth,
                  trading_pairs: List[str],
                  connector: 'HtxExchange',
                  api_factory: Optional[WebAssistantsFactory]):
-        self._auth: HtxAuth = huobi_auth
+        self._auth: HtxAuth = htx_auth
         self._connector = connector
         self._api_factory = api_factory
         self._trading_pairs = trading_pairs

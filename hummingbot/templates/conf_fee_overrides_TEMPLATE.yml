@@ -16,10 +16,10 @@ template_version: 14
 # [exchange name]_maker_fixed_fees:  # a list of lists of token-fee pairs (e.g. [["ETH", 1]])
 # [exchange name]_taker_fixed_fees:  # a list of lists of token-fee pairs (e.g. [["ETH", 1]])
 
-binance_percent_fee_token:  # BNB
-binance_maker_percent_fee:  # 0.75
-binance_taker_percent_fee:  # 0.75
-binance_buy_percent_fee_deducted_from_returns:  # True
+binance_percent_fee_token: # BNB
+binance_maker_percent_fee: # 0.75
+binance_taker_percent_fee: # 0.75
+binance_buy_percent_fee_deducted_from_returns: # True
 
 # List of supported Exchanges for which the user's conf/conf_fee_override.yml
 # will work. This file currently needs to be in sync with hummingbot list of
@@ -63,9 +63,9 @@ bitmart_percent_fee_token:
 bitmart_taker_fixed_fees:
 bitmart_taker_percent_fee:
 btc_markets_percent_fee_token:
-btc_markets_maker_percent_fee:  
-btc_markets_taker_percent_fee:  
-btc_markets_buy_percent_fee_deducted_from_returns: 
+btc_markets_maker_percent_fee:
+btc_markets_taker_percent_fee:
+btc_markets_buy_percent_fee_deducted_from_returns:
 bybit_perpetual_buy_percent_fee_deducted_from_returns:
 bybit_perpetual_maker_fixed_fees:
 bybit_perpetual_maker_percent_fee:
@@ -102,12 +102,12 @@ hitbtc_maker_percent_fee:
 hitbtc_percent_fee_token:
 hitbtc_taker_fixed_fees:
 hitbtc_taker_percent_fee:
-huobi_buy_percent_fee_deducted_from_returns:
-huobi_maker_fixed_fees:
-huobi_maker_percent_fee:
-huobi_percent_fee_token:
-huobi_taker_fixed_fees:
-huobi_taker_percent_fee:
+htx_buy_percent_fee_deducted_from_returns:
+htx_maker_fixed_fees:
+htx_maker_percent_fee:
+htx_percent_fee_token:
+htx_taker_fixed_fees:
+htx_taker_percent_fee:
 kraken_buy_percent_fee_deducted_from_returns:
 kraken_maker_fixed_fees:
 kraken_maker_percent_fee:

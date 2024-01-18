@@ -10,8 +10,8 @@ from aioresponses.core import RequestCall
 
 from hummingbot.client.config.client_config_map import ClientConfigMap
 from hummingbot.client.config.config_helpers import ClientConfigAdapter
-from hummingbot.connector.exchange.huobi import huobi_constants as CONSTANTS, huobi_web_utils as web_utils
-from hummingbot.connector.exchange.huobi.huobi_exchange import HtxExchange
+from hummingbot.connector.exchange.htx import htx_constants as CONSTANTS, htx_web_utils as web_utils
+from hummingbot.connector.exchange.htx.htx_exchange import HtxExchange
 from hummingbot.connector.test_support.exchange_connector_test import AbstractExchangeConnectorTests
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, TradeType
@@ -420,8 +420,8 @@ class HtxExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests):
 
         instance = HtxExchange(
             client_config_map=ClientConfigAdapter(ClientConfigMap()),
-            huobi_api_key="testAPIKey",
-            huobi_secret_key="testSecret",
+            htx_api_key="testAPIKey",
+            htx_secret_key="testSecret",
             trading_pairs=[self.trading_pair],
         )
         instance._account_id = self.get_dummy_account_id()

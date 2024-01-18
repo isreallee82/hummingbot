@@ -54,7 +54,7 @@ Exchanges may be centralized (**CEX**), or decentralized (**DEX**), in which cas
 | ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver) | [Dexalot](https://docs.hummingbot.org/exchanges/dexalot/) | CLOB DEX |		
 | ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver) | [Gate.io](https://docs.hummingbot.org/exchanges/gate-io/) | SPOT CEX | [5868285](https://www.gate.io/signup/5868285)		
 | ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver) | [Gate.io Perpetual](https://docs.hummingbot.org/exchanges/gate-io-perpetual/) | PERP CEX | [5868285](https://www.gate.io/signup/5868285)
-| ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver) | [Htx](https://docs.hummingbot.org/exchanges/huobi/) | SPOT CEX |		
+| ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver) | [Htx](https://docs.hummingbot.org/exchanges/htx/) | SPOT CEX |		
 | ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver)| [Injective Helix](https://docs.hummingbot.org/exchanges/injective/) | CLOB DEX |
 | ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver) | [KuCoin](https://docs.hummingbot.org/exchanges/kucoin/) | SPOT CEX | [272KvRf](https://www.kucoin.com/ucenter/signup?rcode=272KvRf)
 | ![](https://img.shields.io/static/v1?label=Hummingbot&message=SILVER&color=silver) | [KuCoin Perpetual](https://docs.hummingbot.org/exchanges/kucoin-perpetual/) | PERP CEX | [272KvRf](https://www.kucoin.com/ucenter/signup?rcode=272KvRf)

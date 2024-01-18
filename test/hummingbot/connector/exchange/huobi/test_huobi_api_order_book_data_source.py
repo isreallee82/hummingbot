@@ -10,9 +10,9 @@ import aiohttp
 import ujson
 from aioresponses.core import aioresponses
 
-import hummingbot.connector.exchange.huobi.huobi_constants as CONSTANTS
-from hummingbot.connector.exchange.huobi.huobi_api_order_book_data_source import HtxAPIOrderBookDataSource
-from hummingbot.connector.exchange.huobi.huobi_web_utils import build_api_factory
+import hummingbot.connector.exchange.htx.htx_constants as CONSTANTS
+from hummingbot.connector.exchange.htx.htx_api_order_book_data_source import HtxAPIOrderBookDataSource
+from hummingbot.connector.exchange.htx.htx_web_utils import build_api_factory
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.core.data_type.order_book import OrderBook
 
@@ -163,7 +163,7 @@ class HtxAPIOrderBookDataSourceUnitTests(unittest.TestCase):
             self.async_run_with_timeout(self.data_source.listen_for_subscriptions())
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    @patch("hummingbot.connector.exchange.huobi.huobi_api_order_book_data_source.HtxAPIOrderBookDataSource._sleep")
+    @patch("hummingbot.connector.exchange.htx.htx_api_order_book_data_source.HtxAPIOrderBookDataSource._sleep")
     def test_listen_for_subscriptions_raises_logs_exception(self, sleep_mock, ws_connect_mock):
         sleep_mock.side_effect = lambda *_: (
             # Allows listen_for_subscriptions to yield control over thread

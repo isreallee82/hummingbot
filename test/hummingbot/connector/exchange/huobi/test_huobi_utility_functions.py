@@ -1,9 +1,9 @@
 import unittest
 
-from hummingbot.connector.exchange.huobi import (
-    huobi_constants as CONSTANTS,
-    huobi_utils as func_utils,
-    huobi_web_utils as web_utils,
+from hummingbot.connector.exchange.htx import (
+    htx_constants as CONSTANTS,
+    htx_utils as func_utils,
+    htx_web_utils as web_utils,
 )
 
 
