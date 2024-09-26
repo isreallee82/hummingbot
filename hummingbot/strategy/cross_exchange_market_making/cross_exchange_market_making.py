@@ -510,6 +510,8 @@ class CrossExchangeMarketMakingStrategy(StrategyPyBase):
             # VÃ©rifiez si l'ordre a Ã©tÃ© rempli avant de continuer
             if order_id not in self._taker_to_maker_order_ids:
                 self.logger().info(f"Taker order {order_id} has already been filled or removed.")
+                del self._taker_order_timestamps[order_id]
+                continue
 
             elapsed_time = timestamp - placed_timestamp
             self.logger().info(f"Taker order {order_id} has been open for {elapsed_time} seconds.")
@@ -528,6 +530,8 @@ class CrossExchangeMarketMakingStrategy(StrategyPyBase):
 
         if not self._taker_order_timestamps:
             self.logger().info("No more taker orders are pending.")
+        else:
+            del self._taker_order_timestamps[order_id]
 
     async def replace_taker_limit_with_market_order(self, order_id: str):
         self.logger().info(f"Starting the process to replace taker limit order {order_id} with a market order.")
