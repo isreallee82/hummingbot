@@ -582,6 +582,9 @@ class CrossExchangeMarketMakingStrategy(StrategyPyBase):
         if remaining_quantity > Decimal("0"):
             if original_order.is_buy:
                 self.logger().info(f"Placing a market buy order on {market_pair.taker.market.display_name} for remaining quantity {remaining_quantity}.")
+                self.notify_hb_app_with_timestamp(
+                    f"Taker MARKET BUY order ({remaining_quantity} {market_pair.taker.base_asset}) has been placed to cover unfilled quantity."
+                )
                 self.buy_with_specific_market(
                     market_pair.taker,
                     remaining_quantity,
@@ -589,6 +592,9 @@ class CrossExchangeMarketMakingStrategy(StrategyPyBase):
                 )
             else:
                 self.logger().info(f"Placing a market sell order on {market_pair.taker.market.display_name} for remaining quantity {remaining_quantity}.")
+                self.notify_hb_app_with_timestamp(
+                    f"Taker MARKET SELL order ({remaining_quantity} {market_pair.taker.base_asset}) has been placed to cover unfilled quantity."
+                )
                 self.sell_with_specific_market(
                     market_pair.taker,
                     remaining_quantity,
