@@ -80,7 +80,7 @@ class CoinbaseAdvancedTradeAPIOrderBookDataSource(OrderBookTrackerDataSource):
             url=web_utils.public_rest_url(path_url=constants.SNAPSHOT_EP, domain=self._domain),
             params=params,
             method=RESTMethod.GET,
-            is_auth_required=True,
+            is_auth_required=False,
             throttler_limit_id=constants.SNAPSHOT_EP,
         )
         return snapshot
@@ -118,7 +118,7 @@ class CoinbaseAdvancedTradeAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     "product_ids": symbols,
                     "channel": channel,
                 }
-                await ws.send(WSJSONRequest(payload=payload, is_auth_required=True))
+                await ws.send(WSJSONRequest(payload=payload, is_auth_required=False))
 
             self.logger().info(f"Subscribed to order book channels for: {', '.join(self._trading_pairs)}")
         except asyncio.CancelledError:

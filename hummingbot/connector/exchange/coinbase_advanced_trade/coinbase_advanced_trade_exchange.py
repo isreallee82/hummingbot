@@ -587,7 +587,7 @@ class CoinbaseAdvancedTradeExchange(ExchangePyBase):
         snapshot: Dict[str, Any] = await self._api_get(
             path_url=constants.SNAPSHOT_EP,
             params=params,
-            is_auth_required=True,
+            is_auth_required=False,
             limit_id=constants.SNAPSHOT_EP,
         )
 

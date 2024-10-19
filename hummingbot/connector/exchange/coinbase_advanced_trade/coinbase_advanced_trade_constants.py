@@ -43,7 +43,8 @@ SIGNIN_ENDPOINTS = {
 
 # Private API endpoints
 SERVER_TIME_EP = "/brokerage/time"
-ALL_PAIRS_EP = "/brokerage/products"
+ALL_PAIRS_EP = "/brokerage/market/products"
+ALL_PAIRS_EP_TEST = "/brokerage/market/products"
 PAIR_TICKER_EP = "/brokerage/products/{product_id}"
 PAIR_TICKER_RATE_LIMIT_ID = "PairTicker"
 PAIR_TICKER_24HR_EP = "/brokerage/products/{product_id}/ticker"
@@ -58,7 +59,7 @@ TRANSACTIONS_SUMMARY_EP = "/brokerage/transaction_summary"
 ACCOUNTS_LIST_EP = "/brokerage/accounts"
 ACCOUNT_EP = "/brokerage/accounts/{account_uuid}"
 ACCOUNT_RATE_LIMIT_ID = "Account"
-SNAPSHOT_EP = "/brokerage/product_book"
+SNAPSHOT_EP = "/brokerage/market/product_book"
 
 PRIVATE_REST_ENDPOINTS = {
     ALL_PAIRS_EP,
@@ -72,10 +73,12 @@ PRIVATE_REST_ENDPOINTS = {
     TRANSACTIONS_SUMMARY_EP,
     ACCOUNTS_LIST_EP,
     ACCOUNT_RATE_LIMIT_ID,
-    SNAPSHOT_EP,
+
 }
 
 PUBLIC_REST_ENDPOINTS = {
+    ALL_PAIRS_EP,
+    SNAPSHOT_EP,
     SERVER_TIME_EP,
 }
 
