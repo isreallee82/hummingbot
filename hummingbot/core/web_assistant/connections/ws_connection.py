@@ -4,7 +4,7 @@ from json import JSONDecodeError
 from typing import Any, Dict, Mapping, Optional
 
 import aiohttp
-from aiohttp import WebSocketError, WSCloseCode
+from aiohttp import ServerTimeoutError, WebSocketError, WSCloseCode
 
 from hummingbot.core.web_assistant.connections.data_types import WSRequest, WSResponse
 
@@ -102,6 +102,9 @@ class WSConnection:
             if isinstance(msg.data, WebSocketError) and msg.data.code == WSCloseCode.MESSAGE_TOO_BIG:
                 await self.disconnect()
                 raise WebSocketError(f"The WS message is too big: {msg.data}")
+            elif isinstance(msg.data, ServerTimeoutError):
+                await self.disconnect()
+                raise ServerTimeoutError("WS TimedOut")
             else:
                 await self.disconnect()
                 raise ConnectionError(f"WS error: {msg.data}")
