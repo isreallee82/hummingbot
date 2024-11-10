@@ -793,6 +793,7 @@ cdef class BitfinexExchange(ExchangeBase):
                     object amount,
                     object order_type=OrderType.MARKET,
                     object price=s_decimal_0,
+                    object stop_price=s_decimal_0,
                     dict kwargs={}):
         """
         *required
@@ -809,7 +810,9 @@ cdef class BitfinexExchange(ExchangeBase):
                            trading_pair: str,
                            amount: Decimal,
                            order_type: OrderType,
-                           price: Optional[Decimal] = s_decimal_0):
+                           price: Optional[Decimal] = s_decimal_0,
+                           stop_price: Optional[Decimal] = s_decimal_0
+                           ):
         """
         Function that takes strategy inputs, auto corrects itself with trading rule,
         and submit an API request to place a sell order

@@ -6,7 +6,7 @@ from bidict import bidict
 
 from hummingbot.connector.budget_checker import BudgetChecker
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
+from hummingbot.core.data_type.common import OrderType, PriceType, TradeType, PositionAction
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.order_book_query_result import ClientOrderBookQueryResult, OrderBookQueryResult
@@ -128,8 +128,8 @@ cdef class ExchangeBase(ConnectorBase):
         return self.buy(trading_pair, amount, order_type, price, **kwargs)
 
     cdef str c_sell(self, str trading_pair, object amount, object order_type=OrderType.MARKET,
-                    object price=s_decimal_NaN, dict kwargs={}):
-        return self.sell(trading_pair, amount, order_type, price, **kwargs)
+                    object price=s_decimal_NaN, object stop_price=s_decimal_NaN, dict kwargs={}):
+        return self.sell(trading_pair, amount, order_type, price, stop_price, **kwargs)
 
     cdef c_cancel(self, str trading_pair, str client_order_id):
         return self.cancel(trading_pair, client_order_id)
@@ -279,7 +279,7 @@ cdef class ExchangeBase(ConnectorBase):
         raise NotImplementedError
 
     def sell(self, trading_pair: str, amount: Decimal, order_type=OrderType.MARKET,
-             price: Decimal = s_decimal_NaN, **kwargs) -> str:
+             price: Decimal = s_decimal_NaN,  position: PositionAction = PositionAction.NIL,  stop_price: Decimal = s_decimal_NaN, **kwargs) -> str:
         raise NotImplementedError
 
     def cancel(self, trading_pair: str, client_order_id: str):

@@ -546,17 +546,21 @@ cdef class StrategyBase(TimeIterator):
                                   order_type=OrderType.MARKET,
                                   price=s_decimal_nan,
                                   expiration_seconds=NaN,
-                                  position_action=PositionAction.OPEN):
+                                  stop_price=s_decimal_nan,
+                                  position_action=PositionAction.OPEN
+                                  ):
         return self.c_sell_with_specific_market(market_trading_pair_tuple, amount,
                                                 order_type,
                                                 price,
                                                 expiration_seconds,
-                                                position_action)
+                                                position_action,
+                                                stop_price)
 
     cdef str c_sell_with_specific_market(self, object market_trading_pair_tuple, object amount,
                                          object order_type=OrderType.MARKET,
                                          object price=s_decimal_nan,
                                          double expiration_seconds=NaN,
+                                         stop_price=s_decimal_nan,
                                          position_action=PositionAction.OPEN):
         if self._sb_delegate_lock:
             raise RuntimeError("Delegates are not allowed to execute orders directly.")
@@ -574,7 +578,7 @@ cdef class StrategyBase(TimeIterator):
 
         cdef:
             str order_id = market.c_sell(market_trading_pair_tuple.trading_pair, amount,
-                                         order_type=order_type, price=price, kwargs=kwargs)
+                                         order_type=order_type, price=price, stop_price=stop_price, kwargs=kwargs)
 
         # Start order tracking
         if order_type.is_limit_type():

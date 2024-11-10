@@ -100,6 +100,7 @@ class InFlightOrder:
             initial_state: OrderState = OrderState.PENDING_CREATE,
             leverage: int = 1,
             position: PositionAction = PositionAction.NIL,
+            stop_price: Optional[Decimal] = None,
     ) -> None:
         self.client_order_id = client_order_id
         self.creation_timestamp = creation_timestamp
@@ -112,7 +113,7 @@ class InFlightOrder:
         self.current_state = initial_state
         self.leverage = leverage
         self.position = position
-
+        self.stop_price = stop_price
         self.executed_amount_base = s_decimal_0
         self.executed_amount_quote = s_decimal_0
 
@@ -145,6 +146,7 @@ class InFlightOrder:
                 self.executed_amount_quote,
                 self.creation_timestamp,
                 self.last_update_timestamp,
+                self.stop_price,
             )
         )
 
@@ -264,7 +266,8 @@ class InFlightOrder:
             "position": self.position.value,
             "creation_timestamp": self.creation_timestamp,
             "last_update_timestamp": self.last_update_timestamp,
-            "order_fills": {key: fill.to_json() for key, fill in self.order_fills.items()}
+            "order_fills": {key: fill.to_json() for key, fill in self.order_fills.items()},
+            "stop_price": str(self.stop_price),
         }
 
     def to_limit_order(self) -> LimitOrder:

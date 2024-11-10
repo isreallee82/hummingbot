@@ -33,6 +33,7 @@ class OrderCandidate:
     order_side: TradeType
     amount: Decimal
     price: Decimal
+    stop_price: Decimal
     order_collateral: Optional[TokenAmount] = field(default=None, init=False)
     percent_fee_collateral: Optional[TokenAmount] = field(default=None, init=False)
     percent_fee_value: Optional[TokenAmount] = field(default=None, init=False)
