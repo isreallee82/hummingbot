@@ -45,13 +45,13 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
     LONG_POLL_INTERVAL = 120.0
 
     def __init__(
-            self,
-            client_config_map: "ClientConfigAdapter",
-            binance_perpetual_api_key: str = None,
-            binance_perpetual_api_secret: str = None,
-            trading_pairs: Optional[List[str]] = None,
-            trading_required: bool = True,
-            domain: str = CONSTANTS.DOMAIN,
+        self,
+        client_config_map: "ClientConfigAdapter",
+        binance_perpetual_api_key: str = None,
+        binance_perpetual_api_secret: str = None,
+        trading_pairs: Optional[List[str]] = None,
+        trading_required: bool = True,
+        domain: str = CONSTANTS.DOMAIN,
     ):
         self.binance_perpetual_api_key = binance_perpetual_api_key
         self.binance_perpetual_secret_key = binance_perpetual_api_secret
@@ -119,7 +119,13 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
         """
         :return a list of OrderType supported by this connector
         """
-        return [OrderType.LIMIT, OrderType.MARKET, OrderType.LIMIT_MAKER]
+        return [
+            OrderType.LIMIT,
+            OrderType.MARKET,
+            OrderType.LIMIT_MAKER,
+            OrderType.STOP_MARKET,
+            OrderType.TAKE_PROFIT_MARKET,
+        ]
 
     def supported_position_modes(self):
         """
@@ -174,15 +180,17 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
             domain=self.domain,
         )
 
-    def _get_fee(self,
-                 base_currency: str,
-                 quote_currency: str,
-                 order_type: OrderType,
-                 order_side: TradeType,
-                 position_action: PositionAction,
-                 amount: Decimal,
-                 price: Decimal = s_decimal_NaN,
-                 is_maker: Optional[bool] = None) -> TradeFeeBase:
+    def _get_fee(
+        self,
+        base_currency: str,
+        quote_currency: str,
+        order_type: OrderType,
+        order_side: TradeType,
+        position_action: PositionAction,
+        amount: Decimal,
+        price: Decimal = s_decimal_NaN,
+        is_maker: Optional[bool] = None,
+    ) -> TradeFeeBase:
         is_maker = is_maker or False
         fee = build_trade_fee(
             self.name,
@@ -230,54 +238,70 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
         return False
 
     async def _place_order(
-            self,
-            order_id: str,
-            trading_pair: str,
-            amount: Decimal,
-            trade_type: TradeType,
-            order_type: OrderType,
-            price: Decimal,
-            position_action: PositionAction = PositionAction.NIL,
-            **kwargs,
+        self,
+        order_id: str,
+        trading_pair: str,
+        amount: Decimal,
+        trade_type: TradeType,
+        order_type: OrderType,
+        price: Decimal,
+        stop_price: Decimal,
+        position_action: PositionAction = PositionAction.NIL,
+        **kwargs,
     ) -> Tuple[str, float]:
-
-        amount_str = f"{amount:f}"
-        price_str = f"{price:f}"
-        symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-        api_params = {"symbol": symbol,
-                      "side": "BUY" if trade_type is TradeType.BUY else "SELL",
-                      "quantity": amount_str,
-                      "type": "MARKET" if order_type is OrderType.MARKET else "LIMIT",
-                      "newClientOrderId": order_id
-                      }
-        if order_type.is_limit_type():
-            api_params["price"] = price_str
-        if order_type == OrderType.LIMIT:
-            api_params["timeInForce"] = CONSTANTS.TIME_IN_FORCE_GTC
-        if order_type == OrderType.LIMIT_MAKER:
-            api_params["timeInForce"] = CONSTANTS.TIME_IN_FORCE_GTX
-        if self._position_mode == PositionMode.HEDGE:
-            if position_action == PositionAction.OPEN:
-                api_params["positionSide"] = "LONG" if trade_type is TradeType.BUY else "SHORT"
-            else:
-                api_params["positionSide"] = "SHORT" if trade_type is TradeType.BUY else "LONG"
         try:
-            order_result = await self._api_post(
-                path_url=CONSTANTS.ORDER_URL,
-                data=api_params,
-                is_auth_required=True)
-            o_id = str(order_result["orderId"])
-            transact_time = order_result["updateTime"] * 1e-3
-        except IOError as e:
-            error_description = str(e)
-            is_server_overloaded = ("status is 503" in error_description
-                                    and "Unknown error, please check your request or try again later." in error_description)
-            if is_server_overloaded:
-                o_id = "UNKNOWN"
-                transact_time = time.time()
-            else:
-                raise
-        return o_id, transact_time
+            amount_str = f"{amount:f}"
+            price_str = f"{price:f}"
+            stop_price_str = f"{stop_price:f}"
+            symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+            api_params = {
+                "symbol": symbol,
+                "side": "BUY" if trade_type is TradeType.BUY else "SELL",
+                "quantity": amount_str,
+                # "type": "MARKET" if order_type is OrderType.MARKET else "LIMIT",
+                "type": order_type,
+                "newClientOrderId": order_id,
+            }
+            if order_type.is_limit_type():
+                api_params["price"] = price_str
+            if order_type == OrderType.LIMIT:
+                api_params["timeInForce"] = CONSTANTS.TIME_IN_FORCE_GTC
+            if order_type == OrderType.LIMIT_MAKER:
+                api_params["timeInForce"] = CONSTANTS.TIME_IN_FORCE_GTX
+
+            if order_type == OrderType.STOP_MARKET:
+                api_params["stopPrice"] = stop_price_str
+                api_params["type"] = "STOP_MARKET"
+                api_params["timeInForce"] = CONSTANTS.TIME_IN_FORCE_GTC
+
+            if self._position_mode == PositionMode.HEDGE:
+                if position_action == PositionAction.OPEN:
+                    api_params["positionSide"] = "LONG" if trade_type is TradeType.BUY else "SHORT"
+                else:
+                    api_params["positionSide"] = "SHORT" if trade_type is TradeType.BUY else "LONG"
+
+            self.logger().info(f"info {api_params}. Skipping.")
+
+            try:
+                order_result = await self._api_post(
+                    path_url=CONSTANTS.ORDER_URL, data=api_params, is_auth_required=True
+                )
+                o_id = str(order_result["orderId"])
+                transact_time = order_result["updateTime"] * 1e-3
+            except IOError as e:
+                error_description = str(e)
+                is_server_overloaded = (
+                    "status is 503" in error_description
+                    and "Unknown error, please check your request or try again later." in error_description
+                )
+                if is_server_overloaded:
+                    o_id = "UNKNOWN"
+                    transact_time = time.time()
+                else:
+                    raise
+            return o_id, transact_time
+        except Exception as e:
+            self.logger().error(f"error place order falied {e}. Skipping.")
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         trade_updates = []
@@ -295,15 +319,21 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
                 order_id = str(trade.get("orderId"))
                 if order_id == exchange_order_id:
                     position_side = trade["positionSide"]
-                    position_action = (PositionAction.OPEN
-                                       if (order.trade_type is TradeType.BUY and position_side == "LONG"
-                                           or order.trade_type is TradeType.SELL and position_side == "SHORT")
-                                       else PositionAction.CLOSE)
+                    position_action = (
+                        PositionAction.OPEN
+                        if (
+                            order.trade_type is TradeType.BUY
+                            and position_side == "LONG"
+                            or order.trade_type is TradeType.SELL
+                            and position_side == "SHORT"
+                        )
+                        else PositionAction.CLOSE
+                    )
                     fee = TradeFeeBase.new_perpetual_fee(
                         fee_schema=self.trade_fee_schema(),
                         position_action=position_action,
                         percent_token=trade["commissionAsset"],
-                        flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
+                        flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])],
                     )
                     trade_update: TradeUpdate = TradeUpdate(
                         trade_id=str(trade["id"]),

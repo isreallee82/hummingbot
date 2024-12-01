@@ -295,6 +295,7 @@ class ExchangePyBase(ExchangeBase, ABC):
              amount: Decimal,
              order_type: OrderType = OrderType.LIMIT,
              price: Decimal = s_decimal_NaN,
+             stop_price: Decimal = s_decimal_NaN,
              **kwargs) -> str:
         """
         Creates a promise to create a sell order using the parameters.
@@ -317,6 +318,7 @@ class ExchangePyBase(ExchangeBase, ABC):
             amount=amount,
             order_type=order_type,
             price=price,
+            stop_price=stop_price,
             **kwargs))
         return order_id
 
@@ -396,6 +398,7 @@ class ExchangePyBase(ExchangeBase, ABC):
                             amount: Decimal,
                             order_type: OrderType,
                             price: Optional[Decimal] = None,
+                            stop_price: Optional[Decimal] = None,
                             **kwargs):
         """
         Creates an order in the exchange using the parameters to configure it
@@ -409,7 +412,7 @@ class ExchangePyBase(ExchangeBase, ABC):
         """
         trading_rule = self._trading_rules[trading_pair]
 
-        if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER]:
+        if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.STOP_MARKET]:
             price = self.quantize_order_price(trading_pair, price)
         quantized_amount = self.quantize_order_amount(trading_pair=trading_pair, amount=amount)
 
@@ -420,6 +423,7 @@ class ExchangePyBase(ExchangeBase, ABC):
             order_type=order_type,
             trade_type=trade_type,
             price=price,
+            stop_price=stop_price,
             amount=quantized_amount,
             **kwargs,
         )
@@ -461,6 +465,7 @@ class ExchangePyBase(ExchangeBase, ABC):
                 trade_type=trade_type,
                 order_type=order_type,
                 price=price,
+                stop_price=stop_price,
                 exception=ex,
                 **kwargs,
             )
@@ -473,6 +478,7 @@ class ExchangePyBase(ExchangeBase, ABC):
             trade_type=order.trade_type,
             order_type=order.order_type,
             price=order.price,
+            stop_price=order.stop_price,
             **kwargs,
         )
 
@@ -495,6 +501,7 @@ class ExchangePyBase(ExchangeBase, ABC):
         trade_type: TradeType,
         order_type: OrderType,
         price: Optional[Decimal],
+        stop_price: Optional[Decimal],
         exception: Exception,
         **kwargs,
     ):
@@ -586,6 +593,7 @@ class ExchangePyBase(ExchangeBase, ABC):
                              price: Decimal,
                              amount: Decimal,
                              order_type: OrderType,
+                             stop_price: Optional[Decimal] = None,
                              **kwargs):
         """
         Starts tracking an order by adding it to the order tracker.

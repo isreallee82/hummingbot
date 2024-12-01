@@ -90,7 +90,8 @@ class ScriptStrategyBase(StrategyPyBase):
             amount: Decimal,
             order_type: OrderType,
             price=s_decimal_nan,
-            position_action=PositionAction.OPEN) -> str:
+            position_action=PositionAction.OPEN,
+            stop_price=Decimal('0.0')) -> str:
         """
         A wrapper function to buy_with_specific_market.
 
@@ -104,8 +105,8 @@ class ScriptStrategyBase(StrategyPyBase):
         :return: The client assigned id for the new order
         """
         market_pair = self._market_trading_pair_tuple(connector_name, trading_pair)
-        self.logger().debug(f"Creating {trading_pair} buy order: price: {price} amount: {amount}.")
-        return self.buy_with_specific_market(market_pair, amount, order_type, price, position_action=position_action)
+        self.logger().debug(f"Creating {trading_pair} buy order: price: {price} amount: {amount}, stop_price: {stop_price}.")
+        return self.buy_with_specific_market(market_pair, amount, order_type, price, position_action=position_action, stop_price=stop_price)
 
     def sell(self,
              connector_name: str,
@@ -113,6 +114,7 @@ class ScriptStrategyBase(StrategyPyBase):
              amount: Decimal,
              order_type: OrderType,
              price=s_decimal_nan,
+             stop_price=s_decimal_nan,
              position_action=PositionAction.OPEN) -> str:
         """
         A wrapper function to sell_with_specific_market.
@@ -127,8 +129,8 @@ class ScriptStrategyBase(StrategyPyBase):
         :return: The client assigned id for the new order
         """
         market_pair = self._market_trading_pair_tuple(connector_name, trading_pair)
-        self.logger().debug(f"Creating {trading_pair} sell order: price: {price} amount: {amount}.")
-        return self.sell_with_specific_market(market_pair, amount, order_type, price, position_action=position_action)
+        self.logger().debug(f"Creating {trading_pair} sell order: price: {price} amount: {amount}, stop_price: {stop_price}.")
+        return self.sell_with_specific_market(market_pair, amount, order_type, price, stop_price=stop_price, position_action=position_action)
 
     def cancel(self,
                connector_name: str,

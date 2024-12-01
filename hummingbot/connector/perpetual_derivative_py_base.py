@@ -126,6 +126,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         trading_pair: str,
         trade_type: TradeType,
         price: Decimal,
+        stop_price: Optional[Decimal],
         amount: Decimal,
         order_type: OrderType,
         position_action: PositionAction = PositionAction.NIL,
@@ -153,6 +154,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
                 trade_type=trade_type,
                 amount=amount,
                 price=price,
+                stop_price=stop_price,
                 creation_timestamp=self.current_timestamp,
                 leverage=leverage,
                 position=position_action,
@@ -172,6 +174,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         trade_type: TradeType,
         order_type: OrderType,
         price: Decimal,
+        stop_price: Optional[Decimal],
         position_action: PositionAction = PositionAction.NIL,
         **kwargs,
     ) -> Tuple[str, float]:
@@ -219,6 +222,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
         amount: Decimal,
         order_type: OrderType,
         price: Optional[Decimal] = None,
+        stop_price: Optional[Decimal] = None,
         position_action: PositionAction = PositionAction.NIL,
         **kwargs,
     ):
@@ -246,6 +250,7 @@ class PerpetualDerivativePyBase(ExchangePyBase, ABC):
             amount,
             order_type,
             price,
+            stop_price,
             position_action=position_action,
             **kwargs,
         )
