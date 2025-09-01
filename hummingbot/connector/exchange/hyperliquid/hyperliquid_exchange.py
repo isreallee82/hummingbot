@@ -572,6 +572,7 @@ class HyperliquidExchange(ExchangePyBase):
         return_val: list = []
         for coin_info, price_info in zip(coin_infos, price_infos):
             base, quote = coin_info["tokens"]
+
             try:
                 ex_name = f'{exchange_info_dict[0]["tokens"][base]["name"].replace(" ", "").upper()}/{exchange_info_dict[0]["tokens"][quote]["name"].replace(" ", "").upper()}'
                 if ex_name not in self.name_to_coin:
