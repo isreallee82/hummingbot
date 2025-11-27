@@ -178,6 +178,21 @@ class BinancePerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 )
                 await self._sleep(5.0)
 
+    async def listen_for_funding_info(self, output: asyncio.Queue):
+        """
+        Reads the funding info events from WebSocket queue and updates the local funding info information.
+        """
+        message_queue = self._message_queue[self._funding_info_messages_queue_key]
+        while True:
+            try:
+                funding_info_event = await message_queue.get()
+                await self._parse_funding_info_message(funding_info_event, output)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().exception("Unexpected error when processing public funding info updates from exchange")
+                await self._sleep(5)
+
     async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
 
         data: Dict[str, Any] = raw_message["data"]
