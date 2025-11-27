@@ -103,6 +103,8 @@ class ScriptStrategyBase(StrategyPyBase):
 
         :return: The client assigned id for the new order
         """
+        # Ensure the connector is in the whitelisted markets
+        self._ensure_market_in_whitelist(connector_name)
         market_pair = self._market_trading_pair_tuple(connector_name, trading_pair)
         self.logger().debug(f"Creating {trading_pair} buy order: price: {price} amount: {amount}.")
         return self.buy_with_specific_market(market_pair, amount, order_type, price, position_action=position_action)
@@ -126,6 +128,8 @@ class ScriptStrategyBase(StrategyPyBase):
 
         :return: The client assigned id for the new order
         """
+        # Ensure the connector is in the whitelisted markets
+        self._ensure_market_in_whitelist(connector_name)
         market_pair = self._market_trading_pair_tuple(connector_name, trading_pair)
         self.logger().debug(f"Creating {trading_pair} sell order: price: {price} amount: {amount}.")
         return self.sell_with_specific_market(market_pair, amount, order_type, price, position_action=position_action)
@@ -241,6 +245,20 @@ class ScriptStrategyBase(StrategyPyBase):
         if len(warning_lines) > 0:
             lines.extend(["", "*** WARNINGS ***"] + warning_lines)
         return "\n".join(lines)
+
+    def _ensure_market_in_whitelist(self, connector_name: str):
+        """
+        Ensures that the connector is in the whitelisted markets set.
+        If not, re-adds it to prevent "Market object not in whitelisted markets set" errors.
+
+        :param connector_name: The name of the connector to check/add
+        """
+        connector = self.connectors.get(connector_name)
+        if connector is not None:
+            markets = self.active_markets
+            if connector not in markets:
+                self.logger().warning(f"Connector {connector_name} was not in whitelisted markets. Re-adding it.")
+                self.add_markets([connector])
 
     def _market_trading_pair_tuple(self,
                                    connector_name: str,
