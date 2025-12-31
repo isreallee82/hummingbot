@@ -114,3 +114,9 @@ okx_maker_percent_fee:
 okx_percent_fee_token:
 okx_taker_fixed_fees:
 okx_taker_percent_fee:
+pacifica_perpetual_buy_percent_fee_deducted_from_returns:
+pacifica_perpetual_maker_fixed_fees:
+pacifica_perpetual_maker_percent_fee:
+pacifica_perpetual_percent_fee_token:
+pacifica_perpetual_taker_fixed_fees:
+pacifica_perpetual_taker_percent_fee:
