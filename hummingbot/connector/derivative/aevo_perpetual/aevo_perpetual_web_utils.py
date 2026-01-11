@@ -1,3 +1,4 @@
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, Optional
 
 import hummingbot.connector.derivative.aevo_perpetual.aevo_perpetual_constants as CONSTANTS
@@ -61,6 +62,11 @@ def create_throttler() -> AsyncThrottler:
 
 def is_exchange_information_valid(rule: Dict[str, Any]) -> bool:
     return bool(rule.get("is_active", False))
+
+
+def decimal_to_int(value: Decimal, decimals: int = 6) -> int:
+    scale = Decimal(10) ** decimals
+    return int((value * scale).quantize(Decimal("1"), rounding=ROUND_DOWN))
 
 
 async def get_current_server_time(

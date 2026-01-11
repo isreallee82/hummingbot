@@ -29,6 +29,7 @@ FUNDING_PATH_URL = "/funding"
 INSTRUMENT_PATH_URL = "/instrument"
 
 # Private REST API
+ACCOUNT_PATH_URL = "/account"
 PORTFOLIO_PATH_URL = "/portfolio"
 POSITIONS_PATH_URL = "/positions"
 ORDERS_PATH_URL = "/orders"
@@ -65,6 +66,7 @@ RATE_LIMITS = [
     RateLimit(limit_id=ORDERBOOK_PATH_URL, limit=120, time_interval=MINUTE),
     RateLimit(limit_id=FUNDING_PATH_URL, limit=120, time_interval=MINUTE),
     RateLimit(limit_id=INSTRUMENT_PATH_URL, limit=120, time_interval=MINUTE),
+    RateLimit(limit_id=ACCOUNT_PATH_URL, limit=120, time_interval=MINUTE),
     RateLimit(limit_id=PORTFOLIO_PATH_URL, limit=120, time_interval=MINUTE),
     RateLimit(limit_id=POSITIONS_PATH_URL, limit=120, time_interval=MINUTE),
     RateLimit(limit_id=ORDERS_PATH_URL, limit=120, time_interval=MINUTE),
