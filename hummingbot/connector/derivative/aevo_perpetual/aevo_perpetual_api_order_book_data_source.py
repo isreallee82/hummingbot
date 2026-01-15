@@ -106,6 +106,7 @@ class AevoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         url = f"{web_utils.wss_url(self._domain)}"
         ws: WSAssistant = await self._api_factory.get_ws_assistant()
         await ws.connect(ws_url=url, ping_timeout=CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL)
+
         return ws
 
     async def _subscribe_channels(self, ws: WSAssistant):
@@ -147,13 +148,17 @@ class AevoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                     channel = self._diff_messages_queue_key
             elif stream_name.startswith(f"{CONSTANTS.WS_TRADE_CHANNEL}:"):
                 channel = self._trade_messages_queue_key
+            else:
+                self.logger().warning(f"Unknown WS channel received: {stream_name}")
+        else:
+            self.logger().warning(f"WS message without channel: {event_message}")
         return channel
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         data = raw_message["data"]
         timestamp = int(data["last_updated"]) * 1e-9
-        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(
-            raw_message["data"]["instrument_name"])
+        instrument_name = raw_message["data"]["instrument_name"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument_name)
         order_book_message: OrderBookMessage = OrderBookMessage(OrderBookMessageType.DIFF, {
             "trading_pair": trading_pair,
             "update_id": int(data["last_updated"]),
@@ -165,8 +170,8 @@ class AevoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
     async def _parse_order_book_snapshot_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         data = raw_message["data"]
         timestamp = int(data["last_updated"]) * 1e-9
-        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(
-            raw_message["data"]["instrument_name"])
+        instrument_name = raw_message["data"]["instrument_name"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument_name)
         order_book_message: OrderBookMessage = OrderBookMessage(OrderBookMessageType.SNAPSHOT, {
             "trading_pair": trading_pair,
             "update_id": int(data["last_updated"]),
