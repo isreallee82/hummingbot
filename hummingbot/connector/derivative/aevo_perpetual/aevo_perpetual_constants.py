@@ -52,6 +52,8 @@ WS_POSITIONS_CHANNEL = "positions"
 
 WS_HEARTBEAT_TIME_INTERVAL = 30
 
+NOT_EXIST_ERROR = "ORDER_DOES_NOT_EXIST"
+
 # Order states
 ORDER_STATE = {
     "opened": OrderState.OPEN,

@@ -23,7 +23,7 @@ from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativ
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import combine_to_hb_trading_pair, get_new_client_order_id
 from hummingbot.core.api_throttler.data_types import RateLimit
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, PriceType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
@@ -127,6 +127,16 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
     async def _make_network_check_request(self):
         await self._api_get(path_url=self.check_network_request_path)
 
+    def get_price_by_type(self, trading_pair: str, price_type: PriceType) -> Decimal:
+        price = super().get_price_by_type(trading_pair, price_type)
+        if not price.is_nan():
+            return price
+        if price_type in {PriceType.MidPrice, PriceType.LastTrade}:
+            fallback_price = self._get_funding_price_fallback(trading_pair)
+            if fallback_price is not None:
+                return fallback_price
+        return price
+
     def supported_order_types(self) -> List[OrderType]:
         return [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET]
 
@@ -145,10 +155,16 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
         return False
 
     def _is_order_not_found_during_status_update_error(self, status_update_exception: Exception) -> bool:
-        return "not found" in str(status_update_exception).lower()
+        error_message = str(status_update_exception)
+        is_order_not_exist = CONSTANTS.NOT_EXIST_ERROR in error_message
+
+        return is_order_not_exist
 
     def _is_order_not_found_during_cancelation_error(self, cancelation_exception: Exception) -> bool:
-        return "not found" in str(cancelation_exception).lower()
+        error_message = str(cancelation_exception)
+        is_order_not_exist = CONSTANTS.NOT_EXIST_ERROR in error_message
+
+        return is_order_not_exist
 
     def _create_web_assistants_factory(self) -> WebAssistantsFactory:
         return web_utils.build_api_factory(
@@ -169,6 +185,14 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
             params={"instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE},
         )
         return exchange_info
+
+    def _get_funding_price_fallback(self, trading_pair: str) -> Optional[Decimal]:
+        try:
+            funding_info = self.get_funding_info(trading_pair)
+        except KeyError:
+            return None
+        price = funding_info.mark_price or funding_info.index_price or s_decimal_NaN
+        return price if price > 0 else None
 
     def _resolve_trading_pair_symbols_duplicate(self, mapping: bidict, new_exchange_symbol: str, base: str, quote: str):
         expected_exchange_symbol = f"{base}{quote}"
@@ -399,12 +423,8 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
         )
 
         if cancel_result.get("error") is not None:
-            if self._is_order_not_found_during_cancelation_error(Exception(cancel_result["error"])):
-                self.logger().debug(
-                    f"The order {order_id} does not exist on Aevo. No cancelation needed.")
-                await self._order_tracker.process_order_not_found(order_id)
-                return False
             raise IOError(f"{cancel_result['error']}")
+
         return True
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:

@@ -150,8 +150,6 @@ class AevoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 channel = self._trade_messages_queue_key
             else:
                 self.logger().warning(f"Unknown WS channel received: {stream_name}")
-        else:
-            self.logger().warning(f"WS message without channel: {event_message}")
         return channel
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
