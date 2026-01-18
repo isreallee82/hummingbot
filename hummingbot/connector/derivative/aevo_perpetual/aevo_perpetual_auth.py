@@ -3,7 +3,7 @@ import hmac
 import json
 import time
 from typing import Any, Dict
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 import eth_account
 from eth_account.messages import encode_typed_data
@@ -54,7 +54,6 @@ class AevoPerpetualAuth(AuthBase):
         if request.method in [RESTMethod.GET, RESTMethod.DELETE] and request.params:
             sorted_params = [(str(k), str(v)) for k, v in sorted(request.params.items(), key=lambda item: item[0])]
             request.params = sorted_params
-            path = f"{path}?{urlencode(sorted_params)}"
         elif parsed_url.query:
             path = URL(request.url).raw_path_qs
         elif request.data is not None:

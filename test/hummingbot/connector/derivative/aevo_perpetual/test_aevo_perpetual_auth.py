@@ -40,7 +40,7 @@ class AevoPerpetualAuthTests(TestCase):
         self.async_run_with_timeout(self.auth.rest_authenticate(request))
 
         timestamp = str(int(1700000000.0 * 1e9))
-        message = f"{self.api_key},{timestamp},GET,/orderbook?instrument_name=ETH-PERP,"
+        message = f"{self.api_key},{timestamp},GET,/orderbook,"
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
             message.encode("utf-8"),
