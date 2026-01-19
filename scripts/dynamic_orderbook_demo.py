@@ -1,97 +1,181 @@
 import asyncio
+import os
 from decimal import Decimal
 from typing import Dict, List, Optional, Set
 
+from pydantic import Field, field_validator
+
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
+from hummingbot.core.clock import Clock
 from hummingbot.core.data_type.funding_info import FundingInfo
-from hummingbot.data_feed.market_data_provider import MarketDataProvider
-from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
+from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
+from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
+from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
 
 
-class DynamicOrderbookDemo(ScriptStrategyBase):
+class DynamicOrderbookDemoConfig(StrategyV2ConfigBase):
     """
-    Demo script showing dynamic order book initialization and removal.
+    Configuration for the Dynamic Orderbook Demo  strategy.
 
-    The script uses one connector for the strategy (markets) but can display
+    This strategy demonstrates dynamic order book initialization and removal.
+    It uses one connector for the strategy (markets) but can display
+    order books from a different exchange (order_book_exchange).
+    """
+    script_file_name: str = Field(default=os.path.basename(__file__))
+
+    # Required by StrategyV2ConfigBase - provide defaults
+    markets: Dict[str, Set[str]] = Field(default={"binance_paper_trade": {"BTC-USDT"}})
+    candles_config: List[CandlesConfig] = Field(default=[])
+    controllers_config: List[str] = Field(default=[])
+
+    # Exchange to use for order book data (can be different from trading exchange)
+    order_book_exchange: str = Field(
+        default="binance_perpetual",
+        json_schema_extra={
+            "prompt": lambda mi: "Enter exchange for order book data (e.g., binance_perpetual, bybit_perpetual): ",
+            "prompt_on_new": True
+        }
+    )
+
+    # Trading pairs to add dynamically (comma-separated string that gets parsed to Set)
+    add_trading_pairs: Set[str] = Field(
+        default="SOL-USDT,ETH-USDT",
+        json_schema_extra={
+            "prompt": lambda mi: "Enter trading pairs to add dynamically (comma-separated, e.g., SOL-USDT,ETH-USDT): ",
+            "prompt_on_new": True
+        }
+    )
+
+    # Trading pairs to remove dynamically (must be subset of add_trading_pairs)
+    remove_trading_pairs: Set[str] = Field(
+        default="SOL-USDT,ETH-USDT",
+        json_schema_extra={
+            "prompt": lambda mi: "Enter trading pairs to remove dynamically (comma-separated, e.g., SOL-USDT,ETH-USDT): ",
+            "prompt_on_new": True
+        }
+    )
+
+    # Timing configuration (in seconds)
+    add_pairs_delay: float = Field(
+        default=10.0,
+        gt=0,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter seconds before adding pairs (e.g., 10): ",
+            "prompt_on_new": True
+        }
+    )
+    remove_pairs_delay: float = Field(
+        default=25.0,
+        gt=0,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter seconds before removing pairs (e.g., 25): ",
+            "prompt_on_new": True
+        }
+    )
+
+    # Display configuration
+    order_book_depth: int = Field(default=5, gt=0, description="Number of order book levels to display")
+    histogram_range_bps: int = Field(default=50, gt=0, description="Basis points range for depth chart (±bps from mid)")
+    chart_height: int = Field(default=12, gt=0, description="Height of depth chart in rows")
+
+    @field_validator('add_trading_pairs', 'remove_trading_pairs', mode="before")
+    @classmethod
+    def parse_trading_pairs(cls, v) -> Set[str]:
+        """Parse comma-separated string into a set of trading pairs."""
+        if isinstance(v, str):
+            if not v.strip():
+                return set()
+            return {pair.strip() for pair in v.split(',') if pair.strip()}
+        elif isinstance(v, (set, list)):
+            return set(v)
+        return v
+
+
+class DynamicOrderbookDemo(StrategyV2Base):
+    """
+    V2 Demo strategy showing dynamic order book initialization and removal.
+
+    The strategy uses one connector for trading (markets) but can display
     order books from a different exchange (order_book_exchange).
 
     Timeline:
-    - Starts with initial_trading_pairs
+    - Starts with initial markets configuration
     - Adds pairs from add_trading_pairs after add_pairs_delay seconds
     - Removes pairs from remove_trading_pairs after remove_pairs_delay seconds
 
     Order book data is displayed in format_status() (use `status` command to view).
 
-    For perpetual connectors, the script also:
+    For perpetual connectors, the strategy also:
     - Displays funding info (mark price, index price, funding rate) for each pair
     - Validates that funding info is properly initialized when pairs are added
     - Validates that funding info is properly cleaned up when pairs are removed
-
-    Usage: start --script dynamic_orderbook_demo.py
     """
 
-    # ===========================================
-    # CONFIGURATION - Modify these parameters
-    # ===========================================
+    # Default markets when running without a config file
+    markets: Dict[str, Set[str]] = {"binance_paper_trade": {"BTC-USDT"}}
 
-    # Exchange to use for order book data (can be different from trading exchange)
-    # Options: "binance", "bybit", "kraken", "gate_io", "kucoin", etc.
-    order_book_exchange: str = "binance_perpetual"
+    @classmethod
+    def init_markets(cls, config: DynamicOrderbookDemoConfig):
+        """Initialize the markets for the strategy."""
+        cls.markets = dict(config.markets)
 
-    # Trading pairs to add dynamically
-    add_trading_pairs: Set[str] = {"SOL-USDT", "ETH-USDT"}
-
-    # Trading pairs to remove dynamically (must be subset of add_trading_pairs)
-    remove_trading_pairs: Set[str] = {"SOL-USDT", "ETH-USDT"}
-
-    # Timing configuration (in seconds)
-    add_pairs_delay: float = 10.0  # Add pairs after this many seconds
-    remove_pairs_delay: float = 25.0  # Remove pairs after this many seconds
-
-    # Display configuration
-    ORDER_BOOK_DEPTH: int = 5  # Number of levels to display
-    HISTOGRAM_RANGE_BPS: int = 50  # ±50 bps from mid price
-    CHART_HEIGHT: int = 12  # Height of depth chart in rows
-    markets = {"binance_paper_trade": {"BTC-USDT"}}
-
-    # ===========================================
-    # Strategy setup - uses order_book_exchange
-    # ===========================================
-    def __init__(self, connectors: Dict[str, ConnectorBase]):
-        super().__init__(connectors)
-        self._start_timestamp = None
+    def __init__(self, connectors: Dict[str, ConnectorBase], config: Optional[DynamicOrderbookDemoConfig] = None):
+        # Create default config if none provided (when running without --conf flag)
+        if config is None:
+            config = DynamicOrderbookDemoConfig()
+        super().__init__(connectors, config)
+        self.config: DynamicOrderbookDemoConfig = config
+        self._start_timestamp: Optional[float] = None
         self._pairs_added: Set[str] = set()
         self._pairs_removed: Set[str] = set()
-        self._market_data_provider = MarketDataProvider(connectors)
+
+    def start(self, clock: Clock, timestamp: float) -> None:
+        """Start the strategy."""
+        super().start(clock, timestamp)
+        self._start_timestamp = timestamp
+        self.logger().info(
+            f"DynamicOrderbookDemo started. "
+            f"Order book exchange: {self.config.order_book_exchange}, "
+            f"Add pairs: {self.config.add_trading_pairs}, "
+            f"Remove pairs: {self.config.remove_trading_pairs}"
+        )
+
+    def create_actions_proposal(self) -> List[CreateExecutorAction]:
+        """This demo doesn't create any executors."""
+        return []
+
+    def stop_actions_proposal(self) -> List[StopExecutorAction]:
+        """This demo doesn't stop any executors."""
+        return []
 
     def on_tick(self):
+        """Handle tick events - manage dynamic pair addition/removal."""
+        super().on_tick()
+
         if self._start_timestamp is None:
             self._start_timestamp = self.current_timestamp
 
         elapsed = self.current_timestamp - self._start_timestamp
 
         # Add trading pairs after add_pairs_delay
-        if elapsed >= self.add_pairs_delay:
-            for pair in self.add_trading_pairs:
+        if elapsed >= self.config.add_pairs_delay:
+            for pair in self.config.add_trading_pairs:
                 if pair not in self._pairs_added:
                     self._pairs_added.add(pair)
                     self.logger().info(f">>> ADDING {pair} ORDER BOOK <<<")
                     asyncio.create_task(self._add_trading_pair(pair))
 
         # Remove trading pairs after remove_pairs_delay
-        if elapsed >= self.remove_pairs_delay:
-            for pair in self.remove_trading_pairs:
+        if elapsed >= self.config.remove_pairs_delay:
+            for pair in self.config.remove_trading_pairs:
                 if pair not in self._pairs_removed and pair in self._pairs_added:
                     self._pairs_removed.add(pair)
                     self.logger().info(f">>> REMOVING {pair} ORDER BOOK <<<")
                     asyncio.create_task(self._remove_trading_pair(pair))
 
     def format_status(self) -> str:
-        """
-        Displays order book information for all tracked trading pairs.
-        Use the `status` command to view this output.
-        """
+        """Display order book information for all tracked trading pairs."""
         if not self.ready_to_trade:
             return "Market connectors are not ready."
 
@@ -99,34 +183,34 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
         elapsed = self.current_timestamp - self._start_timestamp if self._start_timestamp else 0
 
         lines.append("\n" + "=" * 80)
-        lines.append(f"  DYNAMIC ORDER BOOK DEMO | Exchange: {self.order_book_exchange} | Elapsed: {elapsed:.1f}s")
+        lines.append(f"  DYNAMIC ORDER BOOK DEMO | Exchange: {self.config.order_book_exchange} | Elapsed: {elapsed:.1f}s")
         lines.append("=" * 80)
 
         # Timeline status
         lines.append("\n  Timeline:")
-        add_pairs_str = ", ".join(self.add_trading_pairs) if self.add_trading_pairs else "None"
-        remove_pairs_str = ", ".join(self.remove_trading_pairs) if self.remove_trading_pairs else "None"
-        all_added = self.add_trading_pairs <= self._pairs_added
-        all_removed = self.remove_trading_pairs <= self._pairs_removed
+        add_pairs_str = ", ".join(self.config.add_trading_pairs) if self.config.add_trading_pairs else "None"
+        remove_pairs_str = ", ".join(self.config.remove_trading_pairs) if self.config.remove_trading_pairs else "None"
+        all_added = self.config.add_trading_pairs <= self._pairs_added
+        all_removed = self.config.remove_trading_pairs <= self._pairs_removed
 
         lines.append(
-            f"    [{'✓' if all_added else '○'}] {self.add_pairs_delay:.0f}s - Add {add_pairs_str}"
+            f"    [{'✓' if all_added else '○'}] {self.config.add_pairs_delay:.0f}s - Add {add_pairs_str}"
             + (" (added)" if all_added else "")
         )
         lines.append(
-            f"    [{'✓' if all_removed else '○'}] {self.remove_pairs_delay:.0f}s - Remove {remove_pairs_str}"
+            f"    [{'✓' if all_removed else '○'}] {self.config.remove_pairs_delay:.0f}s - Remove {remove_pairs_str}"
             + (" (removed)" if all_removed else "")
         )
 
         # Check if the non-trading connector has been started
-        connector = self._market_data_provider.get_connector_with_fallback(self.order_book_exchange)
-        is_started = self._market_data_provider._non_trading_connectors_started.get(
-            self.order_book_exchange, False
-        ) if self.order_book_exchange not in self._market_data_provider.connectors else True
+        connector = self.market_data_provider.get_connector_with_fallback(self.config.order_book_exchange)
+        is_started = self.market_data_provider._non_trading_connectors_started.get(
+            self.config.order_book_exchange, False
+        ) if self.config.order_book_exchange not in self.market_data_provider.connectors else True
 
         if not is_started:
             lines.append("\n  Waiting for first trading pair to be added...")
-            lines.append(f"  (Order book connector will start at {self.add_pairs_delay:.0f}s)")
+            lines.append(f"  (Order book connector will start at {self.config.add_pairs_delay:.0f}s)")
             lines.append("\n" + "=" * 80)
             return "\n".join(lines)
 
@@ -184,7 +268,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
             lines.append("")
 
             # Prepare order book display
-            depth = min(self.ORDER_BOOK_DEPTH, len(bids_df), len(asks_df))
+            depth = min(self.config.order_book_depth, len(bids_df), len(asks_df))
 
             # Order book table
             lines.append(f"  {'Bid Size':>12} {'Bid Price':>14} │ {'Ask Price':<14} {'Ask Size':<12}")
@@ -217,8 +301,8 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
         1 bar per bps, bids on left, asks on right.
         """
         lines = []
-        num_buckets = self.HISTOGRAM_RANGE_BPS  # 1 bucket per bps
-        range_decimal = self.HISTOGRAM_RANGE_BPS / 10000
+        num_buckets = self.config.histogram_range_bps  # 1 bucket per bps
+        range_decimal = self.config.histogram_range_bps / 10000
         bucket_size_decimal = range_decimal / num_buckets
 
         # Aggregate bid volume into buckets (1 per bps, from mid going down)
@@ -251,7 +335,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
         imbalance_str = f"+{imbalance_pct:.1f}%" if imbalance_pct >= 0 else f"{imbalance_pct:.1f}%"
 
         # Calculate bar heights
-        chart_height = self.CHART_HEIGHT
+        chart_height = self.config.chart_height
         bid_heights = [int((v / max_vol) * chart_height) for v in bid_buckets]
         ask_heights = [int((v / max_vol) * chart_height) for v in ask_buckets]
 
@@ -260,7 +344,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
 
         # Header with summary
         lines.append("")
-        lines.append(f"  Depth Chart (±{self.HISTOGRAM_RANGE_BPS} bps)")
+        lines.append(f"  Depth Chart (±{self.config.histogram_range_bps} bps)")
         lines.append(f"  Bids: {total_bid_vol:,.2f}  |  Asks: {total_ask_vol:,.2f}  |  Imbalance: {imbalance_str}")
         lines.append("")
 
@@ -297,8 +381,8 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
         ask_label_line = [" "] * num_buckets
 
         # Place bid labels (negative values, from left to right: -50, -40, -30, -20, -10)
-        for bps in range(self.HISTOGRAM_RANGE_BPS, 0, -label_interval):
-            pos = self.HISTOGRAM_RANGE_BPS - bps  # Position from left
+        for bps in range(self.config.histogram_range_bps, 0, -label_interval):
+            pos = self.config.histogram_range_bps - bps  # Position from left
             label = f"-{bps}"
             # Center the label at this position
             start = max(0, pos - len(label) // 2)
@@ -307,7 +391,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
                     bid_label_line[start + j] = ch
 
         # Place ask labels (positive values, from left to right: 10, 20, 30, 40, 50)
-        for bps in range(label_interval, self.HISTOGRAM_RANGE_BPS + 1, label_interval):
+        for bps in range(label_interval, self.config.histogram_range_bps + 1, label_interval):
             pos = bps - 1  # Position from left (0-indexed)
             label = f"+{bps}"
             start = max(0, pos - len(label) // 2)
@@ -371,8 +455,8 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
     async def _add_trading_pair(self, trading_pair: str):
         """Add a trading pair to the order book tracker."""
         try:
-            success = await self._market_data_provider.initialize_order_book(
-                self.order_book_exchange, trading_pair
+            success = await self.market_data_provider.initialize_order_book(
+                self.config.order_book_exchange, trading_pair
             )
             if not success:
                 self.logger().error(f"Failed to add {trading_pair} to order book tracker")
@@ -381,7 +465,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
             self.logger().info(f"Successfully added {trading_pair}!")
 
             # Validate funding info for perpetual connectors
-            connector = self._market_data_provider.get_connector_with_fallback(self.order_book_exchange)
+            connector = self.market_data_provider.get_connector_with_fallback(self.config.order_book_exchange)
             if self._is_perpetual_connector(connector):
                 await self._validate_funding_info(connector, trading_pair)
 
@@ -391,8 +475,8 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
     async def _remove_trading_pair(self, trading_pair: str):
         """Remove a trading pair from the order book tracker."""
         try:
-            success = await self._market_data_provider.remove_order_book(
-                self.order_book_exchange, trading_pair
+            success = await self.market_data_provider.remove_order_book(
+                self.config.order_book_exchange, trading_pair
             )
             if not success:
                 self.logger().error(f"Failed to remove {trading_pair} from order book tracker")
@@ -401,7 +485,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
             self.logger().info(f"Successfully removed {trading_pair}!")
 
             # Validate funding info cleanup for perpetual connectors
-            connector = self._market_data_provider.get_connector_with_fallback(self.order_book_exchange)
+            connector = self.market_data_provider.get_connector_with_fallback(self.config.order_book_exchange)
             if self._is_perpetual_connector(connector):
                 perpetual_trading = connector._perpetual_trading
                 if trading_pair in perpetual_trading.funding_info:
@@ -427,7 +511,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
 
             funding_info = funding_info_dict[trading_pair]
             self.logger().info(
-                f"✓ Funding info VALIDATED for {trading_pair}: "
+                f"Funding info VALIDATED for {trading_pair}: "
                 f"mark_price={funding_info.mark_price:.4f}, "
                 f"index_price={funding_info.index_price:.4f}, "
                 f"rate={funding_info.rate:.6f}"
@@ -439,7 +523,7 @@ class DynamicOrderbookDemo(ScriptStrategyBase):
                     f"Trading pair {trading_pair} not in perpetual_trading._trading_pairs list"
                 )
             else:
-                self.logger().info(f"✓ Trading pair {trading_pair} properly added to perpetual trading pairs list")
+                self.logger().info(f"Trading pair {trading_pair} properly added to perpetual trading pairs list")
 
         except Exception as e:
             self.logger().exception(f"Error validating funding info for {trading_pair}: {e}")
