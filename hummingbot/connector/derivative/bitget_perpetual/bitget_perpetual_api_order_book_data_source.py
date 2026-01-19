@@ -39,6 +39,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         self._connector = connector
         self._api_factory = api_factory
         self._ping_task: Optional[asyncio.Task] = None
+        self._ws_assistant: Optional[WSAssistant] = None
 
     async def get_last_traded_prices(
         self,
@@ -354,6 +355,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         while True:
             try:
                 ws: WSAssistant = await self._connected_websocket_assistant()
+                self._ws_assistant = ws  # Store for dynamic subscriptions
                 await self._subscribe_channels(ws)
                 self._ping_task = asyncio.create_task(self.send_interval_ping(ws))
                 await self._process_websocket_messages(websocket_assistant=ws)
@@ -377,6 +379,7 @@ class BitgetPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                     except asyncio.CancelledError:
                         pass
                     self._ping_task = None
+                self._ws_assistant = None  # Clear on disconnection
                 await self._on_order_stream_interruption(websocket_assistant=ws)
 
     @classmethod
