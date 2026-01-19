@@ -67,23 +67,24 @@ class WSMessageTypes(str, Enum):
 
 NO_LIMIT = sys.maxsize
 ONE_MINUTE = 60
+ONE_SECOND = 1
 
 RATE_LIMITS = [
-    RateLimit(limit_id=SERVER_TIME_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=USER_INFO_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=EXCHANGE_INFO_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=TICKERS_INFO_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=SINGLE_TICKER_INFO_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=PUBLIC_ORDERBOOK_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=AUTH_TOKEN_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=FUNDING_INFO_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=FUNDING_EVENTS_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=RISK_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
+    RateLimit(limit_id=SERVER_TIME_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=USER_INFO_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=EXCHANGE_INFO_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=TICKERS_INFO_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=SINGLE_TICKER_INFO_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=PUBLIC_ORDERBOOK_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=AUTH_TOKEN_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=FUNDING_INFO_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=FUNDING_EVENTS_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=RISK_ENDPOINT, limit=10, time_interval=ONE_SECOND),
 
-    RateLimit(limit_id=PLACE_ORDER_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=CANCEL_ORDER_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=ORDER_STATUS_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
-    RateLimit(limit_id=ORDER_FILLS_ENDPOINT, limit=NO_LIMIT, time_interval=ONE_MINUTE),
+    RateLimit(limit_id=PLACE_ORDER_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=CANCEL_ORDER_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=ORDER_STATUS_ENDPOINT, limit=10, time_interval=ONE_SECOND),
+    RateLimit(limit_id=ORDER_FILLS_ENDPOINT, limit=10, time_interval=ONE_SECOND),
 
-    RateLimit(limit_id=PRIVATE_WS_CONNECTION, limit=NO_LIMIT, time_interval=ONE_MINUTE),
+    RateLimit(limit_id=PRIVATE_WS_CONNECTION, limit=10, time_interval=ONE_SECOND),
 ]
