@@ -52,7 +52,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
             trading_pairs: Optional[List[str]] = None,
             trading_required: bool = True,
             domain: str = CONSTANTS.DOMAIN,
-            enable_hip3_markets: bool = False,
+            enable_hip3_markets: bool = True,
     ):
         self.hyperliquid_perpetual_address = hyperliquid_perpetual_address
         self.hyperliquid_perpetual_secret_key = hyperliquid_perpetual_secret_key
