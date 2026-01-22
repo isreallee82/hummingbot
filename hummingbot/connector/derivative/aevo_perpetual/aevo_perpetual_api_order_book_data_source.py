@@ -194,3 +194,65 @@ class AevoPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
     async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         pass
+
+    async def subscribe_to_trading_pair(self, trading_pair: str) -> bool:
+        if self._ws_assistant is None:
+            self.logger().warning(
+                f"Cannot subscribe to {trading_pair}: WebSocket connection not established."
+            )
+            return False
+
+        try:
+            symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+
+            trades_payload = {
+                "op": "subscribe",
+                "data": [f"{CONSTANTS.WS_TRADE_CHANNEL}:{symbol}"],
+            }
+            order_book_payload = {
+                "op": "subscribe",
+                "data": [f"{CONSTANTS.WS_ORDERBOOK_CHANNEL}:{symbol}"],
+            }
+
+            await self._ws_assistant.send(WSJSONRequest(payload=trades_payload))
+            await self._ws_assistant.send(WSJSONRequest(payload=order_book_payload))
+
+            self.add_trading_pair(trading_pair)
+            self.logger().info(f"Successfully subscribed to {trading_pair}")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger().error(f"Error subscribing to {trading_pair}: {e}")
+            return False
+
+    async def unsubscribe_from_trading_pair(self, trading_pair: str) -> bool:
+        if self._ws_assistant is None:
+            self.logger().warning(
+                f"Cannot unsubscribe from {trading_pair}: WebSocket connection not established."
+            )
+            return False
+
+        try:
+            symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+
+            trades_payload = {
+                "op": "unsubscribe",
+                "data": [f"{CONSTANTS.WS_TRADE_CHANNEL}:{symbol}"],
+            }
+            order_book_payload = {
+                "op": "unsubscribe",
+                "data": [f"{CONSTANTS.WS_ORDERBOOK_CHANNEL}:{symbol}"],
+            }
+
+            await self._ws_assistant.send(WSJSONRequest(payload=trades_payload))
+            await self._ws_assistant.send(WSJSONRequest(payload=order_book_payload))
+
+            self.remove_trading_pair(trading_pair)
+            self.logger().info(f"Successfully unsubscribed from {trading_pair}")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger().error(f"Error unsubscribing from {trading_pair}: {e}")
+            return False
