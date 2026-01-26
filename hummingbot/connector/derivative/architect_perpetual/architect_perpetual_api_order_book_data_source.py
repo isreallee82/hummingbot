@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 
 class ArchitectPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
+    _next_request_id = 0
+
     def __init__(
         self,
         trading_pairs: List[str],
@@ -34,7 +36,6 @@ class ArchitectPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         super().__init__(trading_pairs)
         self._connector = connector
         self._api_factory = api_factory
-        self._next_request_id = 0
         self._domain = domain
 
     async def listen_for_funding_info(self, output: asyncio.Queue):
@@ -71,6 +72,44 @@ class ArchitectPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
     async def get_last_traded_prices(self, trading_pairs: List[str], domain: Optional[str] = None) -> Dict[str, float]:
         return await self._connector.get_last_traded_prices(trading_pairs=trading_pairs)
+
+    async def subscribe_to_trading_pair(self, trading_pair: str) -> bool:
+        success = True
+
+        if self._ws_assistant is None:
+            self.logger().warning(f"Cannot subscribe to {trading_pair}: WebSocket not connected")
+            success = False
+        elif trading_pair in self._trading_pairs:
+            self.logger().warning(f"{trading_pair} already subscribed. Ignoring request.")
+        else:
+            try:
+                await self._subscribe_to_trading_pairs(ws=self._ws_assistant, trading_pairs=[trading_pair])
+                self.add_trading_pair(trading_pair)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                success = False
+
+        return success
+
+    async def unsubscribe_from_trading_pair(self, trading_pair: str) -> bool:
+        success = True
+
+        if self._ws_assistant is None:
+            self.logger().warning(f"Cannot unsubscribe from {trading_pair}: WebSocket not connected")
+            success = False
+        elif trading_pair not in self._trading_pairs:
+            self.logger().warning(f"{trading_pair} not subscribed. Ignoring request.")
+        else:
+            try:
+                await self._unsubscribe_from_trading_pairs(ws=self._ws_assistant, trading_pairs=[trading_pair])
+                self.remove_trading_pair(trading_pair)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                success = False
+
+        return success
 
     async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         raise NotImplementedError  # no stream offered
@@ -151,11 +190,14 @@ class ArchitectPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         return websocket_assistant
 
     async def _subscribe_channels(self, ws: WSAssistant):
+        await self._subscribe_to_trading_pairs(ws=ws, trading_pairs=self._trading_pairs)
+
+    async def _subscribe_to_trading_pairs(self, ws: WSAssistant, trading_pairs: list[str]):
         try:
             exchange_pairs = await safe_gather(
                 *[
                     self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-                    for trading_pair in self._trading_pairs
+                    for trading_pair in trading_pairs
                 ]
             )
             sub_operations = [
@@ -171,11 +213,40 @@ class ArchitectPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 ) for exchange_trading_pair in exchange_pairs
             ]
             await safe_gather(*sub_operations)
-            self.logger().info("Subscribed to public channels...")
+            self.logger().info(f"Subscribed to public channels for {', '.join(trading_pairs)}...")
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger().exception("Unexpected error occurred subscribing to order book data streams.")
+            self.logger().exception(
+                f"Unexpected error occurred subscribing to order book data streams for {', '.join(trading_pairs)}.")
+            raise
+
+    async def _unsubscribe_from_trading_pairs(self, ws: WSAssistant, trading_pairs: list[str]):
+        try:
+            exchange_pairs = await safe_gather(
+                *[
+                    self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+                    for trading_pair in trading_pairs
+                ]
+            )
+            sub_operations = [
+                ws.send(
+                    WSJSONRequest(
+                        {
+                            "request_id": self._get_next_request_id(),
+                            "type": "unsubscribe",
+                            "symbol": exchange_trading_pair,
+                        },
+                    ),
+                ) for exchange_trading_pair in exchange_pairs
+            ]
+            await safe_gather(*sub_operations)
+            self.logger().info(f"Unsubscribed from public channels for {', '.join(trading_pairs)}.")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger().exception(
+                f"Unexpected error occurred unsubscribing from order book data streams for {', '.join(trading_pairs)}.")
             raise
 
     def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
