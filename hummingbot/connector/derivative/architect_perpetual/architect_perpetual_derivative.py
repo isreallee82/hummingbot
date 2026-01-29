@@ -363,7 +363,7 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
                         if channel in ["p", "f"]:
                             trade_data = event_message["xs"]
                             fill_price = Decimal(trade_data["p"])
-                            fill_base_amount = abs(Decimal(trade_data["q"]))
+                            fill_base_amount = Decimal(trade_data["q"])
                             fill_quote_amount = fill_base_amount * fill_price
                             fee_amount = (
                                 fill_quote_amount * (
@@ -416,7 +416,7 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         trade_updates = []
         for order_fill_data in order_fills_data:
             fill_price = Decimal(order_fill_data["price"])
-            fill_base_amount = abs(Decimal(order_fill_data["quantity"]))
+            fill_base_amount = Decimal(order_fill_data["quantity"])
             flat_fees = [TokenAmount(amount=Decimal(order_fill_data["fee"]), token=order.quote_asset)]
             fee = TradeFeeBase.new_perpetual_fee(
                 fee_schema=self.trade_fee_schema(),
@@ -588,9 +588,9 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
 
         self._perpetual_trading._account_positions.clear()
         for exchange_symbol, position_data in data["per_symbol"].items():
-            if position_data["open_quantity"] > 0:
+            if position_data["signed_quantity"] > 0:
                 trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=exchange_symbol)
-                amount = Decimal(position_data["open_quantity"])
+                amount = Decimal(position_data["signed_quantity"])
                 position = Position(
                     trading_pair=trading_pair,
                     position_side=PositionSide.LONG if amount > Decimal("0") else PositionSide.SHORT,

@@ -171,7 +171,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
                 "timestamp_ns": "2026-01-13T09:37:06.896527453Z",
                 "per_symbol": {
                     "EURUSD-PERP": {
-                        "open_quantity": 1000,
+                        "signed_quantity": 1000,
                         "open_notional": "1167.2000",
                         "average_price": "1.1672",
                         "initial_margin_required_position": "93.360000",
@@ -466,6 +466,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
                     "is_taker": False,
                     "price": str(self.expected_partial_fill_price),
                     "quantity": int(self.expected_partial_fill_amount),
+                    "sid": "B" if order.trade_type == TradeType.BUY else "S",
                     "symbol": self.exchange_trading_pair,
                     "timestamp": "2023-11-07T05:31:56Z",
                     "trade_id": self.expected_fill_trade_id,
@@ -507,6 +508,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
                     "is_taker": False,
                     "price": str(order.price),
                     "quantity": int(order.amount),
+                    "sid": "B" if order.trade_type == TradeType.BUY else "S",
                     "symbol": self.exchange_trading_pair,
                     "timestamp": "2023-11-07T05:31:56Z",
                     "trade_id": self.expected_fill_trade_id,
@@ -1708,7 +1710,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
                 "timestamp_ns": "2026-01-13T12:01:06.906306671Z",
                 "per_symbol": {
                     self.exchange_trading_pair: {
-                        "open_quantity": 1000,
+                        "signed_quantity": 1000,
                         "open_notional": "1167.2000",
                         "average_price": "1.1672",
                         "initial_margin_required_position": "93.3680000",
