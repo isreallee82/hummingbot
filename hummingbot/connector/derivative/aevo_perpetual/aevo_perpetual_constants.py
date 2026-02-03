@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from hummingbot.connector.constants import MINUTE
+from hummingbot.connector.constants import SECOND
 from hummingbot.core.api_throttler.data_types import RateLimit
 from hummingbot.core.data_type.in_flight_order import OrderState
 
@@ -63,19 +63,19 @@ ORDER_STATE = {
 }
 
 RATE_LIMITS = [
-    RateLimit(limit_id=PING_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=MARKETS_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=ORDERBOOK_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=FUNDING_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=INSTRUMENT_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=ACCOUNT_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=PORTFOLIO_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=POSITIONS_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=ORDERS_PATH_URL, limit=120, time_interval=MINUTE),
-    RateLimit(limit_id=ORDERS_ALL_PATH_URL, limit=60, time_interval=MINUTE),
-    RateLimit(limit_id=TRADE_HISTORY_PATH_URL, limit=60, time_interval=MINUTE),
-    RateLimit(limit_id=ACCOUNT_LEVERAGE_PATH_URL, limit=60, time_interval=MINUTE),
-    RateLimit(limit_id=ACCOUNT_ACCUMULATED_FUNDINGS_PATH_URL, limit=60, time_interval=MINUTE),
-    RateLimit(limit_id=WSS_URL, limit=60, time_interval=MINUTE),
-    RateLimit(limit_id=TESTNET_WSS_URL, limit=60, time_interval=MINUTE),
+    RateLimit(limit_id=PING_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=MARKETS_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=ORDERBOOK_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=FUNDING_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=INSTRUMENT_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=ACCOUNT_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=PORTFOLIO_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=POSITIONS_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=ORDERS_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=ORDERS_ALL_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=TRADE_HISTORY_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=ACCOUNT_LEVERAGE_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=ACCOUNT_ACCUMULATED_FUNDINGS_PATH_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=WSS_URL, limit=10, time_interval=SECOND),
+    RateLimit(limit_id=TESTNET_WSS_URL, limit=10, time_interval=SECOND),
 ]

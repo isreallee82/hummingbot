@@ -143,6 +143,14 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
     def supported_position_modes(self):
         return [PositionMode.ONEWAY]
 
+    def set_position_mode(self, mode: PositionMode):
+        if mode == PositionMode.HEDGE:
+            self.logger().warning(
+                "Aevo perpetual does not support HEDGE position mode. Using ONEWAY instead."
+            )
+            mode = PositionMode.ONEWAY
+        super().set_position_mode(mode)
+
     def get_buy_collateral_token(self, trading_pair: str) -> str:
         trading_rule: TradingRule = self._trading_rules[trading_pair]
         return trading_rule.buy_order_collateral_token
@@ -520,11 +528,14 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
             is_auth_required=True,
             limit_id=CONSTANTS.POSITIONS_PATH_URL,
         )
+
         positions = positions_info.get("positions", [])
         active_pairs = set()
+
         for position in positions:
             if position.get("instrument_type") != CONSTANTS.PERPETUAL_INSTRUMENT_TYPE:
                 continue
+
             trading_pair = await self.trading_pair_associated_to_exchange_symbol(position["instrument_name"])
             active_pairs.add(trading_pair)
             position_side = PositionSide.LONG if position.get("side") == "buy" else PositionSide.SHORT
@@ -533,6 +544,7 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
             unrealized_pnl = Decimal(position.get("unrealized_pnl", "0"))
             leverage = Decimal(position.get("leverage", "1"))
             pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
+
             if amount != 0:
                 self._perpetual_trading.set_position(
                     pos_key,
@@ -560,7 +572,20 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
     async def _trading_pair_position_mode_set(self, mode: PositionMode, trading_pair: str) -> Tuple[bool, str]:
         return True, ""
 
+    async def _ensure_instrument_id(self, trading_pair: str) -> bool:
+        if trading_pair in self._instrument_ids:
+            return True
+        try:
+            await self._update_trading_rules()
+        except Exception as exc:
+            self.logger().network(
+                f"Error updating trading rules while resolving instrument id for {trading_pair}: {exc}"
+            )
+        return trading_pair in self._instrument_ids
+
     async def _set_trading_pair_leverage(self, trading_pair: str, leverage: int) -> Tuple[bool, str]:
+        if not await self._ensure_instrument_id(trading_pair):
+            return False, "Instrument not found"
         instrument_id = self._instrument_ids.get(trading_pair)
         if instrument_id is None:
             return False, "Instrument not found"
@@ -623,6 +648,7 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
     async def _process_position_message(self, position: Dict[str, Any]):
         if position.get("instrument_type") != CONSTANTS.PERPETUAL_INSTRUMENT_TYPE:
             return
+
         trading_pair = await self.trading_pair_associated_to_exchange_symbol(position["instrument_name"])
         position_side = PositionSide.LONG if position.get("side") == "buy" else PositionSide.SHORT
         amount = Decimal(position.get("amount", "0"))
@@ -630,6 +656,7 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
         unrealized_pnl = Decimal(position.get("unrealized_pnl", "0"))
         leverage = Decimal(position.get("leverage", "1"))
         pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
+
         if amount != 0:
             self._perpetual_trading.set_position(
                 pos_key,
