@@ -575,6 +575,8 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
     async def _ensure_instrument_id(self, trading_pair: str) -> bool:
         if trading_pair in self._instrument_ids:
             return True
+        if not self.is_trading_required:
+            return False
         try:
             await self._update_trading_rules()
         except Exception as exc:
