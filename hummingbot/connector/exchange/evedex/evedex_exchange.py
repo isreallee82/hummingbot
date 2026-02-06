@@ -107,6 +107,33 @@ class EvedexExchange(ExchangePyBase):
     def supported_order_types(self):
         return [OrderType.LIMIT, OrderType.MARKET]
 
+    async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
+        """
+        Fetches prices for all trading pairs from EvedEx.
+        Used by rate oracle for price discovery.
+
+        :return: List of dicts with 'symbol' and 'price' keys
+        """
+        results: List[Dict[str, str]] = []
+        try:
+            response = await self._api_get(
+                path_url=CONSTANTS.INSTRUMENTS_PATH_URL,
+                params={"fields": "metrics"},
+                limit_id=CONSTANTS.INSTRUMENTS_PATH_URL,
+            )
+            instruments = response if isinstance(response, list) else [response]
+            for instrument in instruments:
+                symbol = instrument.get("name") or instrument.get("instrument") or instrument.get("symbol")
+                price = instrument.get("lastPrice") or instrument.get("markPrice")
+                if symbol and price is not None:
+                    results.append({
+                        "symbol": symbol,
+                        "price": str(price),
+                    })
+        except Exception:
+            self.logger().exception("Error fetching all pairs prices from EvedEx")
+        return results
+
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
         # Evedex doesn't use time-based authentication
         return False
@@ -274,15 +301,19 @@ class EvedexExchange(ExchangePyBase):
         """
         async for event_message in self._iter_user_event_queue():
             try:
-                channel = event_message.get("channel", "")
-                data = event_message.get("data", {})
+                # Handle Centrifugo push message format
+                if "push" in event_message:
+                    push_data = event_message.get("push", {})
+                    channel = push_data.get("channel", "")
+                    pub_data = push_data.get("pub", {})
+                    data = pub_data.get("data", {})
 
                 # Centrifuge channels: order-{id}, user-{id}, orderFills-{id}
-                if channel.startswith("order-") and not channel.startswith("orderFills-"):
+                if channel.contains("order-") and not channel.contains("orderFilled"):
                     await self._process_order_update(data)
-                elif channel.startswith("user-"):
+                elif channel.contains("user-"):
                     await self._process_account_update(data)
-                elif channel.startswith("orderFills-"):
+                elif channel.contains("orderFilled-"):
                     await self._process_order_fill(data)
 
             except asyncio.CancelledError:

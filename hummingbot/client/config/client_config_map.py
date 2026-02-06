@@ -631,6 +631,11 @@ class DexalotRateSourceMode(ExchangeRateSourceModeBase):
     model_config = ConfigDict(title="dexalot")
 
 
+class EvedexRateSourceMode(ExchangeRateSourceModeBase):
+    name: str = Field(default="evedex")
+    model_config = ConfigDict(title="evedex")
+
+
 class CoinbaseAdvancedTradeRateSourceMode(ExchangeRateSourceModeBase):
     name: str = Field(default="coinbase_advanced_trade")
     model_config = ConfigDict(title="coinbase_advanced_trade")
@@ -669,6 +674,7 @@ RATE_SOURCE_MODES = {
     CoinGeckoRateSourceMode.model_config["title"]: CoinGeckoRateSourceMode,
     CoinCapRateSourceMode.model_config["title"]: CoinCapRateSourceMode,
     DexalotRateSourceMode.model_config["title"]: DexalotRateSourceMode,
+    EvedexRateSourceMode.model_config["title"]: EvedexRateSourceMode,
     KuCoinRateSourceMode.model_config["title"]: KuCoinRateSourceMode,
     GateIoRateSourceMode.model_config["title"]: GateIoRateSourceMode,
     CoinbaseAdvancedTradeRateSourceMode.model_config["title"]: CoinbaseAdvancedTradeRateSourceMode,
