@@ -686,34 +686,36 @@ class EvedexExchange(ExchangePyBase):
         return order_update
 
     async def _update_balances(self):
-        """Update account balances from exchange."""
+        """
+        Calls the REST API to update total and available balances.
+        """
         local_asset_names = set(self._account_balances.keys())
         remote_asset_names = set()
 
-        try:
-            account_info = await self._api_get(
-                path_url=CONSTANTS.USER_BALANCE_PATH_URL,
-                is_auth_required=True)
+        # Get available balance info
+        available_balance_info = await self._api_get(
+            path_url=CONSTANTS.AVAILABLE_BALANCE_PATH_URL,
+            is_auth_required=True,
+            limit_id=CONSTANTS.AVAILABLE_BALANCE_PATH_URL)
 
-            balances = account_info if isinstance(account_info, list) else account_info.get("list", [account_info])
+        # Process funding balance
+        # API returns: {"currency": "usdt", "funding": {"currency": "usdt", "balance": <num>}, "availableBalance": <num>, ...}
+        funding = available_balance_info.get("funding", {})
+        # Convert currency to uppercase as Hummingbot expects "USDT" not "usdt"
+        currency = funding.get("currency", "usdt").upper()
+        # Total balance is in funding.balance
+        balance = Decimal(str(funding.get("balance", 0)))
+        # Available balance is at root level availableBalance
+        available = Decimal(str(available_balance_info.get("availableBalance", 0)))
 
-            for balance_entry in balances:
-                asset_name = balance_entry.get("currency", "USDT")
-                free_balance = Decimal(str(balance_entry.get("availableBalance", balance_entry.get("balance", 0))))
-                total_balance = Decimal(str(balance_entry.get("balance", 0)))
-                self._account_available_balances[asset_name] = free_balance
-                self._account_balances[asset_name] = total_balance
-                remote_asset_names.add(asset_name)
+        self._account_balances[currency] = balance
+        self._account_available_balances[currency] = available
+        remote_asset_names.add(currency)
 
-            asset_names_to_remove = local_asset_names.difference(remote_asset_names)
-            for asset_name in asset_names_to_remove:
-                del self._account_available_balances[asset_name]
-                del self._account_balances[asset_name]
-        except Exception as e:
-            self.logger().network(
-                f"Error fetching balances: {e}.",
-                app_warning_msg="Failed to fetch balance update."
-            )
+        asset_names_to_remove = local_asset_names.difference(remote_asset_names)
+        for asset_name in asset_names_to_remove:
+            del self._account_available_balances[asset_name]
+            del self._account_balances[asset_name]
 
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         mapping = bidict()

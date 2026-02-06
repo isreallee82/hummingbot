@@ -32,7 +32,7 @@ class EvedexPerpetualConfigMap(BaseConnectorConfigMap):
     evedex_perpetual_private_key: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": "Enter your Ethereum wallet private key (for order signing)",
+            "prompt": "Enter your Ethereum wallet private key",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True
