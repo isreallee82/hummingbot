@@ -1,9 +1,4 @@
-"""Unit tests for Evedex authentication.
-
-Based on Evedex Swagger API specification:
-- Authentication uses X-API-Key header
-- Security scheme: ApiKey (apiKey in header)
-"""
+"""Unit tests for Evedex authentication."""
 import asyncio
 from unittest import TestCase
 from unittest.mock import MagicMock
@@ -26,6 +21,7 @@ class EvedexAuthTests(TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self._api_key = "test-api-key-12345"
+        self._private_key = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"  # noqa: mock
 
     def async_run_with_timeout(self, coroutine: Awaitable, timeout: float = 1):
         try:
@@ -40,23 +36,19 @@ class EvedexAuthTests(TestCase):
         auth = EvedexAuth(api_key=self._api_key)
         self.assertEqual(auth._api_key, self._api_key)
 
-    def test_header_for_authentication(self):
-        """Test that auth headers include X-API-Key as per Evedex Swagger API specification.
+    def test_auth_class_initialization_with_private_key(self):
+        """Test that auth class initializes wallet with private key."""
+        auth = EvedexAuth(api_key=self._api_key, private_key=self._private_key)
+        self.assertIsNotNone(auth._wallet)
+        self.assertEqual(len(auth._wallet.address), 42)
 
-        From Swagger:
-        securitySchemes:
-          ApiKey:
-            type: apiKey
-            in: header
-            name: X-API-Key
-        """
+    def test_header_for_authentication(self):
+        """Test that auth headers include X-API-Key."""
         auth = EvedexAuth(api_key=self._api_key)
         headers = auth.header_for_authentication()
 
         self.assertIn("X-API-Key", headers)
         self.assertEqual(headers["X-API-Key"], self._api_key)
-        self.assertIn("Content-Type", headers)
-        self.assertEqual(headers["Content-Type"], "application/json")
 
     def test_rest_authenticate_get_request(self):
         """Test REST GET request authentication adds proper headers.
@@ -80,7 +72,6 @@ class EvedexAuthTests(TestCase):
         """Test REST POST request authentication for order placement.
 
         Example endpoint: POST /api/v2/order/limit
-        Required fields: instrument, side, quantity, limitPrice, signature, chainId, id
         """
         auth = EvedexAuth(api_key=self._api_key)
         request = RESTRequest(

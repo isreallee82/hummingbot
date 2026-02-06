@@ -43,6 +43,15 @@ class EvedexConfigMap(BaseConnectorConfigMap):
             "prompt_on_new": True,
         }
     )
+    evedex_private_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your Ethereum wallet private key (for order signing)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
 
     model_config = ConfigDict(title="evedex")
 
@@ -56,4 +65,5 @@ def build_api_factory_config_map() -> Dict[str, str]:
     """
     return {
         "evedex_api_key": KEYS.evedex_api_key.get_secret_value() if KEYS.evedex_api_key else "",
+        "evedex_private_key": KEYS.evedex_private_key.get_secret_value() if KEYS.evedex_private_key else "",
     }

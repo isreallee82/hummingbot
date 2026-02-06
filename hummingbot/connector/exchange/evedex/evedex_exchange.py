@@ -32,16 +32,19 @@ class EvedexExchange(ExchangePyBase):
     def __init__(
             self,
             evedex_api_key: str,
+            evedex_private_key: str = "",
             balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
             rate_limits_share_pct: Decimal = Decimal("100"),
             trading_pairs: Optional[List[str]] = None,
             trading_required: bool = True,
             domain: str = CONSTANTS.DEFAULT_DOMAIN):
         self.evedex_api_key = evedex_api_key
+        self.evedex_private_key = evedex_private_key
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._last_trades_poll_timestamp = 1.0
+        self._auth: Optional[EvedexAuth] = None
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @staticmethod
@@ -56,9 +59,13 @@ class EvedexExchange(ExchangePyBase):
 
     @property
     def authenticator(self) -> EvedexAuth:
-        return EvedexAuth(
-            api_key=self.evedex_api_key,
-            time_provider=self._time_synchronizer)
+        if self._auth is None:
+            self._auth = EvedexAuth(
+                api_key=self.evedex_api_key,
+                time_provider=self._time_synchronizer,
+                private_key=self.evedex_private_key or "",
+            )
+        return self._auth
 
     @property
     def name(self) -> str:
@@ -200,17 +207,20 @@ class EvedexExchange(ExchangePyBase):
 
         # Generate Evedex-compatible order ID
         evedex_order_id = self._generate_order_id()
+        chain_id = CONSTANTS.CHAIN_ID
+        leverage = int(kwargs.get("leverage", 1))
 
         if order_type == OrderType.MARKET:
             path_url = CONSTANTS.MARKET_ORDER_PATH_URL
+            cash_quantity = amount * price if price != s_decimal_NaN else amount
             api_params = {
                 "instrument": symbol,
                 "side": side_str,
-                "cashQuantity": str(amount * price) if price != s_decimal_NaN else amount_str,
+                "cashQuantity": str(cash_quantity),
                 "timeInForce": CONSTANTS.TIME_IN_FORCE_IOC,
-                "signature": "",
-                "chainId": "1",
                 "id": evedex_order_id,
+                "leverage": leverage,
+                "chainId": chain_id,
             }
         else:
             path_url = CONSTANTS.LIMIT_ORDER_PATH_URL
@@ -221,10 +231,37 @@ class EvedexExchange(ExchangePyBase):
                 "quantity": amount_str,
                 "limitPrice": price_str,
                 "timeInForce": CONSTANTS.TIME_IN_FORCE_GTC,
-                "signature": "",
-                "chainId": "1",
                 "id": evedex_order_id,
+                "leverage": leverage,
+                "chainId": chain_id,
             }
+
+        if self.authenticator.wallet_address is None:
+            raise ValueError(
+                "EvedEx requires a private key for order signing. "
+                "Please configure evedex_private_key in your connector settings."
+            )
+
+        if order_type == OrderType.MARKET:
+            api_params["signature"] = self.authenticator.sign_market_order(
+                order_id=evedex_order_id,
+                instrument=symbol,
+                side=side_str,
+                time_in_force=CONSTANTS.TIME_IN_FORCE_IOC,
+                leverage=leverage,
+                cash_quantity=cash_quantity,
+                chain_id=chain_id,
+            )
+        else:
+            api_params["signature"] = self.authenticator.sign_limit_order(
+                order_id=evedex_order_id,
+                instrument=symbol,
+                side=side_str,
+                leverage=leverage,
+                quantity=amount,
+                limit_price=price,
+                chain_id=chain_id,
+            )
 
         try:
             order_result = await self._api_post(

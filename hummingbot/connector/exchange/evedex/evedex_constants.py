@@ -8,6 +8,15 @@ MAX_ORDER_ID_LEN = 50
 
 HBOT_ORDER_ID_PREFIX = "HBOT"
 
+# Chain ID
+CHAIN_ID = "161803"
+
+# EvedEx EIP-712 Constants
+EVEDEX_DOMAIN_NAME = "EVEDEX"
+EVEDEX_DOMAIN_VERSION = "2"
+EVEDEX_DOMAIN_SALT = "0x5792f7333c35db190e30acc144f049fd15b24f552c0010b8b3e06f9105c37c5a"  # noqa: mock
+MATCHER_PRECISION = 8  # Used for normalizing floating-point numbers
+
 # Exchange name
 EXCHANGE_NAME = "evedex"
 

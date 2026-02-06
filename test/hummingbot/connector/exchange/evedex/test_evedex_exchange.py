@@ -351,6 +351,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
     def create_exchange_instance(self):
         return EvedexExchange(
             evedex_api_key="testAPIKey",
+            evedex_private_key="0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",  # noqa: mock
             trading_pairs=[self.trading_pair],
         )
 
@@ -369,6 +370,9 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.assertEqual(order.trade_type.name.upper(), request_data["side"])
         self.assertEqual(Decimal("100"), Decimal(str(request_data["quantity"])))
         self.assertEqual(Decimal("10000"), Decimal(str(request_data["limitPrice"])))
+        self.assertEqual(CONSTANTS.CHAIN_ID, str(request_data["chainId"]))
+        self.assertEqual(1, int(request_data["leverage"]))
+        self.assertTrue(str(request_data["signature"]).startswith("0x"))
 
     def validate_order_cancelation_request(self, order: InFlightOrder, request_call: RequestCall):
         """Validate order cancellation request."""

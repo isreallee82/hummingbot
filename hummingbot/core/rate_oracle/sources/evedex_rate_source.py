@@ -55,6 +55,7 @@ class EvedexRateSource(RateSourceBase):
 
         return EvedexExchange(
             evedex_api_key="",
+            evedex_private_key="",
             trading_pairs=[],
             trading_required=False,
         )
