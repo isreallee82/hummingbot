@@ -694,9 +694,9 @@ class EvedexExchange(ExchangePyBase):
 
         # Get available balance info
         available_balance_info = await self._api_get(
-            path_url=CONSTANTS.AVAILABLE_BALANCE_PATH_URL,
+            path_url=CONSTANTS.USER_BALANCE_PATH_URL,
             is_auth_required=True,
-            limit_id=CONSTANTS.AVAILABLE_BALANCE_PATH_URL)
+            limit_id=CONSTANTS.USER_BALANCE_PATH_URL)
 
         # Process funding balance
         # API returns: {"currency": "usdt", "funding": {"currency": "usdt", "balance": <num>}, "availableBalance": <num>, ...}
