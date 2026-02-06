@@ -11,7 +11,7 @@ from hummingbot.core.data_type.trade_fee import TradeFeeSchema
 DEFAULT_FEES = TradeFeeSchema(
     maker_percent_fee_decimal=Decimal("0.0002"),  # 0.02% maker fee
     taker_percent_fee_decimal=Decimal("0.0005"),  # 0.05% taker fee
-    buy_percent_fee_deducted_from_returns=False,
+    buy_percent_fee_deducted_from_returns=True,
 )
 
 CENTRALIZED = True

@@ -247,11 +247,13 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         return [
             {
                 "currency": self.base_asset,
+                "availableBalance": 10.0,
                 "balance": 15.0,
                 "balanceUSD": 750000.0
             },
             {
                 "currency": self.quote_asset,
+                "availableBalance": 2000.0,
                 "balance": 2000.0,
                 "balanceUSD": 2000.0
             }
@@ -263,6 +265,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         return [
             {
                 "currency": self.base_asset,
+                "availableBalance": 10.0,
                 "balance": 15.0,
                 "balanceUSD": 750000.0
             }
@@ -760,6 +763,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
                     "fillQuantity": float(self.expected_partial_fill_amount),
                     "fillPrice": float(self.expected_partial_fill_price),
                     "fillRole": "TAKER",
+                    "fee": [{"coin": self.quote_asset, "quantity": float(self.expected_fill_fee.flat_fees[0].amount)}],
                     "createdAt": "2024-01-01T00:00:00.000Z"
                 }
             ],
@@ -777,6 +781,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
                     "fillQuantity": float(order.amount),
                     "fillPrice": float(order.price),
                     "fillRole": "TAKER",
+                    "fee": [{"coin": self.quote_asset, "quantity": float(self.expected_fill_fee.flat_fees[0].amount)}],
                     "createdAt": "2024-01-01T00:00:00.000Z"
                 }
             ],

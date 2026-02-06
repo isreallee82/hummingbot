@@ -299,17 +299,22 @@ class EvedexExchange(ExchangePyBase):
         rules = exchange_info_dict if isinstance(exchange_info_dict, list) else exchange_info_dict.get("list", [])
         retval = []
 
-        for rule in filter(web_utils.is_exchange_information_valid, rules):
+        for rule in rules:
             try:
+                required_fields = ("minQuantity", "priceIncrement", "quantityIncrement")
+                if any(field not in rule for field in required_fields):
+                    raise KeyError(f"Missing required fields: {required_fields}")
+
                 instrument_name = rule.get("name", "")
                 trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=instrument_name)
 
                 min_order_size = Decimal(str(rule.get("minQuantity", "0.001")))
                 tick_size = Decimal(str(rule.get("priceIncrement", "0.01")))
                 step_size = Decimal(str(rule.get("quantityIncrement", "0.001")))
-                # Instrument type doesn't have minVolume - calculate from minQuantity * minPrice
-                min_price = Decimal(str(rule.get("minPrice", "0.01")))
-                min_notional = min_order_size * min_price if min_price > 0 else Decimal("10")
+                min_notional = Decimal(str(rule.get("minVolume", "0")))
+                if min_notional <= 0:
+                    min_price = Decimal(str(rule.get("minPrice", "0.01")))
+                    min_notional = min_order_size * min_price if min_price > 0 else Decimal("10")
 
                 retval.append(
                     TradingRule(
@@ -346,11 +351,11 @@ class EvedexExchange(ExchangePyBase):
                     data = pub_data.get("data", {})
 
                 # Centrifuge channels: order-{id}, user-{id}, orderFills-{id}
-                if channel.contains("order-") and not channel.contains("orderFilled"):
+                if "order-" in channel and "orderFilled" not in channel:
                     await self._process_order_update(data)
-                elif channel.contains("user-"):
+                elif "user-" in channel:
                     await self._process_account_update(data)
-                elif channel.contains("orderFilled-"):
+                elif "orderFilled-" in channel:
                     await self._process_order_fill(data)
 
             except asyncio.CancelledError:
@@ -425,7 +430,7 @@ class EvedexExchange(ExchangePyBase):
             fee = TradeFeeBase.new_spot_fee(
                 fee_schema=self.trade_fee_schema(),
                 trade_type=tracked_order.trade_type,
-                percent_token="USDT",
+                percent_token=tracked_order.quote_asset,
                 flat_fees=flat_fees
             )
 
@@ -476,7 +481,7 @@ class EvedexExchange(ExchangePyBase):
                 fee = TradeFeeBase.new_spot_fee(
                     fee_schema=self.trade_fee_schema(),
                     trade_type=tracked_order.trade_type,
-                    percent_token="USDT",
+                    percent_token=tracked_order.quote_asset,
                     flat_fees=flat_fees
                 )
 
@@ -572,18 +577,26 @@ class EvedexExchange(ExchangePyBase):
                     fill_list = fills.get("list", []) if isinstance(fills, dict) else fills
 
                     for fill in fill_list:
-                        order_id = str(fill.get("orderId", ""))
+                        order_id = str(fill.get("orderId") or fill.get("order", ""))
                         if order_id in order_by_exchange_id_map:
                             tracked_order = order_by_exchange_id_map[order_id]
+                            fee_list = fill.get("fee", [])
+                            flat_fees = []
+                            for fee_item in fee_list:
+                                flat_fees.append(TokenAmount(
+                                    amount=Decimal(str(fee_item.get("quantity", 0))),
+                                    token=fee_item.get("coin", "USDT")
+                                ))
+
                             fee = TradeFeeBase.new_spot_fee(
                                 fee_schema=self.trade_fee_schema(),
                                 trade_type=tracked_order.trade_type,
-                                percent_token="USDT",
-                                flat_fees=[]
+                                percent_token=tracked_order.quote_asset,
+                                flat_fees=flat_fees
                             )
 
                             trade_update = TradeUpdate(
-                                trade_id=str(fill.get("executionId", "")),
+                                trade_id=str(fill.get("executionId") or fill.get("id", "")),
                                 client_order_id=tracked_order.client_order_id,
                                 exchange_order_id=order_id,
                                 trading_pair=trading_pair,
@@ -606,24 +619,36 @@ class EvedexExchange(ExchangePyBase):
 
         if order.exchange_order_id is not None:
             try:
-                exchange_order_id = order.exchange_order_id
-                path_url = CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id) + "/fill"
-
+                exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
                 all_fills_response = await self._api_get(
-                    path_url=path_url,
+                    path_url=CONSTANTS.ORDER_FILLS_PATH_URL,
+                    params={"instrument": exchange_symbol},
                     is_auth_required=True,
-                    limit_id=CONSTANTS.GET_ORDER_PATH_URL)
+                    limit_id=CONSTANTS.ORDER_FILLS_PATH_URL,
+                )
 
-                for trade in all_fills_response:
+                fill_list = all_fills_response.get("list", []) if isinstance(all_fills_response, dict) else all_fills_response
+                for trade in fill_list:
+                    exchange_order_id = str(trade.get("orderId") or trade.get("order", ""))
+                    if exchange_order_id != order.exchange_order_id:
+                        continue
+                    fee_list = trade.get("fee", [])
+                    flat_fees = []
+                    for fee_item in fee_list:
+                        flat_fees.append(TokenAmount(
+                            amount=Decimal(str(fee_item.get("quantity", 0))),
+                            token=fee_item.get("coin", "USDT")
+                        ))
+
                     fee = TradeFeeBase.new_spot_fee(
                         fee_schema=self.trade_fee_schema(),
                         trade_type=order.trade_type,
-                        percent_token="USDT",
-                        flat_fees=[]
+                        percent_token=order.quote_asset,
+                        flat_fees=flat_fees
                     )
 
                     trade_update = TradeUpdate(
-                        trade_id=str(trade.get("executionId", "")),
+                        trade_id=str(trade.get("executionId") or trade.get("id", "")),
                         client_order_id=order.client_order_id,
                         exchange_order_id=exchange_order_id,
                         trading_pair=order.trading_pair,
