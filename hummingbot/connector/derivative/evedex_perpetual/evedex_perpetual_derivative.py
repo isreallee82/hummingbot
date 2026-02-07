@@ -171,7 +171,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             )
             instruments = response if isinstance(response, list) else [response]
             for instrument in instruments:
-                symbol = instrument.get("instrument", "")
+                symbol = instrument.get("name")
                 price = instrument.get("lastPrice") or instrument.get("markPrice")
                 if symbol and price:
                     results.append({
@@ -409,10 +409,13 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 fee_list = trade.get("fee", [])
                 flat_fees = []
                 for fee_item in fee_list:
-                    flat_fees.append(TokenAmount(
-                        amount=Decimal(str(fee_item.get("quantity", 0))),
-                        token=fee_item.get("coin", "USDT")
-                    ))
+                    coin = str(fee_item.get("coin", "USDT")).upper()
+                    if coin == "TOTAL":
+                        continue
+                    amount = Decimal(str(fee_item.get("quantity", 0)))
+                    if amount == 0:
+                        continue
+                    flat_fees.append(TokenAmount(amount=amount, token=coin))
 
                 fee = TradeFeeBase.new_perpetual_fee(
                     fee_schema=self.trade_fee_schema(),
@@ -602,10 +605,14 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 fee_list = order_data.get("fee", [])
                 flat_fees = []
                 for fee_item in fee_list:
-                    flat_fees.append(TokenAmount(
-                        amount=Decimal(str(fee_item.get("quantity", 0))),
-                        token=fee_item.get("coin", "USDT")
-                    ))
+                    coin = str(fee_item.get("coin", "USDT")).upper()
+                    self.logger().debug(f"Processing fee item: {fee_item}, parsed coin: {coin}")
+                    if coin == "TOTAL":
+                        continue
+                    amount = Decimal(str(fee_item.get("quantity", 0)))
+                    if amount == 0:
+                        continue
+                    flat_fees.append(TokenAmount(amount=amount, token=coin))
 
                 fee = TradeFeeBase.new_perpetual_fee(
                     fee_schema=self.trade_fee_schema(),
@@ -766,17 +773,29 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-        params = {"instrument": exchange_symbol, "fields": "metrics"}
-        response = await self._api_get(
-            path_url=CONSTANTS.INSTRUMENTS_PATH_URL,
-            params=params)
+        # Prefer the in-memory order book to avoid blocking REST calls during startup.
+        try:
+            mid_price = self.get_mid_price(trading_pair)
+            if mid_price is not None and not mid_price.is_nan() and mid_price > 0:
+                return float(mid_price)
+        except Exception:
+            pass
 
-        if isinstance(response, list) and len(response) > 0:
-            price = float(response[0].get("lastPrice", 0))
-        else:
-            price = float(response.get("lastPrice", 0))
-        return price
+        exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+        try:
+            response = await self._api_get(
+                path_url=CONSTANTS.INSTRUMENTS_PATH_URL,
+                params={"fields": "metrics"},
+            )
+            instruments = response if isinstance(response, list) else [response]
+            for instrument in instruments:
+                symbol = instrument.get("name")
+                price = instrument.get("lastPrice")
+                if symbol == exchange_symbol and price:
+                    return float(price)
+        except Exception:
+            self.logger().exception(f"Error fetching last traded price for {trading_pair} from EvedEx")
+        return 0.0
 
     async def _update_balances(self):
         """

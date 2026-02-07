@@ -1,12 +1,12 @@
 """Evedex web utilities module."""
-import time
 from typing import Any, Callable, Dict, Optional
 
 from hummingbot.connector.exchange.evedex import evedex_constants as CONSTANTS
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
+from hummingbot.connector.utils import TimeSynchronizerRESTPreProcessor
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.web_assistant.auth import AuthBase
-from hummingbot.core.web_assistant.connections.data_types import RESTRequest
+from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest
 from hummingbot.core.web_assistant.rest_pre_processors import RESTPreProcessorBase
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
@@ -26,21 +26,29 @@ class EvedexRESTPreProcessor(RESTPreProcessorBase):
 
 def public_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
     """
-    Construct a public REST URL.
+    Creates a full URL for provided public REST endpoint
+    :param path_url: a public REST endpoint
+    :param domain: the domain to connect to
+    :return: the full URL to the endpoint
     """
     return CONSTANTS.REST_URL + path_url
 
 
 def private_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
     """
-    Construct a private REST URL.
+    Creates a full URL for provided private REST endpoint
+    :param path_url: a private REST endpoint
+    :param domain: the domain to connect to
+    :return: the full URL to the endpoint
     """
     return CONSTANTS.REST_URL + path_url
 
 
 def wss_url(domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
     """
-    Return WebSocket URL.
+    Creates the WebSocket URL
+    :param domain: the domain to connect to
+    :return: the WebSocket URL
     """
     return CONSTANTS.WSS_URL
 
@@ -51,68 +59,64 @@ def build_api_factory(
         domain: str = CONSTANTS.DEFAULT_DOMAIN,
         time_provider: Optional[Callable] = None,
         auth: Optional[AuthBase] = None) -> WebAssistantsFactory:
-    """
-    Build the API factory for Evedex connector.
-    """
     throttler = throttler or create_throttler()
     time_synchronizer = time_synchronizer or TimeSynchronizer()
-
+    time_provider = time_provider or (lambda: get_current_server_time(
+        throttler=throttler,
+        domain=domain,
+    ))
     api_factory = WebAssistantsFactory(
         throttler=throttler,
         auth=auth,
         rest_pre_processors=[
-            EvedexRESTPreProcessor()
+            TimeSynchronizerRESTPreProcessor(synchronizer=time_synchronizer, time_provider=time_provider),
+            EvedexRESTPreProcessor(),
         ])
     return api_factory
 
 
-def build_api_factory_without_time_synchronizer_pre_processor(
-        throttler: AsyncThrottler) -> WebAssistantsFactory:
-    """
-    Build API factory without time synchronizer.
-    """
+def build_api_factory_without_time_synchronizer_pre_processor(throttler: AsyncThrottler) -> WebAssistantsFactory:
     api_factory = WebAssistantsFactory(
         throttler=throttler,
-        rest_pre_processors=[
-            EvedexRESTPreProcessor()
-        ])
+        rest_pre_processors=[EvedexRESTPreProcessor()])
     return api_factory
 
 
 def create_throttler() -> AsyncThrottler:
-    """
-    Create async throttler with Evedex rate limits.
-    """
     return AsyncThrottler(CONSTANTS.RATE_LIMITS)
 
 
 async def get_current_server_time(
         throttler: Optional[AsyncThrottler] = None,
-        domain: str = CONSTANTS.DEFAULT_DOMAIN) -> float:
+        domain: str = CONSTANTS.DEFAULT_DOMAIN,
+) -> float:
     """
-    Get current server time.
-    Evedex doesn't require time synchronization, so we return local time.
+    Gets the current server time from Evedex API
+    :param throttler: the throttler to use for rate limiting
+    :param domain: the domain to connect to
+    :return: the server time in milliseconds
     """
-    return time.time()
+    throttler = throttler or create_throttler()
+    api_factory = build_api_factory_without_time_synchronizer_pre_processor(throttler=throttler)
+    rest_assistant = await api_factory.get_rest_assistant()
+    response = await rest_assistant.execute_request(
+        url=public_rest_url(path_url=CONSTANTS.PING_PATH_URL, domain=domain),
+        method=RESTMethod.GET,
+        throttler_limit_id=CONSTANTS.PING_PATH_URL,
+    )
+    server_time = response.get("time", 0)
+    return server_time
 
 
-def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
+def is_exchange_information_valid(rule: Dict[str, Any]) -> bool:
     """
-    Check if exchange information (trading pair) is valid for trading.
+    Verifies if a trading pair is enabled to operate with based on its exchange information
 
-    :param exchange_info: Dictionary with instrument information
-    :return: True if valid for trading
+    :param rule: the exchange information for a trading pair
+
+    :return: True if the trading pair is enabled, False otherwise
     """
-    # Check if the instrument is active/enabled
-    is_active = exchange_info.get("isActive", True)
-
-    # Check if trading is allowed ("all" or unset means tradable, "restricted" means not)
-    trading = exchange_info.get("trading", "all")
-    is_trading_allowed = trading in ("all", None)
-
-    # Check if it has required fields
-    has_name = "name" in exchange_info or "instrument" in exchange_info
-    has_from = "from" in exchange_info
-    has_to = "to" in exchange_info
-
-    return is_active and is_trading_allowed and has_name and has_from and has_to
+    trading = rule.get("trading", "none")
+    visibility = rule.get("visibility", "none")
+    valid = trading in ["all", "restricted"] and visibility in ["all", "restricted"]
+    return valid

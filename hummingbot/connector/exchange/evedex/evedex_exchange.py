@@ -2,6 +2,8 @@
 import asyncio
 import time
 import uuid
+from collections import defaultdict
+from collections.abc import AsyncIterable
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -126,13 +128,12 @@ class EvedexExchange(ExchangePyBase):
             response = await self._api_get(
                 path_url=CONSTANTS.INSTRUMENTS_PATH_URL,
                 params={"fields": "metrics"},
-                limit_id=CONSTANTS.INSTRUMENTS_PATH_URL,
             )
             instruments = response if isinstance(response, list) else [response]
             for instrument in instruments:
-                symbol = instrument.get("name") or instrument.get("instrument") or instrument.get("symbol")
+                symbol = instrument.get("name")
                 price = instrument.get("lastPrice") or instrument.get("markPrice")
-                if symbol and price is not None:
+                if symbol and price:
                     results.append({
                         "symbol": symbol,
                         "price": str(price),
@@ -188,98 +189,18 @@ class EvedexExchange(ExchangePyBase):
         return DeductedFromReturnsTradeFee(percent=self.estimate_fee_pct(is_maker))
 
     def _generate_order_id(self) -> str:
-        """Generate Evedex-compatible order ID in format: XXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXX"""
-        prefix = str(int(time.time() * 1000) % 100000).zfill(5)
-        suffix = uuid.uuid4().hex[:26].upper()
+        """Generate Evedex-compatible order ID in format: XXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXX
+
+        The first 5 digits represent the number of days since Evedex epoch (July 24, 2025).
+        The remaining 26 characters are a random lowercase hex string.
+        """
+        # Evedex epoch: July 24, 2025 = day 20293 since Unix epoch
+        EVEDEX_EPOCH_DAYS = 20293
+        days_since_unix_epoch = int(time.time() / 86400)
+        days_since_evedex_epoch = days_since_unix_epoch - EVEDEX_EPOCH_DAYS
+        prefix = str(days_since_evedex_epoch).zfill(5)
+        suffix = uuid.uuid4().hex[:26]  # lowercase hex
         return f"{prefix}:{suffix}"
-
-    async def _place_order(self,
-                           order_id: str,
-                           trading_pair: str,
-                           amount: Decimal,
-                           trade_type: TradeType,
-                           order_type: OrderType,
-                           price: Decimal,
-                           **kwargs) -> Tuple[str, float]:
-        amount_str = f"{amount:f}"
-        side_str = CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL
-        symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
-
-        # Generate Evedex-compatible order ID
-        evedex_order_id = self._generate_order_id()
-        chain_id = CONSTANTS.CHAIN_ID
-        leverage = int(kwargs.get("leverage", 1))
-
-        if order_type == OrderType.MARKET:
-            path_url = CONSTANTS.MARKET_ORDER_PATH_URL
-            cash_quantity = amount * price if price != s_decimal_NaN else amount
-            api_params = {
-                "instrument": symbol,
-                "side": side_str,
-                "cashQuantity": str(cash_quantity),
-                "timeInForce": CONSTANTS.TIME_IN_FORCE_IOC,
-                "id": evedex_order_id,
-                "leverage": leverage,
-                "chainId": chain_id,
-            }
-        else:
-            path_url = CONSTANTS.LIMIT_ORDER_PATH_URL
-            price_str = f"{price:f}"
-            api_params = {
-                "instrument": symbol,
-                "side": side_str,
-                "quantity": amount_str,
-                "limitPrice": price_str,
-                "timeInForce": CONSTANTS.TIME_IN_FORCE_GTC,
-                "id": evedex_order_id,
-                "leverage": leverage,
-                "chainId": chain_id,
-            }
-
-        if self.authenticator.wallet_address is None:
-            raise ValueError(
-                "EvedEx requires a private key for order signing. "
-                "Please configure evedex_private_key in your connector settings."
-            )
-
-        if order_type == OrderType.MARKET:
-            api_params["signature"] = self.authenticator.sign_market_order(
-                order_id=evedex_order_id,
-                instrument=symbol,
-                side=side_str,
-                time_in_force=CONSTANTS.TIME_IN_FORCE_IOC,
-                leverage=leverage,
-                cash_quantity=cash_quantity,
-                chain_id=chain_id,
-            )
-        else:
-            api_params["signature"] = self.authenticator.sign_limit_order(
-                order_id=evedex_order_id,
-                instrument=symbol,
-                side=side_str,
-                leverage=leverage,
-                quantity=amount,
-                limit_price=price,
-                chain_id=chain_id,
-            )
-
-        try:
-            order_result = await self._api_post(
-                path_url=path_url,
-                data=api_params,
-                is_auth_required=True)
-
-            o_id = str(order_result.get("id", evedex_order_id))
-            transact_time = order_result.get("createdAt", self._time_synchronizer.time())
-        except IOError as e:
-            error_description = str(e)
-            if "503" in error_description:
-                o_id = "UNKNOWN"
-                transact_time = self._time_synchronizer.time()
-            else:
-                raise
-
-        return o_id, transact_time
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
         exchange_order_id = await tracked_order.get_exchange_order_id()
@@ -292,6 +213,100 @@ class EvedexExchange(ExchangePyBase):
 
         return True
 
+    async def _place_order(
+            self,
+            order_id: str,
+            trading_pair: str,
+            amount: Decimal,
+            trade_type: TradeType,
+            order_type: OrderType,
+            price: Decimal,
+            **kwargs,
+    ) -> Tuple[str, float]:
+        symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+
+        # Generate Evedex-compatible order ID
+        evedex_order_id = self._generate_order_id()
+        side = CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL
+        chain_id = CONSTANTS.CHAIN_ID
+
+        cash_quantity = None
+        limit_id = None
+        if order_type == OrderType.MARKET:
+            path_url = CONSTANTS.MARKET_ORDER_PATH_URL
+            cash_quantity = amount * price if price != s_decimal_NaN else amount
+
+            api_params = {
+                "id": evedex_order_id,
+                "instrument": symbol,
+                "side": side,
+                "cashQuantity": str(cash_quantity),
+                "timeInForce": CONSTANTS.TIME_IN_FORCE_IOC,
+                "leverage": int(2),
+                "chainId": chain_id,
+            }
+        else:
+            path_url = CONSTANTS.LIMIT_ORDER_PATH_URL
+
+            api_params = {
+                "id": evedex_order_id,
+                "instrument": symbol,
+                "side": side,
+                "quantity": str(amount),
+                "limitPrice": str(price),
+                "timeInForce": CONSTANTS.TIME_IN_FORCE_GTC,
+                "leverage": int(2),  # EvedEx doesn't support leverage for spot trading
+                "chainId": chain_id,
+            }
+
+        # Add EIP-712 signature (required by EvedEx)
+        if self.authenticator.wallet_address is None:
+            raise ValueError(
+                "EvedEx requires a private key for order signing. "
+                "Please configure evedex_perpetual_private_key in your connector settings."
+            )
+
+        if order_type == OrderType.MARKET:
+            api_params["signature"] = self.authenticator.sign_market_order(
+                order_id=evedex_order_id,
+                instrument=symbol,
+                side=side,
+                time_in_force=CONSTANTS.TIME_IN_FORCE_IOC,
+                leverage=int(2),  # EvedEx doesn't support leverage for spot trading
+                cash_quantity=cash_quantity,
+                chain_id=chain_id,
+            )
+        else:
+            api_params["signature"] = self.authenticator.sign_limit_order(
+                order_id=evedex_order_id,
+                instrument=symbol,
+                side=side,
+                leverage=int(2),  # EvedEx doesn't support leverage for spot trading
+                quantity=amount,
+                limit_price=price,
+                chain_id=chain_id,
+            )
+
+        try:
+            order_result = await self._api_post(
+                path_url=path_url,
+                data=api_params,
+                is_auth_required=True,
+                limit_id=limit_id)
+
+            exchange_order_id = str(order_result.get("id", evedex_order_id))
+            transact_time = order_result.get("createdAt", time.time())
+
+        except IOError as e:
+            error_description = str(e)
+            if "503" in error_description:
+                exchange_order_id = "UNKNOWN"
+                transact_time = time.time()
+            else:
+                raise
+
+        return exchange_order_id, transact_time
+
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
         """
         Queries the necessary API endpoint and initialize the TradingRule object for each trading pair being traded.
@@ -301,17 +316,17 @@ class EvedexExchange(ExchangePyBase):
 
         for rule in rules:
             try:
-                required_fields = ("minQuantity", "priceIncrement", "quantityIncrement")
-                if any(field not in rule for field in required_fields):
-                    raise KeyError(f"Missing required fields: {required_fields}")
+                if web_utils.is_exchange_information_valid(rule):
+                    instrument_name = rule.get("name", "")
+                    trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=instrument_name)
 
-                instrument_name = rule.get("name", "")
-                trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=instrument_name)
+                    min_order_size = Decimal(str(rule.get("minQuantity", "0.001")))
+                    tick_size = Decimal(str(rule.get("priceIncrement", "0.01")))
+                    step_size = Decimal(str(rule.get("quantityIncrement", "0.001")))
+                    # Instrument type doesn't have minVolume - calculate from minQuantity * minPrice
+                    min_price = Decimal(str(rule.get("minPrice", "0.01")))
+                    min_notional = min_order_size * min_price if min_price > 0 else Decimal("10")
 
-                min_order_size = Decimal(str(rule.get("minQuantity", "0.001")))
-                tick_size = Decimal(str(rule.get("priceIncrement", "0.01")))
-                step_size = Decimal(str(rule.get("quantityIncrement", "0.001")))
-                min_notional = Decimal(str(rule.get("minVolume", "0")))
                 if min_notional <= 0:
                     min_price = Decimal(str(rule.get("minPrice", "0.01")))
                     min_notional = min_order_size * min_price if min_price > 0 else Decimal("10")
@@ -323,9 +338,10 @@ class EvedexExchange(ExchangePyBase):
                         min_price_increment=tick_size,
                         min_base_amount_increment=step_size,
                         min_notional_size=min_notional))
-            except Exception:
-                self.logger().exception(f"Error parsing the trading pair rule {rule}. Skipping.")
-
+            except Exception as e:
+                self.logger().error(
+                    f"Error parsing the trading pair rule {rule}. Error: {e}. Skipping...", exc_info=True
+                )
         return retval
 
     async def _status_polling_loop_fetch_updates(self):
@@ -336,123 +352,109 @@ class EvedexExchange(ExchangePyBase):
         """Update fees information from the exchange."""
         pass
 
-    async def _user_stream_event_listener(self):
-        """
-        Process events from the user stream.
-        Uses Centrifuge channel naming: {type}-{userExchangeId}
-        """
-        async for event_message in self._iter_user_event_queue():
+    async def _iter_user_event_queue(self) -> AsyncIterable[Dict[str, any]]:
+        while True:
             try:
-                # Handle Centrifugo push message format
-                if "push" in event_message:
-                    push_data = event_message.get("push", {})
-                    channel = push_data.get("channel", "")
-                    pub_data = push_data.get("pub", {})
-                    data = pub_data.get("data", {})
-
-                # Centrifuge channels: order-{id}, user-{id}, orderFills-{id}
-                if "order-" in channel and "orderFilled" not in channel:
-                    await self._process_order_update(data)
-                elif "user-" in channel:
-                    await self._process_account_update(data)
-                elif "orderFilled-" in channel:
-                    await self._process_order_fill(data)
-
+                yield await self._user_stream_tracker.user_stream.get()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.logger().error("Unexpected error in user stream listener loop.", exc_info=True)
+                self.logger().network(
+                    "Unknown error. Retrying after 1 seconds.",
+                    exc_info=True,
+                    app_warning_msg="Could not fetch user events from Evedex. Check API key and network connection.",
+                )
+                await self._sleep(1.0)
+
+    async def _user_stream_event_listener(self):
+        """
+        Wait for new messages from _user_stream_tracker.user_stream queue and processes them according to their
+        message channels. The respective UserStreamDataSource queues these messages.
+        """
+        async for event_message in self._iter_user_event_queue():
+            try:
+                await self._process_user_stream_event(event_message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger().error(f"Unexpected error in user stream listener loop: {e}", exc_info=True)
                 await self._sleep(5.0)
+
+    async def _process_user_stream_event(self, event_message: Dict[str, Any]):
+        """
+        Process user stream events from Centrifugo.
+
+        Handles both push format and direct format:
+        - Push: {"push": {"channel": "futures-perp:order:123", "pub": {"data": {...}}}}
+        - Direct: {"channel": "futures-perp:order:123", "data": {...}}
+        """
+        # Handle Centrifugo push message format
+        if "push" in event_message:
+            push_data = event_message.get("push", {})
+            channel = push_data.get("channel", "")
+            pub_data = push_data.get("pub", {})
+            data = pub_data.get("data", {})
+
+            # Centrifugo channel patterns: futures-perp:{type}:{userExchangeId}
+            if "futures-perp:order" in channel and "futures-perp:orderFilled" not in channel:
+                await self._process_order_update(data)
+            elif "futures-perp:user" in channel:
+                # user channel provides AccountEvent
+                await self._process_account_update(data)
+            elif "futures-perp:orderFilled" in channel:
+                await self._process_order_fill(data)
 
     async def _process_account_update(self, account_data: Dict[str, Any]):
         """
-        Process account update from user-{userExchangeId} channel.
-
-        User channel data structure (AvailableBalance):
-        {
-            currency: string,
-            funding: { currency: string, balance: number },
-            availableBalance: number,
-            position: AvailableBalancePosition[],
-            openOrder: AvailableBalanceOpenOrder[],
-            updatedAt: string
-        }
+        Process AccountEvent from user-{userExchangeId} channel.
+        AccountEvent: { user: string, marginCall: boolean, updatedAt: string }
         """
-        await self._process_balance_update(account_data)
+        # Account updates indicate margin call status - log for now
+        margin_call = account_data.get("marginCall", False)
+        if margin_call:
+            self.logger().warning("Margin call triggered!")
 
     async def _process_order_fill(self, fill_data: Dict[str, Any]):
         """
-        Process order fill from orderFills-{userExchangeId} channel.
-
-        OrderFill structure from types.ts:
-        {
-            orderId: string,
-            instrumentName: string,
-            executionId: string,
-            side: string,
-            fillPrice: number,
-            fillQuantity: number,
-            fillValue: number,
-            fee: TradingFee[],
-            pnl?: number,
-            isPnlRealized?: boolean,
-            createdAt: string
-        }
+        Process OrderFill from orderFills-{userExchangeId} channel.
+        OrderFill: { executionId, instrument, side, fillQuantity, fillPrice, createdAt, makerTakerFlag, orderId }
         """
-        # orderId is the exchange order ID
-        exchange_order_id = str(fill_data.get("orderId", ""))
+        order_id = str(fill_data.get("orderId", ""))
 
         # Find tracked order by exchange_order_id
         tracked_order = None
         client_order_id = None
         for coid, order in self._order_tracker.all_fillable_orders.items():
-            if order.exchange_order_id == exchange_order_id:
+            if order.exchange_order_id == order_id:
                 tracked_order = order
                 client_order_id = coid
                 break
 
         if tracked_order is not None:
-            fill_quantity = Decimal(str(fill_data.get("fillQuantity", 0)))
-            fill_price = Decimal(str(fill_data.get("fillPrice", 0)))
-            fill_value = Decimal(str(fill_data.get("fillValue", 0)))
-
-            # Use executionId for trade_id (unique identifier for this fill)
-            execution_id = fill_data.get("executionId", f"{exchange_order_id}_{int(time.time() * 1000)}")
-
-            fee_list = fill_data.get("fee", [])
-            flat_fees = []
-            for fee_item in fee_list:
-                flat_fees.append(TokenAmount(
-                    amount=Decimal(str(fee_item.get("quantity", 0))),
-                    token=fee_item.get("coin", "USDT")
-                ))
-
             fee = TradeFeeBase.new_spot_fee(
                 fee_schema=self.trade_fee_schema(),
-                trade_type=tracked_order.trade_type,
-                percent_token=tracked_order.quote_asset,
-                flat_fees=flat_fees
+                percent_token="USDT",
+                flat_fees=[],
             )
 
-            trade_update = TradeUpdate(
-                trade_id=str(execution_id),
+            trade_update: TradeUpdate = TradeUpdate(
+                trade_id=str(fill_data.get("executionId", "")),
                 client_order_id=client_order_id,
-                exchange_order_id=exchange_order_id,
+                exchange_order_id=order_id,
                 trading_pair=tracked_order.trading_pair,
-                fee=fee,
-                fill_base_amount=fill_quantity,
-                fill_quote_amount=fill_value if fill_value > 0 else fill_quantity * fill_price,
-                fill_price=fill_price,
                 fill_timestamp=time.time(),
+                fill_price=Decimal(str(fill_data.get("fillPrice", 0))),
+                fill_base_amount=Decimal(str(fill_data.get("fillQuantity", 0))),
+                fill_quote_amount=Decimal(str(fill_data.get("fillQuantity", 0))) * Decimal(str(fill_data.get("fillPrice", 0))),
+                fee=fee,
             )
             self._order_tracker.process_trade_update(trade_update)
 
     async def _process_order_update(self, order_data: Dict[str, Any]):
-        """Process order update from user stream."""
         # Order.id is the EXCHANGE order ID, not the client order ID
         exchange_order_id = str(order_data.get("id", ""))
 
-        # Find tracked order by exchange_order_id for fill processing
+        # Find tracked order by exchange_order_id
         tracked_order = None
         client_order_id = None
         for coid, order in self._order_tracker.all_fillable_orders.items():
@@ -470,31 +472,34 @@ class EvedexExchange(ExchangePyBase):
             # Only process if there's a new fill (compare with tracked order's executed amount)
             if filled_quantity > tracked_order.executed_amount_base:
                 new_fill_amount = filled_quantity - tracked_order.executed_amount_base
+
                 fee_list = order_data.get("fee", [])
                 flat_fees = []
                 for fee_item in fee_list:
-                    flat_fees.append(TokenAmount(
-                        amount=Decimal(str(fee_item.get("quantity", 0))),
-                        token=fee_item.get("coin", "USDT")
-                    ))
+                    coin = str(fee_item.get("coin", "USDT")).upper()
+                    if coin == "TOTAL":
+                        continue
+                    amount = Decimal(str(fee_item.get("quantity", 0)))
+                    if amount == 0:
+                        continue
+                    flat_fees.append(TokenAmount(amount=amount, token=coin))
 
                 fee = TradeFeeBase.new_spot_fee(
                     fee_schema=self.trade_fee_schema(),
-                    trade_type=tracked_order.trade_type,
-                    percent_token=tracked_order.quote_asset,
-                    flat_fees=flat_fees
+                    percent_token="USDT",
+                    flat_fees=flat_fees,
                 )
 
-                trade_update = TradeUpdate(
+                trade_update: TradeUpdate = TradeUpdate(
                     trade_id=f"{exchange_order_id}_{int(time.time() * 1000)}",
                     client_order_id=client_order_id,
                     exchange_order_id=exchange_order_id,
                     trading_pair=tracked_order.trading_pair,
-                    fee=fee,
+                    fill_timestamp=time.time(),
+                    fill_price=Decimal(str(order_data.get("filledAvgPrice", 0))),
                     fill_base_amount=new_fill_amount,
                     fill_quote_amount=new_fill_amount * Decimal(str(order_data.get("filledAvgPrice", 0))),
-                    fill_price=Decimal(str(order_data.get("filledAvgPrice", 0))),
-                    fill_timestamp=time.time(),
+                    fee=fee,
                 )
                 self._order_tracker.process_trade_update(trade_update)
 
@@ -510,17 +515,16 @@ class EvedexExchange(ExchangePyBase):
         if tracked_order is not None:
             new_state = CONSTANTS.ORDER_STATE.get(order_data.get("status", ""), tracked_order.current_state)
 
-            order_update = OrderUpdate(
+            order_update: OrderUpdate = OrderUpdate(
                 trading_pair=tracked_order.trading_pair,
                 update_timestamp=time.time(),
                 new_state=new_state,
                 client_order_id=client_order_id,
                 exchange_order_id=exchange_order_id,
             )
-            self._order_tracker.process_order_update(order_update=order_update)
+            self._order_tracker.process_order_update(order_update)
 
     async def _process_balance_update(self, balance_data: Dict[str, Any]):
-        """Process balance update from user stream."""
         # Handle AvailableBalance type structure from types.ts:
         # {
         #   currency: string,
@@ -541,126 +545,149 @@ class EvedexExchange(ExchangePyBase):
             self._account_available_balances[asset_name] = available_balance
         elif isinstance(balance_data, list):
             # List of WalletBalance objects: { currency, balance, balanceUSD }
-            for balance_entry in balance_data:
-                asset_name = balance_entry.get("currency", "USDT")
-                total_balance = Decimal(str(balance_entry.get("balance", 0)))
+            for balance in balance_data:
+                asset_name = balance.get("currency", "USDT")
+                total_balance = Decimal(str(balance.get("balance", 0)))
                 self._account_balances[asset_name] = total_balance
                 if asset_name not in self._account_available_balances:
                     self._account_available_balances[asset_name] = total_balance
 
     async def _update_order_fills_from_trades(self):
-        """
-        Update order fills from trades endpoint.
-        """
-        small_interval_last_tick = self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL
-        small_interval_current_tick = self.current_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL
-        long_interval_last_tick = self._last_poll_timestamp / self.LONG_POLL_INTERVAL
-        long_interval_current_tick = self.current_timestamp / self.LONG_POLL_INTERVAL
+        last_tick = int(self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
+        current_tick = int(self.current_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
 
-        if (long_interval_current_tick > long_interval_last_tick
-                or (self.in_flight_orders and small_interval_current_tick > small_interval_last_tick)):
+        if current_tick > last_tick and len(self._order_tracker.active_orders) > 0:
+            trading_pairs_to_order_map: Dict[str, Dict[str, Any]] = defaultdict(lambda: {})
+            for order in self._order_tracker.active_orders.values():
+                trading_pairs_to_order_map[order.trading_pair][order.exchange_order_id] = order
 
-            self._last_trades_poll_timestamp = self._time_synchronizer.time()
-            order_by_exchange_id_map = {}
+            trading_pairs = list(trading_pairs_to_order_map.keys())
 
-            for order in self._order_tracker.all_fillable_orders.values():
-                order_by_exchange_id_map[order.exchange_order_id] = order
-
-            for trading_pair in self.trading_pairs:
+            # Use the fill endpoint to get recent fills
+            for trading_pair in trading_pairs:
                 try:
                     exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
                     fills = await self._api_get(
                         path_url=CONSTANTS.ORDER_FILLS_PATH_URL,
-                        params={"instrument": exchange_symbol},
+                        params={
+                            "instrument": exchange_symbol,
+                            "after": "2020-01-01T00:00:00Z",
+                            "before": "2030-01-01T00:00:00Z"
+                        },
                         is_auth_required=True)
 
                     fill_list = fills.get("list", []) if isinstance(fills, dict) else fills
+                    order_map = trading_pairs_to_order_map.get(trading_pair, {})
 
                     for fill in fill_list:
-                        order_id = str(fill.get("orderId") or fill.get("order", ""))
-                        if order_id in order_by_exchange_id_map:
-                            tracked_order = order_by_exchange_id_map[order_id]
-                            fee_list = fill.get("fee", [])
-                            flat_fees = []
-                            for fee_item in fee_list:
-                                flat_fees.append(TokenAmount(
-                                    amount=Decimal(str(fee_item.get("quantity", 0))),
-                                    token=fee_item.get("coin", "USDT")
-                                ))
-
+                        order_id = str(fill.get("orderId", ""))
+                        if order_id in order_map:
+                            tracked_order: InFlightOrder = order_map.get(order_id)
                             fee = TradeFeeBase.new_spot_fee(
                                 fee_schema=self.trade_fee_schema(),
-                                trade_type=tracked_order.trade_type,
-                                percent_token=tracked_order.quote_asset,
-                                flat_fees=flat_fees
+                                percent_token="USDT",
+                                flat_fees=[]
                             )
 
-                            trade_update = TradeUpdate(
-                                trade_id=str(fill.get("executionId") or fill.get("id", "")),
+                            trade_update: TradeUpdate = TradeUpdate(
+                                trade_id=str(fill.get("executionId", "")),
                                 client_order_id=tracked_order.client_order_id,
                                 exchange_order_id=order_id,
                                 trading_pair=trading_pair,
-                                fee=fee,
+                                fill_timestamp=time.time(),
+                                fill_price=Decimal(str(fill.get("fillPrice", 0))),
                                 fill_base_amount=Decimal(str(fill.get("fillQuantity", 0))),
                                 fill_quote_amount=Decimal(str(fill.get("fillQuantity", 0))) * Decimal(str(fill.get("fillPrice", 0))),
-                                fill_price=Decimal(str(fill.get("fillPrice", 0))),
-                                fill_timestamp=time.time(),
+                                fee=fee,
                             )
                             self._order_tracker.process_trade_update(trade_update)
-
                 except Exception as e:
                     self.logger().network(
                         f"Error fetching trades update for {trading_pair}: {e}.",
                         app_warning_msg=f"Failed to fetch trade update for {trading_pair}."
                     )
 
+    async def _update_order_status(self):
+        """
+        Calls the REST API to get order/trade updates for each in-flight order.
+        """
+        last_tick = int(self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
+        current_tick = int(self.current_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
+
+        if current_tick > last_tick and len(self._order_tracker.active_orders) > 0:
+            tracked_orders = list(self._order_tracker.active_orders.values())
+
+            for tracked_order in tracked_orders:
+                try:
+                    exchange_order_id = await tracked_order.get_exchange_order_id()
+                    path_url = CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id)
+
+                    order_update = await self._api_get(
+                        path_url=path_url,
+                        is_auth_required=True,
+                        limit_id=CONSTANTS.GET_ORDER_PATH_URL)
+
+                    new_state = CONSTANTS.ORDER_STATE.get(order_update.get("status", ""), tracked_order.current_state)
+
+                    new_order_update: OrderUpdate = OrderUpdate(
+                        trading_pair=tracked_order.trading_pair,
+                        update_timestamp=time.time(),
+                        new_state=new_state,
+                        client_order_id=tracked_order.client_order_id,
+                        exchange_order_id=str(order_update.get("id", exchange_order_id)),
+                    )
+                    self._order_tracker.process_order_update(new_order_update)
+
+                except Exception as e:
+                    self.logger().network(
+                        f"Error fetching status update for order {tracked_order.client_order_id}: {e}."
+                    )
+
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         trade_updates = []
+        try:
+            exchange_order_id = await order.get_exchange_order_id()
+            path_url = CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id) + "/fill"
 
-        if order.exchange_order_id is not None:
-            try:
-                exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=order.trading_pair)
-                all_fills_response = await self._api_get(
-                    path_url=CONSTANTS.ORDER_FILLS_PATH_URL,
-                    params={"instrument": exchange_symbol},
-                    is_auth_required=True,
-                    limit_id=CONSTANTS.ORDER_FILLS_PATH_URL,
+            all_fills_response = await self._api_get(
+                path_url=path_url,
+                is_auth_required=True,
+                limit_id=CONSTANTS.GET_ORDER_PATH_URL)
+
+            for trade in all_fills_response:
+                fee_list = trade.get("fee", [])
+                flat_fees = []
+                for fee_item in fee_list:
+                    coin = str(fee_item.get("coin", "USDT")).upper()
+                    if coin == "TOTAL":
+                        continue
+                    amount = Decimal(str(fee_item.get("quantity", 0)))
+                    if amount == 0:
+                        continue
+                    flat_fees.append(TokenAmount(amount=amount, token=coin))
+
+                fee = TradeFeeBase.new_spot_fee(
+                    fee_schema=self.trade_fee_schema(),
+                    percent_token="USDT",
+                    flat_fees=flat_fees
                 )
 
-                fill_list = all_fills_response.get("list", []) if isinstance(all_fills_response, dict) else all_fills_response
-                for trade in fill_list:
-                    exchange_order_id = str(trade.get("orderId") or trade.get("order", ""))
-                    if exchange_order_id != order.exchange_order_id:
-                        continue
-                    fee_list = trade.get("fee", [])
-                    flat_fees = []
-                    for fee_item in fee_list:
-                        flat_fees.append(TokenAmount(
-                            amount=Decimal(str(fee_item.get("quantity", 0))),
-                            token=fee_item.get("coin", "USDT")
-                        ))
+                trade_update: TradeUpdate = TradeUpdate(
+                    trade_id=str(trade.get("executionId", "")),
+                    client_order_id=order.client_order_id,
+                    exchange_order_id=exchange_order_id,
+                    trading_pair=order.trading_pair,
+                    fill_timestamp=time.time(),
+                    fill_price=Decimal(str(trade.get("fillPrice", 0))),
+                    fill_base_amount=Decimal(str(trade.get("fillQuantity", 0))),
+                    fill_quote_amount=Decimal(str(trade.get("fillQuantity", 0))) * Decimal(str(trade.get("fillPrice", 0))),
+                    fee=fee,
+                )
+                trade_updates.append(trade_update)
 
-                    fee = TradeFeeBase.new_spot_fee(
-                        fee_schema=self.trade_fee_schema(),
-                        trade_type=order.trade_type,
-                        percent_token=order.quote_asset,
-                        flat_fees=flat_fees
-                    )
-
-                    trade_update = TradeUpdate(
-                        trade_id=str(trade.get("executionId") or trade.get("id", "")),
-                        client_order_id=order.client_order_id,
-                        exchange_order_id=exchange_order_id,
-                        trading_pair=order.trading_pair,
-                        fee=fee,
-                        fill_base_amount=Decimal(str(trade.get("fillQuantity", 0))),
-                        fill_quote_amount=Decimal(str(trade.get("fillQuantity", 0))) * Decimal(str(trade.get("fillPrice", 0))),
-                        fill_price=Decimal(str(trade.get("fillPrice", 0))),
-                        fill_timestamp=time.time(),
-                    )
-                    trade_updates.append(trade_update)
-            except Exception:
-                pass
+        except asyncio.TimeoutError:
+            raise IOError(f"Skipped order update with order fills for {order.client_order_id} "
+                          "- waiting for exchange order id.")
 
         return trade_updates
 
@@ -668,22 +695,21 @@ class EvedexExchange(ExchangePyBase):
         exchange_order_id = await tracked_order.get_exchange_order_id()
         path_url = CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id)
 
-        updated_order_data = await self._api_get(
+        order_update = await self._api_get(
             path_url=path_url,
             is_auth_required=True,
             limit_id=CONSTANTS.GET_ORDER_PATH_URL)
 
-        new_state = CONSTANTS.ORDER_STATE.get(updated_order_data.get("status", ""), tracked_order.current_state)
+        new_state = CONSTANTS.ORDER_STATE.get(order_update.get("status", ""), tracked_order.current_state)
 
-        order_update = OrderUpdate(
-            client_order_id=tracked_order.client_order_id,
-            exchange_order_id=str(updated_order_data.get("id", exchange_order_id)),
+        _order_update: OrderUpdate = OrderUpdate(
             trading_pair=tracked_order.trading_pair,
             update_timestamp=time.time(),
             new_state=new_state,
+            client_order_id=tracked_order.client_order_id,
+            exchange_order_id=str(order_update.get("id", exchange_order_id)),
         )
-
-        return order_update
+        return _order_update
 
     async def _update_balances(self):
         """
@@ -731,6 +757,9 @@ class EvedexExchange(ExchangePyBase):
 
             if base and quote:
                 trading_pair = combine_to_hb_trading_pair(base, quote)
+                # Only convert USD to USDT if not already USDT
+                if quote == "USD":
+                    trading_pair = trading_pair.replace("-USD", "-USDT")
                 mapping[instrument_name] = trading_pair
 
         self._set_trading_pair_symbol_map(mapping)

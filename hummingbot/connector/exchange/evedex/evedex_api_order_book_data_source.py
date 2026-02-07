@@ -53,7 +53,7 @@ class EvedexAPIOrderBookDataSource(OrderBookTrackerDataSource):
         try:
             while True:
                 await asyncio.sleep(CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL)
-                ping_payload = {}
+                ping_payload = {"ping": {}}
                 ping_request: WSJSONRequest = WSJSONRequest(payload=ping_payload)
                 await websocket_assistant.send(ping_request)
                 self.logger().debug("Sent Centrifugo ping (order book)")
@@ -163,9 +163,8 @@ class EvedexAPIOrderBookDataSource(OrderBookTrackerDataSource):
         connect_request: WSJSONRequest = WSJSONRequest(payload=connect_payload)
         await ws.send(connect_request)
 
-        # Start the Centrifugo ping loop to keep connection alive
+        # Centrifugo server sends pings; respond with pong in message handler.
         self._ws_assistant = ws
-        self._ping_task = asyncio.create_task(self._ping_loop(ws))
 
         return ws
 
@@ -340,3 +339,13 @@ class EvedexAPIOrderBookDataSource(OrderBookTrackerDataSource):
             elif "recent-trade" in channel:
                 return self._trade_messages_queue_key
         return ""
+
+    async def _process_message_for_unknown_channel(
+        self, event_message: Dict[str, Any], websocket_assistant: WSAssistant
+    ):
+        # Centrifugo sends ping commands and expects pong replies.
+        if event_message == {}:
+            await websocket_assistant.send(WSJSONRequest(payload={}))
+        elif "ping" in event_message:
+            self.logger().debug("Received Centrifugo ping on order book stream; sending pong.")
+            await websocket_assistant.send(WSJSONRequest(payload={"pong": {}}))

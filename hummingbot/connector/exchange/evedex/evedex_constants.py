@@ -175,4 +175,10 @@ RATE_LIMITS = [
         time_interval=1,
         linked_limits=[LinkedLimitWeightPair(GLOBAL_LIMIT_ID, REQUEST_WEIGHT)]
     ),
+    RateLimit(
+        limit_id=DX_FEED_AUTH_PATH_URL,
+        limit=10,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair(GLOBAL_LIMIT_ID, REQUEST_WEIGHT)]
+    ),
 ]

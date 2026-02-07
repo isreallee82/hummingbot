@@ -1,6 +1,6 @@
 """Evedex utilities and configuration module."""
 from decimal import Decimal
-from typing import Any, Dict
+from typing import Dict
 
 from pydantic import ConfigDict, Field, SecretStr
 
@@ -16,17 +16,6 @@ DEFAULT_FEES = TradeFeeSchema(
 
 CENTRALIZED = True
 EXAMPLE_PAIR = "BTC-USDT"
-
-# Trading pair format utilities
-
-
-def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
-    """
-    Verifies if a trading pair is valid.
-    """
-    is_active = exchange_info.get("isActive", True)
-    has_name = "name" in exchange_info or "instrument" in exchange_info
-    return is_active and has_name
 
 
 class EvedexConfigMap(BaseConnectorConfigMap):

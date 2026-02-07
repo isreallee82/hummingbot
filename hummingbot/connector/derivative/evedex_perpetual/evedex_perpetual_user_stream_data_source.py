@@ -62,7 +62,7 @@ class EvedexPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             while True:
                 await asyncio.sleep(self.HEARTBEAT_TIME_INTERVAL)
                 # Centrifugo protocol ping - empty object indicates ping
-                ping_payload = {}
+                ping_payload = {"ping": {}}
                 ping_request: WSJSONRequest = WSJSONRequest(payload=ping_payload)
                 await websocket_assistant.send(ping_request)
                 self.logger().debug("Sent Centrifugo ping")
@@ -126,9 +126,8 @@ class EvedexPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         connect_request: WSJSONRequest = WSJSONRequest(payload=connect_payload)
         await ws.send(connect_request)
 
-        # Start the Centrifugo ping loop to keep connection alive
+        # Centrifugo server sends pings; respond with pong in message handler.
         self._ws_assistant = ws
-        self._ping_task = asyncio.create_task(self._ping_loop(ws))
 
         self.logger().info("Successfully connected to user stream")
 
@@ -242,6 +241,19 @@ class EvedexPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         except Exception:
             self.logger().exception("Unexpected error occurred subscribing to user stream channels...")
             raise
+
+    async def _process_websocket_messages(self, websocket_assistant: WSAssistant, queue: asyncio.Queue):
+        async for ws_response in websocket_assistant.iter_messages():
+            data = ws_response.data
+            # Centrifugo sends ping commands and expects pong replies.
+            if data == {}:
+                await websocket_assistant.send(WSJSONRequest(payload={}))
+                continue
+            if isinstance(data, dict) and "ping" in data:
+                self.logger().debug("Received Centrifugo ping on perpetual user stream; sending pong.")
+                await websocket_assistant.send(WSJSONRequest(payload={"pong": {}}))
+                continue
+            await self._process_event_message(event_message=data, queue=queue)
 
     async def _on_user_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
         """

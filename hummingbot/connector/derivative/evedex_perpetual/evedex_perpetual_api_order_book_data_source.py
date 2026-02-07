@@ -139,7 +139,7 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             while True:
                 await asyncio.sleep(CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL)
                 # Centrifugo protocol ping - empty object indicates ping
-                ping_payload = {}
+                ping_payload = {"ping": {}}
                 ping_request: WSJSONRequest = WSJSONRequest(payload=ping_payload)
                 await websocket_assistant.send(ping_request)
                 self.logger().debug("Sent Centrifugo ping (order book)")
@@ -171,9 +171,8 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         connect_request: WSJSONRequest = WSJSONRequest(payload=connect_payload)
         await ws.send(connect_request)
 
-        # Start the Centrifugo ping loop to keep connection alive
+        # Centrifugo server sends pings; respond with pong in message handler.
         self._ws_assistant = ws
-        self._ping_task = asyncio.create_task(self._ping_loop(ws))
 
         return ws
 
@@ -283,6 +282,16 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             elif "position" in event_type or event_type == "futures-perp:position":
                 channel = self._funding_info_messages_queue_key
             return channel
+
+    async def _process_message_for_unknown_channel(
+        self, event_message: Dict[str, Any], websocket_assistant: WSAssistant
+    ):
+        # Centrifugo sends ping commands and expects pong replies.
+        if event_message == {}:
+            await websocket_assistant.send(WSJSONRequest(payload={}))
+        elif "ping" in event_message:
+            self.logger().debug("Received Centrifugo ping on perpetual order book stream; sending pong.")
+            await websocket_assistant.send(WSJSONRequest(payload={"pong": {}}))
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         """Parse order book update from futures-perp:orderBook-{instrument}-0.1 channel.
