@@ -386,7 +386,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.assertEqual(Decimal("100"), Decimal(str(request_data["quantity"])))
         self.assertEqual(Decimal("10000"), Decimal(str(request_data["limitPrice"])))
         self.assertEqual(CONSTANTS.CHAIN_ID, str(request_data["chainId"]))
-        self.assertEqual(1, int(request_data["leverage"]))
+        self.assertEqual(2, int(request_data["leverage"]))
         self.assertTrue(str(request_data["signature"]).startswith("0x"))
 
     def validate_order_cancelation_request(self, order: InFlightOrder, request_call: RequestCall):

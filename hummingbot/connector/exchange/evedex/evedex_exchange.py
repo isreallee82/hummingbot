@@ -270,7 +270,8 @@ class EvedexExchange(ExchangePyBase):
 
         cash_quantity = None
         limit_id = None
-        leverage = 2  # Spot trading uses leverage 2 on EvedEx
+        # Spot trading uses leverage 1 (no leverage). Allow override via kwargs if provided.
+        leverage = int(kwargs.get("leverage", 2))
         if order_type == OrderType.MARKET:
             path_url = CONSTANTS.MARKET_ORDER_PATH_URL
             cash_quantity = amount * price if price != s_decimal_NaN else amount

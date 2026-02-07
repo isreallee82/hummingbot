@@ -293,6 +293,91 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             self.logger().debug("Received Centrifugo ping on perpetual order book stream; sending pong.")
             await websocket_assistant.send(WSJSONRequest(payload={"pong": {}}))
 
+    async def subscribe_to_trading_pair(self, trading_pair: str) -> bool:
+        """
+        Subscribes to order book and trade channels for a single trading pair on an
+        existing WebSocket connection.
+        """
+        if self._ws_assistant is None:
+            self.logger().warning(f"Cannot subscribe to {trading_pair}: WebSocket not connected")
+            return False
+
+        try:
+            symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+            ws_symbol = symbol.replace("-", "")
+            self._ws_symbol_to_trading_pair[ws_symbol] = trading_pair
+
+            orderbook_channel = f"futures-perp:orderBook-{ws_symbol}-0.1"
+            orderbook_payload = {
+                "subscribe": {
+                    "channel": orderbook_channel,
+                    "flag": 1
+                },
+                "id": self._next_message_id()
+            }
+            await self._ws_assistant.send(WSJSONRequest(payload=orderbook_payload))
+
+            trade_channel = f"futures-perp:recent-trade-{ws_symbol}"
+            trades_payload = {
+                "subscribe": {
+                    "channel": trade_channel,
+                    "flag": 1
+                },
+                "id": self._next_message_id()
+            }
+            await self._ws_assistant.send(WSJSONRequest(payload=trades_payload))
+
+            self.add_trading_pair(trading_pair)
+            self.logger().info(f"Subscribed to {trading_pair} order book and trade channels")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger().exception(f"Unexpected error subscribing to {trading_pair} channels")
+            return False
+
+    async def unsubscribe_from_trading_pair(self, trading_pair: str) -> bool:
+        """
+        Unsubscribes from order book and trade channels for a single trading pair on an
+        existing WebSocket connection.
+        """
+        if self._ws_assistant is None:
+            self.logger().warning(f"Cannot unsubscribe from {trading_pair}: WebSocket not connected")
+            return False
+
+        try:
+            symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+            ws_symbol = symbol.replace("-", "")
+
+            orderbook_channel = f"futures-perp:orderBook-{ws_symbol}-0.1"
+            trade_channel = f"futures-perp:recent-trade-{ws_symbol}"
+
+            unsubscribe_payload = {
+                "unsubscribe": {
+                    "channel": orderbook_channel
+                },
+                "id": self._next_message_id()
+            }
+            await self._ws_assistant.send(WSJSONRequest(payload=unsubscribe_payload))
+
+            unsubscribe_payload = {
+                "unsubscribe": {
+                    "channel": trade_channel
+                },
+                "id": self._next_message_id()
+            }
+            await self._ws_assistant.send(WSJSONRequest(payload=unsubscribe_payload))
+
+            self._ws_symbol_to_trading_pair.pop(ws_symbol, None)
+            self.remove_trading_pair(trading_pair)
+            self.logger().info(f"Unsubscribed from {trading_pair} order book and trade channels")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger().exception(f"Unexpected error unsubscribing from {trading_pair} channels")
+            return False
+
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         """Parse order book update from futures-perp:orderBook-{instrument}-0.1 channel.
 

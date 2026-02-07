@@ -111,7 +111,12 @@ class EvedexPerpetualCandles(CandlesBase):
         self._instrument_resolved = True
 
     def _format_iso_timestamp(self, timestamp: int) -> str:
-        dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        ts = float(timestamp)
+        if ts >= 1e17:
+            ts = ts / 1e9
+        else:
+            ts = self.ensure_timestamp_in_seconds(ts)
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
     def _get_rest_candles_params(self,
