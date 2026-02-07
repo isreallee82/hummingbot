@@ -37,6 +37,7 @@ LIMIT_ORDER_PATH_URL = "/api/v2/order/limit"
 MARKET_ORDER_PATH_URL = "/api/v2/order/market"
 CANCEL_ORDER_PATH_URL = "/api/order/{orderId}"
 GET_ORDER_PATH_URL = "/api/order/{orderId}"
+GET_ORDERS_PATH_URL = "/api/order"
 OPEN_ORDERS_PATH_URL = "/api/order/opened"
 ORDER_FILLS_PATH_URL = "/api/fill"
 USER_BALANCE_PATH_URL = "/api/market/available-balance"
@@ -147,6 +148,12 @@ RATE_LIMITS = [
     ),
     RateLimit(
         limit_id=GET_ORDER_PATH_URL,
+        limit=10,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair(GLOBAL_LIMIT_ID, REQUEST_WEIGHT)]
+    ),
+    RateLimit(
+        limit_id=GET_ORDERS_PATH_URL,
         limit=10,
         time_interval=1,
         linked_limits=[LinkedLimitWeightPair(GLOBAL_LIMIT_ID, REQUEST_WEIGHT)]

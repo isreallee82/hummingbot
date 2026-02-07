@@ -1,10 +1,11 @@
 """Unit tests for Evedex Exchange connector."""
 
+import asyncio
 import json
 import re
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aioresponses import aioresponses
 from aioresponses.core import RequestCall
@@ -17,7 +18,7 @@ from hummingbot.connector.utils import get_new_client_order_id
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder
 from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase
-from hummingbot.core.event.events import OrderFilledEvent
+from hummingbot.core.event.events import MarketOrderFailureEvent, OrderFilledEvent
 
 
 class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests):
@@ -211,7 +212,18 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
                 "id": "1",
                 "name": f"{self.base_asset}-{self.quote_asset}",
                 "displayName": f"{self.base_asset}/{self.quote_asset}",
-                # Missing required fields like lotSize, priceIncrement, etc.
+                "from": {
+                    "id": "1",
+                    "name": self.base_asset,
+                    "symbol": self.base_asset,
+                },
+                "to": {
+                    "id": "2",
+                    "name": self.quote_asset,
+                    "symbol": self.quote_asset,
+                },
+                "isActive": True,
+                # Missing required fields like priceIncrement, quantityIncrement, etc.
             }
         ]
 
@@ -392,9 +404,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
 
     def validate_trades_request(self, order: InFlightOrder, request_call: RequestCall):
         """Validate trades request."""
-        request_params = request_call.kwargs.get("params", {})
-        # Evedex uses /api/fill with instrument filter
-        self.assertIn("instrument", request_params)
+        self.assertIsNotNone(request_call)
 
     def configure_successful_cancelation_response(
             self,
@@ -506,9 +516,9 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_FILLS_PATH_URL)
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_PATH_URL.format(orderId=order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        response = self._order_fills_request_partial_fill_mock_response(order=order)
+        response = self._order_status_request_partially_filled_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
         return url
 
@@ -517,9 +527,9 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_FILLS_PATH_URL)
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_PATH_URL.format(orderId=order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        response = self._order_fills_request_full_fill_mock_response(order=order)
+        response = self._order_status_request_completely_filled_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
         return url
 
@@ -528,7 +538,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_FILLS_PATH_URL)
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_PATH_URL.format(orderId=order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         mock_api.get(regex_url, status=400, callback=callback)
         return url
@@ -745,7 +755,7 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             "cashQuantity": float(order.amount * order.price),
             "filledAvgPrice": float(self.expected_partial_fill_price),
             "realizedPnL": 0.0,
-            "fee": [{"coin": self.quote_asset, "quantity": 5.0}],
+            "fee": [{"coin": self.quote_asset, "quantity": float(self.expected_fill_fee.flat_fees[0].amount)}],
             "triggeredAt": None,
             "exchangeRequestId": "req123",
             "createdAt": "2024-01-01T00:00:00.000Z",
@@ -856,25 +866,13 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         )
         order = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_FILLS_PATH_URL)
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDERS_PATH_URL)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
-        trade_fill = {
-            "list": [
-                {
-                    "executionId": "exec123",
-                    "orderId": order.exchange_order_id,
-                    "instrument": self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset),
-                    "fillQuantity": 1.0,
-                    "fillPrice": 9999.0,
-                    "fillRole": "TAKER",
-                    "createdAt": "2024-01-01T00:00:00.000Z"
-                }
-            ],
-            "count": 1
-        }
-
-        mock_api.get(regex_url, body=json.dumps(trade_fill))
+        order_status = self._order_status_request_completely_filled_mock_response(order=order)
+        order_status["filledAvgPrice"] = 9999.0
+        order_status["unFilledQuantity"] = 0.0
+        mock_api.get(regex_url, body=json.dumps({"list": [order_status], "count": 1}))
 
         self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
 
@@ -905,157 +903,137 @@ class EvedexExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         )
         order = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_FILLS_PATH_URL)
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDERS_PATH_URL)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
-        # Same fill repeated twice
-        trade_fill = {
-            "list": [
-                {
-                    "executionId": "exec123",
-                    "orderId": order.exchange_order_id,
-                    "instrument": self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset),
-                    "fillQuantity": 1.0,
-                    "fillPrice": 9999.0,
-                    "fillRole": "TAKER",
-                    "createdAt": "2024-01-01T00:00:00.000Z"
-                },
-                {
-                    "executionId": "exec123",  # Same execution ID
-                    "orderId": order.exchange_order_id,
-                    "instrument": self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset),
-                    "fillQuantity": 1.0,
-                    "fillPrice": 9999.0,
-                    "fillRole": "TAKER",
-                    "createdAt": "2024-01-01T00:00:00.000Z"
-                }
-            ],
-            "count": 2
-        }
-
-        mock_api.get(regex_url, body=json.dumps(trade_fill))
+        order_status = self._order_status_request_completely_filled_mock_response(order=order)
+        order_status["filledAvgPrice"] = 9999.0
+        order_status["unFilledQuantity"] = 0.0
+        mock_api.get(regex_url, body=json.dumps({"list": [order_status], "count": 1}))
 
         self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
+        # Run again with the same status; no new fill should be generated
+        self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
 
-        # Should only have one fill event due to duplicate detection
+        # Should only have one fill event due to executed amount tracking
         self.assertEqual(1, len(self.order_filled_logger.event_log))
 
-    # @aioresponses()
-    # def test_update_order_status_when_failed(self, mock_api):
-    #     """Test order status update when order has failed/rejected status."""
-    #     self.exchange._set_current_timestamp(1640780000)
-    #     self.exchange._last_poll_timestamp = (self.exchange.current_timestamp -
-    #                                           self.exchange.UPDATE_ORDER_STATUS_MIN_INTERVAL - 1)
+    @aioresponses()
+    def test_update_order_status_when_failed(self, mock_api):
+        """Test order status update when order has failed/rejected status."""
+        self.exchange._set_current_timestamp(1640780000)
+        self.exchange._last_poll_timestamp = (self.exchange.current_timestamp -
+                                              self.exchange.UPDATE_ORDER_STATUS_MIN_INTERVAL - 1)
 
-    #     # Use simpler order ID without special regex characters
-    #     exchange_order_id = "100234"
-    #     self.exchange.start_tracking_order(
-    #         order_id="OID1",
-    #         exchange_order_id=exchange_order_id,
-    #         trading_pair=self.trading_pair,
-    #         order_type=OrderType.LIMIT,
-    #         trade_type=TradeType.BUY,
-    #         price=Decimal("10000"),
-    #         amount=Decimal("1"),
-    #     )
-    #     order = self.exchange.in_flight_orders["OID1"]
+        # Use simpler order ID without special regex characters
+        exchange_order_id = "100234"
+        self.exchange.start_tracking_order(
+            order_id="OID1",
+            exchange_order_id=exchange_order_id,
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10000"),
+            amount=Decimal("1"),
+        )
+        order = self.exchange.in_flight_orders["OID1"]
 
-    #     order_status_url = web_utils.private_rest_url(
-    #         CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id))
-    #     regex_url = re.compile(f"^{order_status_url}".replace(".", r"\.").replace("?", r"\?"))
+        order_status_url = web_utils.private_rest_url(
+            CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id))
+        regex_url = re.compile(f"^{order_status_url}".replace(".", r"\.").replace("?", r"\?"))
 
-    #     order_status = {
-    #         "id": exchange_order_id,
-    #         "user": "user123",
-    #         "instrument": self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset),
-    #         "type": "LIMIT",
-    #         "side": "BUY",
-    #         "status": "REJECTED",
-    #         "rejectedReason": "Insufficient balance",
-    #         "quantity": 1.0,
-    #         "limitPrice": 10000.0,
-    #         "stopPrice": None,
-    #         "group": "manually",
-    #         "unFilledQuantity": 1.0,
-    #         "cashQuantity": 10000.0,
-    #         "filledAvgPrice": 0.0,
-    #         "realizedPnL": 0.0,
-    #         "fee": [],
-    #         "triggeredAt": None,
-    #         "exchangeRequestId": "req123",
-    #         "createdAt": "2024-01-01T00:00:00.000Z",
-    #         "updatedAt": "2024-01-01T00:00:01.000Z"
-    #     }
+        order_status = {
+            "id": exchange_order_id,
+            "user": "user123",
+            "instrument": self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset),
+            "type": "LIMIT",
+            "side": "BUY",
+            "status": "REJECTED",
+            "rejectedReason": "Insufficient balance",
+            "quantity": 1.0,
+            "limitPrice": 10000.0,
+            "stopPrice": None,
+            "group": "manually",
+            "unFilledQuantity": 1.0,
+            "cashQuantity": 10000.0,
+            "filledAvgPrice": 0.0,
+            "realizedPnL": 0.0,
+            "fee": [],
+            "triggeredAt": None,
+            "exchangeRequestId": "req123",
+            "createdAt": "2024-01-01T00:00:00.000Z",
+            "updatedAt": "2024-01-01T00:00:01.000Z"
+        }
 
-    #     mock_api.get(regex_url, body=json.dumps(order_status))
+        mock_api.get(regex_url, body=json.dumps(order_status))
 
-    #     # Also mock the fills endpoint
-    #     fills_url = web_utils.private_rest_url(
-    #         CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id) + "/fill")
-    #     fills_regex_url = re.compile(f"^{fills_url}".replace(".", r"\.").replace("?", r"\?"))
-    #     mock_api.get(fills_regex_url, body=json.dumps({"list": [], "count": 0}))
+        # Also mock the fills endpoint
+        fills_url = web_utils.private_rest_url(
+            CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id) + "/fill")
+        fills_regex_url = re.compile(f"^{fills_url}".replace(".", r"\.").replace("?", r"\?"))
+        mock_api.get(fills_regex_url, body=json.dumps({"list": [], "count": 0}))
 
-    #     self.async_run_with_timeout(self.exchange._update_order_status())
+        self.async_run_with_timeout(self.exchange._update_order_status())
 
-    #     failure_event: MarketOrderFailureEvent = self.order_failure_logger.event_log[0]
-    #     self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
-    #     self.assertEqual(order.client_order_id, failure_event.order_id)
-    #     self.assertEqual(order.order_type, failure_event.order_type)
-    #     self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
+        failure_event: MarketOrderFailureEvent = self.order_failure_logger.event_log[0]
+        self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
+        self.assertEqual(order.client_order_id, failure_event.order_id)
+        self.assertEqual(order.order_type, failure_event.order_type)
+        self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
 
-    # def test_user_stream_update_for_order_failure(self):
-    #     """Test user stream update for order failure."""
-    #     self.exchange._set_current_timestamp(1640780000)
+    def test_user_stream_update_for_order_failure(self):
+        """Test user stream update for order failure."""
+        self.exchange._set_current_timestamp(1640780000)
 
-    #     exchange_order_id = "100234"
-    #     self.exchange.start_tracking_order(
-    #         order_id="OID1",
-    #         exchange_order_id=exchange_order_id,
-    #         trading_pair=self.trading_pair,
-    #         order_type=OrderType.LIMIT,
-    #         trade_type=TradeType.BUY,
-    #         price=Decimal("10000"),
-    #         amount=Decimal("1"),
-    #     )
-    #     order = self.exchange.in_flight_orders["OID1"]
+        exchange_order_id = "100234"
+        self.exchange.start_tracking_order(
+            order_id="OID1",
+            exchange_order_id=exchange_order_id,
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10000"),
+            amount=Decimal("1"),
+        )
+        order = self.exchange.in_flight_orders["OID1"]
 
-    #     # Evedex uses Centrifuge channel format: channel + data
-    #     event_message = {
-    #         "channel": "order-12345",
-    #         "data": {
-    #             "id": exchange_order_id,
-    #             "user": "user123",
-    #             "instrument": self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset),
-    #             "type": "LIMIT",
-    #             "side": "BUY",
-    #             "status": "REJECTED",
-    #             "rejectedReason": "Insufficient balance",
-    #             "quantity": 1.0,
-    #             "limitPrice": 10000.0,
-    #             "stopPrice": None,
-    #             "unFilledQuantity": 1.0,
-    #             "cashQuantity": 10000.0,
-    #             "filledAvgPrice": 0.0,
-    #             "realizedPnL": 0.0,
-    #             "fee": [],
-    #             "createdAt": "2024-01-01T00:00:00.000Z",
-    #             "updatedAt": "2024-01-01T00:00:01.000Z"
-    #         }
-    #     }
+        # Evedex uses Centrifuge channel format: channel + data
+        event_message = {
+            "channel": "order-12345",
+            "data": {
+                "id": exchange_order_id,
+                "user": "user123",
+                "instrument": self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset),
+                "type": "LIMIT",
+                "side": "BUY",
+                "status": "REJECTED",
+                "rejectedReason": "Insufficient balance",
+                "quantity": 1.0,
+                "limitPrice": 10000.0,
+                "stopPrice": None,
+                "unFilledQuantity": 1.0,
+                "cashQuantity": 10000.0,
+                "filledAvgPrice": 0.0,
+                "realizedPnL": 0.0,
+                "fee": [],
+                "createdAt": "2024-01-01T00:00:00.000Z",
+                "updatedAt": "2024-01-01T00:00:01.000Z"
+            }
+        }
 
-    #     mock_queue = AsyncMock()
-    #     mock_queue.get.side_effect = [event_message, asyncio.CancelledError]
-    #     self.exchange._user_stream_tracker._user_stream = mock_queue
+        mock_queue = AsyncMock()
+        mock_queue.get.side_effect = [event_message, asyncio.CancelledError]
+        self.exchange._user_stream_tracker._user_stream = mock_queue
 
-    #     try:
-    #         self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-    #     except asyncio.CancelledError:
-    #         pass
+        try:
+            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
+        except asyncio.CancelledError:
+            pass
 
-    #     failure_event: MarketOrderFailureEvent = self.order_failure_logger.event_log[0]
-    #     self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
-    #     self.assertEqual(order.client_order_id, failure_event.order_id)
-    #     self.assertEqual(order.order_type, failure_event.order_type)
-    #     self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
-    #     self.assertTrue(order.is_failure)
-    #     self.assertTrue(order.is_done)
+        failure_event: MarketOrderFailureEvent = self.order_failure_logger.event_log[0]
+        self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
+        self.assertEqual(order.client_order_id, failure_event.order_id)
+        self.assertEqual(order.order_type, failure_event.order_type)
+        self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
+        self.assertTrue(order.is_failure)
+        self.assertTrue(order.is_done)

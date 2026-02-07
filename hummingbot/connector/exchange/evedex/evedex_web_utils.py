@@ -6,7 +6,7 @@ from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.connector.utils import TimeSynchronizerRESTPreProcessor
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.web_assistant.auth import AuthBase
-from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest
+from hummingbot.core.web_assistant.connections.data_types import RESTRequest
 from hummingbot.core.web_assistant.rest_pre_processors import RESTPreProcessorBase
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
@@ -94,18 +94,13 @@ async def get_current_server_time(
     Gets the current server time from Evedex API
     :param throttler: the throttler to use for rate limiting
     :param domain: the domain to connect to
-    :return: the server time in milliseconds
+    :return: the server time in seconds
     """
-    throttler = throttler or create_throttler()
-    api_factory = build_api_factory_without_time_synchronizer_pre_processor(throttler=throttler)
-    rest_assistant = await api_factory.get_rest_assistant()
-    response = await rest_assistant.execute_request(
-        url=public_rest_url(path_url=CONSTANTS.PING_PATH_URL, domain=domain),
-        method=RESTMethod.GET,
-        throttler_limit_id=CONSTANTS.PING_PATH_URL,
-    )
-    server_time = response.get("time", 0)
-    return server_time
+    # Evedex API time endpoint is not required for core operations; use local time to avoid dependency.
+    import time
+
+    _ = throttler, domain
+    return time.time()
 
 
 def is_exchange_information_valid(rule: Dict[str, Any]) -> bool:
@@ -116,7 +111,16 @@ def is_exchange_information_valid(rule: Dict[str, Any]) -> bool:
 
     :return: True if the trading pair is enabled, False otherwise
     """
-    trading = rule.get("trading", "none")
-    visibility = rule.get("visibility", "none")
-    valid = trading in ["all", "restricted"] and visibility in ["all", "restricted"]
-    return valid
+    name = rule.get("name") or rule.get("instrument")
+    base = rule.get("from")
+    quote = rule.get("to")
+    is_active = rule.get("isActive", True)
+
+    if not name or not base or not quote or not is_active:
+        return False
+
+    trading = rule.get("trading")
+    if trading is not None and trading != "all":
+        return False
+
+    return True
