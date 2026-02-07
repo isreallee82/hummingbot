@@ -267,6 +267,8 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         - Push messages: {"push": {"channel": "...", "pub": {"data": {...}}}}
         - Direct: {"channel": "...", "data": {...}}
         """
+        if not isinstance(event_message, dict):
+            return ""
         channel = ""
 
         # Handle Centrifugo push message format
