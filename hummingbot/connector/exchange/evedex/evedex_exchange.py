@@ -765,15 +765,18 @@ class EvedexExchange(ExchangePyBase):
         self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        params = {
-            "instrument": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair),
-            "fields": "metrics"
-        }
-
-        resp_json = await self._api_get(
-            path_url=CONSTANTS.INSTRUMENTS_PATH_URL,
-            params=params)
-
-        if isinstance(resp_json, list) and len(resp_json) > 0:
-            return float(resp_json[0].get("lastPrice", 0))
-        return float(resp_json.get("lastPrice", 0))
+        exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+        try:
+            response = await self._api_get(
+                path_url=CONSTANTS.INSTRUMENTS_PATH_URL,
+                params={"fields": "metrics"},
+            )
+            instruments = response if isinstance(response, list) else [response]
+            for instrument in instruments:
+                symbol = instrument.get("name")
+                price = instrument.get("lastPrice")
+                if symbol == exchange_symbol and price:
+                    return float(price)
+        except Exception:
+            self.logger().exception(f"Error fetching last traded price for {trading_pair} from EvedEx")
+            raise

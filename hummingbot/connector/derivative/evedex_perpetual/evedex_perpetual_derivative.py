@@ -787,7 +787,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     return float(price)
         except Exception:
             self.logger().exception(f"Error fetching last traded price for {trading_pair} from EvedEx")
-        return 0.0
+            raise
 
     async def _update_balances(self):
         """
