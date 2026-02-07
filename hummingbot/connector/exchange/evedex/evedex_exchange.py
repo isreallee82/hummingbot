@@ -232,6 +232,7 @@ class EvedexExchange(ExchangePyBase):
 
         cash_quantity = None
         limit_id = None
+        leverage = 1  # Spot trading uses leverage 1 on EvedEx
         if order_type == OrderType.MARKET:
             path_url = CONSTANTS.MARKET_ORDER_PATH_URL
             cash_quantity = amount * price if price != s_decimal_NaN else amount
@@ -242,7 +243,7 @@ class EvedexExchange(ExchangePyBase):
                 "side": side,
                 "cashQuantity": str(cash_quantity),
                 "timeInForce": CONSTANTS.TIME_IN_FORCE_IOC,
-                "leverage": int(2),
+                "leverage": leverage,
                 "chainId": chain_id,
             }
         else:
@@ -255,7 +256,7 @@ class EvedexExchange(ExchangePyBase):
                 "quantity": str(amount),
                 "limitPrice": str(price),
                 "timeInForce": CONSTANTS.TIME_IN_FORCE_GTC,
-                "leverage": int(2),  # EvedEx doesn't support leverage for spot trading
+                "leverage": leverage,
                 "chainId": chain_id,
             }
 
@@ -272,7 +273,7 @@ class EvedexExchange(ExchangePyBase):
                 instrument=symbol,
                 side=side,
                 time_in_force=CONSTANTS.TIME_IN_FORCE_IOC,
-                leverage=int(2),  # EvedEx doesn't support leverage for spot trading
+                leverage=leverage,
                 cash_quantity=cash_quantity,
                 chain_id=chain_id,
             )
@@ -281,7 +282,7 @@ class EvedexExchange(ExchangePyBase):
                 order_id=evedex_order_id,
                 instrument=symbol,
                 side=side,
-                leverage=int(2),  # EvedEx doesn't support leverage for spot trading
+                leverage=leverage,
                 quantity=amount,
                 limit_price=price,
                 chain_id=chain_id,
@@ -769,14 +770,11 @@ class EvedexExchange(ExchangePyBase):
         try:
             response = await self._api_get(
                 path_url=CONSTANTS.INSTRUMENTS_PATH_URL,
-                params={"fields": "metrics"},
+                params={"fields": "metrics", "instrument": exchange_symbol},
             )
-            instruments = response if isinstance(response, list) else [response]
-            for instrument in instruments:
-                symbol = instrument.get("name")
-                price = instrument.get("lastPrice")
-                if symbol == exchange_symbol and price:
-                    return float(price)
+            if isinstance(response, list) and len(response) > 0:
+                return float(response[0].get("lastPrice", 0))
+            return float(response.get("lastPrice", 0))
         except Exception:
             self.logger().exception(f"Error fetching last traded price for {trading_pair} from EvedEx")
             raise
