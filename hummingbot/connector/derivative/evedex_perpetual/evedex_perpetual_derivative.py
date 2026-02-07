@@ -773,14 +773,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        # Prefer the in-memory order book to avoid blocking REST calls during startup.
-        try:
-            mid_price = self.get_mid_price(trading_pair)
-            if mid_price is not None and not mid_price.is_nan() and mid_price > 0:
-                return float(mid_price)
-        except Exception:
-            pass
-
         exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
         try:
             response = await self._api_get(
