@@ -140,7 +140,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         """
         :return a list of OrderType supported by this connector
         """
-        return [OrderType.LIMIT, OrderType.MARKET]
+        return [OrderType.LIMIT, OrderType.MARKET, OrderType.LIMIT_MAKER]
 
     def supported_position_modes(self):
         """
@@ -512,24 +512,25 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         - Direct: {"channel": "futures-perp:order:123", "data": {...}}
         """
         # Handle Centrifugo push message format
-        if "push" in event_message:
-            push_data = event_message.get("push", {})
-            channel = push_data.get("channel", "")
-            pub_data = push_data.get("pub", {})
-            data = pub_data.get("data", {})
+        if isinstance(event_message, dict):
+            if "push" in event_message:
+                push_data = event_message.get("push", {})
+                channel = push_data.get("channel", "")
+                pub_data = push_data.get("pub", {})
+                data = pub_data.get("data", {})
 
-            # Centrifugo channel patterns: futures-perp:{type}:{userExchangeId}
-            if "futures-perp:order" in channel and "futures-perp:orderFilled" not in channel:
-                await self._process_order_update(data)
-            elif "futures-perp:position" in channel:
-                await self._process_position_update(data)
-            elif "futures-perp:user" in channel:
-                # user channel provides AccountEvent
-                await self._process_account_update(data)
-            elif "futures-perp:orderFilled" in channel:
-                await self._process_order_fill(data)
-            elif "futures-perp:position" in channel:
-                await self._process_funding_update(data)
+                # Centrifugo channel patterns: futures-perp:{type}:{userExchangeId}
+                if "futures-perp:order" in channel and "futures-perp:orderFilled" not in channel:
+                    await self._process_order_update(data)
+                elif "futures-perp:position" in channel:
+                    await self._process_position_update(data)
+                elif "futures-perp:user" in channel:
+                    # user channel provides AccountEvent
+                    await self._process_account_update(data)
+                elif "futures-perp:orderFilled" in channel:
+                    await self._process_order_fill(data)
+                elif "futures-perp:position" in channel:
+                    await self._process_funding_update(data)
 
     async def _process_account_update(self, account_data: Dict[str, Any]):
         """
