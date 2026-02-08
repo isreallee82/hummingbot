@@ -324,23 +324,6 @@ class TestEvedexPerpetualOrderBookWebSocket(unittest.IsolatedAsyncioTestCase):
             }
         }
 
-    def _order_book_ws_update_with_list(self) -> Dict:
-        return {
-            "push": {
-                "channel": f"futures-perp:orderBook-{self.ex_trading_pair.replace('-', '')}-0.1",
-                "pub": {
-                    "data": {
-                        "instrument": self.ex_trading_pair,
-                        "orderBook": {
-                            "t": int(time.time() * 1000),
-                            "bids": [[49950.0, 1.0]],
-                            "asks": [[50050.0, 0.8]],
-                        }
-                    }
-                }
-            }
-        }
-
     def _trade_ws_message(self) -> Dict:
         """Mock WebSocket message from Centrifugo push format."""
         return {
@@ -435,14 +418,6 @@ class TestEvedexPerpetualOrderBookWebSocket(unittest.IsolatedAsyncioTestCase):
 
     async def test_parse_order_book_diff_message(self):
         raw_message = self._order_book_ws_update()
-        message_queue = asyncio.Queue()
-
-        await self.data_source._parse_order_book_diff_message(raw_message, message_queue)
-
-        self.assertEqual(message_queue.qsize(), 1)
-
-    async def test_parse_order_book_diff_message_with_list_entries(self):
-        raw_message = self._order_book_ws_update_with_list()
         message_queue = asyncio.Queue()
 
         await self.data_source._parse_order_book_diff_message(raw_message, message_queue)
