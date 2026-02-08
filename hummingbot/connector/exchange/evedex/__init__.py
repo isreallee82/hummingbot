@@ -1,1 +1,0 @@
-"""Evedex Exchange connector module."""
