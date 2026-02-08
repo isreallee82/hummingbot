@@ -2,7 +2,7 @@
 import asyncio
 import unittest
 from typing import Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from hummingbot.connector.exchange.evedex import evedex_constants as CONSTANTS
 from hummingbot.connector.exchange.evedex.evedex_api_user_stream_data_source import EvedexAPIUserStreamDataSource
@@ -192,6 +192,31 @@ class TestEvedexAPIUserStreamDataSource(unittest.IsolatedAsyncioTestCase):
         # Verify WebSocket connection
         self.ws_assistant.connect.assert_called_once()
 
+    async def test_connected_websocket_assistant_cancels_ping_task(self):
+        ping_task = asyncio.create_task(asyncio.sleep(10))
+        self.data_source._ping_task = ping_task
+        await self.data_source._connected_websocket_assistant()
+        self.assertTrue(ping_task.cancelled() or ping_task.done())
+
+    async def test_get_access_token_caches_result(self):
+        self.connector._api_get.return_value = {"token": "abc"}
+        token = await self.data_source._get_access_token()
+        self.assertEqual(token, "abc")
+        token = await self.data_source._get_access_token()
+        self.assertEqual(self.connector._api_get.call_count, 1)
+
+    async def test_ping_loop_sends_and_cancels(self):
+        sleep_mock = AsyncMock(side_effect=[None, asyncio.CancelledError])
+        with patch("asyncio.sleep", sleep_mock):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.data_source._ping_loop(self.ws_assistant)
+        self.ws_assistant.send.assert_called()
+
+    async def test_ping_loop_handles_exception(self):
+        sleep_mock = AsyncMock(side_effect=Exception("boom"))
+        with patch("asyncio.sleep", sleep_mock):
+            await self.data_source._ping_loop(self.ws_assistant)
+
     async def test_subscribe_channels(self):
         """
         Test subscription to Centrifugo user channels with spot: namespace:
@@ -205,6 +230,11 @@ class TestEvedexAPIUserStreamDataSource(unittest.IsolatedAsyncioTestCase):
 
         # Should have sent connect message + subscription messages
         self.assertGreaterEqual(self.ws_assistant.send.call_count, 1)
+
+    async def test_subscribe_channels_exception(self):
+        self.ws_assistant.send = AsyncMock(side_effect=Exception("boom"))
+        with self.assertRaises(Exception):
+            await self.data_source._subscribe_channels(self.ws_assistant)
 
     async def test_process_event_message_order_channel(self):
         """Test processing order channel messages (Centrifugo push format)."""

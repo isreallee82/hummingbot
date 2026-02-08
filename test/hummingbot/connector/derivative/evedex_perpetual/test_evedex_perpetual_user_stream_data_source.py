@@ -111,6 +111,17 @@ class TestEvedexPerpetualUserStreamDataSource(unittest.IsolatedAsyncioTestCase):
         expected_timeout = EvedexPerpetualUserStreamDataSource.HEARTBEAT_TIME_INTERVAL + EvedexPerpetualUserStreamDataSource.PING_TIMEOUT
         self.assertEqual(call_kwargs["ping_timeout"], expected_timeout)
 
+    async def test_connected_websocket_assistant_cancels_ping_task(self):
+        ping_task = asyncio.create_task(asyncio.sleep(10))
+        self.data_source._ping_task = ping_task
+        await self.data_source._connected_websocket_assistant()
+        self.assertTrue(ping_task.cancelled() or ping_task.done())
+
+    async def test_get_access_token_delegates_to_auth(self):
+        self.auth.get_access_token = AsyncMock(return_value="token-123")
+        token = await self.data_source._get_access_token()
+        self.assertEqual(token, "token-123")
+
     async def test_subscribe_channels(self):
         """Test subscription to Centrifuge user channels."""
         self.connector._api_get.return_value = self._user_me_response()
@@ -124,6 +135,48 @@ class TestEvedexPerpetualUserStreamDataSource(unittest.IsolatedAsyncioTestCase):
         subscribe_call = self.ws_assistant.send.call_args_list[0]
         subscribe_payload = subscribe_call[0][0].payload
         self.assertIn("subscribe", subscribe_payload)
+
+    async def test_subscribe_channels_exception(self):
+        self.connector._api_get.return_value = self._user_me_response()
+        self.ws_assistant.send = AsyncMock(side_effect=Exception("boom"))
+        with self.assertRaises(Exception):
+            await self.data_source._subscribe_channels(self.ws_assistant)
+
+    async def test_process_websocket_messages_ping_pong(self):
+        async def message_iterator():
+            class Msg:
+                def __init__(self, data):
+                    self.data = data
+            yield Msg({})
+            yield Msg({"ping": {}})
+            raise asyncio.CancelledError
+
+        self.ws_assistant.iter_messages = message_iterator
+        queue = asyncio.Queue()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.data_source._process_websocket_messages(self.ws_assistant, queue)
+        # pong sent at least twice (empty + ping)
+        self.assertGreaterEqual(self.ws_assistant.send.call_count, 2)
+
+    async def test_on_user_stream_interruption_cancels_ping_task(self):
+        ping_task = asyncio.create_task(asyncio.sleep(10))
+        self.data_source._ping_task = ping_task
+        await self.data_source._on_user_stream_interruption(self.ws_assistant)
+        self.assertTrue(ping_task.cancelled() or ping_task.done())
+        self.assertIsNone(self.data_source._ws_assistant)
+
+    async def test_process_event_message_error_high_code(self):
+        event_message = {"error": {"code": 100, "message": "permission denied"}}
+        queue = asyncio.Queue()
+        await self.data_source._process_event_message(event_message, queue)
+        # Should not raise, and queue remains empty
+        self.assertTrue(queue.empty())
+
+    async def test_process_event_message_error_low_code(self):
+        event_message = {"error": {"code": 0, "message": "temporary"}}
+        queue = asyncio.Queue()
+        with self.assertRaises(IOError):
+            await self.data_source._process_event_message(event_message, queue)
 
 
 class TestEvedexPerpetualUserStreamWebSocketMessages(unittest.TestCase):

@@ -4,6 +4,7 @@ import json
 from decimal import Decimal
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
 from typing import Any, Awaitable, Dict, List, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 from aioresponses.core import aioresponses
 
@@ -12,8 +13,8 @@ import hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_web_uti
 from hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_derivative import EvedexPerpetualDerivative
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.connector.trading_rule import TradingRule
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode
-from hummingbot.core.data_type.in_flight_order import OrderState
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.event.event_logger import EventLogger
 from hummingbot.core.event.events import MarketEvent
 
@@ -387,6 +388,320 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(CONSTANTS.ORDER_STATE["REPLACED"], OrderState.OPEN)
         self.assertEqual(CONSTANTS.ORDER_STATE["ERROR"], OrderState.FAILED)
 
+    def test_is_trading_required_and_funding_fee_poll_interval(self):
+        self.assertTrue(self.exchange.is_trading_required)
+        self.assertEqual(self.exchange.funding_fee_poll_interval, 600)
+
+    def test_get_collateral_tokens(self):
+        trading_rule = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("1"),
+            min_price_increment=Decimal("0.1"),
+            min_base_amount_increment=Decimal("0.1"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+        self.exchange._trading_rules[self.trading_pair] = trading_rule
+        self.assertEqual(self.exchange.get_buy_collateral_token(self.trading_pair), "USDT")
+        self.assertEqual(self.exchange.get_sell_collateral_token(self.trading_pair), "USDT")
+
+    def test_is_order_not_found_helpers(self):
+        self.assertTrue(self.exchange._is_order_not_found_during_status_update_error(Exception(CONSTANTS.ORDER_NOT_EXIST_MESSAGE)))
+        self.assertTrue(self.exchange._is_order_not_found_during_cancelation_error(Exception(CONSTANTS.ORDER_NOT_EXIST_MESSAGE)))
+
+    def test_get_fee(self):
+        fee = self.exchange._get_fee(
+            base_currency=self.base_asset,
+            quote_currency=self.quote_asset,
+            order_type=OrderType.LIMIT,
+            order_side=TradeType.BUY,
+            position_action=PositionAction.OPEN,
+            amount=Decimal("1"),
+            price=Decimal("100"),
+        )
+        self.assertIsNotNone(fee)
+
+    def test_update_trading_fees_noop(self):
+        self.assertIsNone(self.async_run_with_timeout(self.exchange._update_trading_fees()))
+
+    def test_status_polling_loop_fetch_updates_calls_methods(self):
+        self.exchange._update_order_fills_from_trades = AsyncMock()
+        self.exchange._update_order_status = AsyncMock()
+        self.exchange._update_balances = AsyncMock()
+        self.exchange._update_positions = AsyncMock()
+
+        self.async_run_with_timeout(self.exchange._status_polling_loop_fetch_updates())
+
+        self.exchange._update_order_fills_from_trades.assert_awaited_once()
+        self.exchange._update_order_status.assert_awaited_once()
+        self.exchange._update_balances.assert_awaited_once()
+        self.exchange._update_positions.assert_awaited_once()
+
+    def test_place_order_requires_private_key(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = None
+        with self.assertRaises(ValueError):
+            self.async_run_with_timeout(
+                self.exchange._place_order(
+                    order_id="OIDX",
+                    trading_pair=self.trading_pair,
+                    amount=Decimal("1"),
+                    trade_type=TradeType.BUY,
+                    order_type=OrderType.LIMIT,
+                    price=Decimal("10"),
+                    position_action=PositionAction.OPEN,
+                )
+            )
+
+    def test_place_order_raises_non_503(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=1)
+        self.exchange._api_post = AsyncMock(side_effect=IOError("400 Bad Request"))
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_limit_order = MagicMock(return_value="0xsig")
+        with self.assertRaises(IOError):
+            self.async_run_with_timeout(
+                self.exchange._place_order(
+                    order_id="OIDR",
+                    trading_pair=self.trading_pair,
+                    amount=Decimal("1"),
+                    trade_type=TradeType.BUY,
+                    order_type=OrderType.LIMIT,
+                    price=Decimal("10"),
+                    position_action=PositionAction.OPEN,
+                )
+            )
+
+    def test_all_trade_updates_for_order_timeout(self):
+        order = InFlightOrder(
+            client_order_id="OIDT",
+            exchange_order_id=None,
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            amount=Decimal("1"),
+            price=Decimal("10"),
+            creation_timestamp=self.exchange.current_timestamp,
+        )
+        order.get_exchange_order_id = AsyncMock(side_effect=asyncio.TimeoutError)
+        with self.assertRaises(IOError):
+            self.async_run_with_timeout(self.exchange._all_trade_updates_for_order(order))
+
+    def test_process_account_update_margin_call(self):
+        self.async_run_with_timeout(self.exchange._process_account_update({"marginCall": True}))
+
+    def test_process_order_fill_updates(self):
+        tracked_order = InFlightOrder(
+            client_order_id="OIDF",
+            exchange_order_id="EX123",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            amount=Decimal("1"),
+            price=Decimal("10"),
+            creation_timestamp=self.exchange.current_timestamp,
+        )
+        self.exchange._order_tracker.start_tracking_order(tracked_order)
+        self.exchange._order_tracker.process_trade_update = MagicMock()
+        fill_data = {"orderId": "EX123", "executionId": "F1", "fillPrice": "10", "fillQuantity": "1"}
+        self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
+        self.exchange._order_tracker.process_trade_update.assert_called()
+
+    def test_process_funding_update(self):
+        self.async_run_with_timeout(self.exchange._process_funding_update({"coin": "USDT", "quantity": "0.1"}))
+
+    def test_process_order_update_with_fill_and_status(self):
+        tracked_order = InFlightOrder(
+            client_order_id="OIDU",
+            exchange_order_id="EXU",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            amount=Decimal("5"),
+            price=Decimal("10"),
+            creation_timestamp=self.exchange.current_timestamp,
+        )
+        self.exchange._order_tracker.start_tracking_order(tracked_order)
+        self.exchange._order_tracker.process_trade_update = MagicMock()
+        self.exchange._order_tracker.process_order_update = MagicMock()
+        order_data = {
+            "id": "EXU",
+            "status": "PARTIALLY_FILLED",
+            "quantity": "5",
+            "unFilledQuantity": "3",
+            "filledAvgPrice": "10",
+            "fee": [{"coin": "total", "quantity": "1"}, {"coin": "USDT", "quantity": "0.1"}]
+        }
+        self.async_run_with_timeout(self.exchange._process_order_update(order_data))
+        self.exchange._order_tracker.process_trade_update.assert_called()
+        self.exchange._order_tracker.process_order_update.assert_called()
+
+    def test_process_position_update_sets_and_removes(self):
+        self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        self.exchange._perpetual_trading.set_position = MagicMock()
+        self.exchange._perpetual_trading.remove_position = MagicMock()
+        position_data = [
+            {"instrument": self.ex_trading_pair, "quantity": "1", "side": "BUY", "leverage": "2"},
+            {"instrument": self.ex_trading_pair, "quantity": "0", "side": "BUY", "leverage": "2"},
+        ]
+        self.async_run_with_timeout(self.exchange._process_position_update(position_data))
+        self.exchange._perpetual_trading.set_position.assert_called()
+        self.exchange._perpetual_trading.remove_position.assert_called()
+
+    def test_process_balance_update_dict_and_list(self):
+        self.async_run_with_timeout(self.exchange._process_balance_update({
+            "currency": "usdt",
+            "funding": {"currency": "usdt", "balance": 5},
+            "availableBalance": 4,
+        }))
+        self.async_run_with_timeout(self.exchange._process_balance_update([
+            {"currency": "USDT", "balance": 5}
+        ]))
+        self.assertIn("USDT", self.exchange._account_balances)
+
+    def test_format_trading_rules_and_initialize_mapping(self):
+        rule = {
+            "name": self.ex_trading_pair,
+            "trading": "all",
+            "visibility": "all",
+            "from": {"symbol": self.base_asset},
+            "to": {"symbol": "USD"},
+            "minQuantity": "0.1",
+            "priceIncrement": "0.01",
+            "quantityIncrement": "0.01",
+            "minPrice": "1",
+        }
+        self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        rules = self.async_run_with_timeout(self.exchange._format_trading_rules([rule]))
+        self.assertEqual(len(rules), 1)
+        self.exchange._initialize_trading_pair_symbols_from_exchange_info([rule])
+        mapping = self.async_run_with_timeout(self.exchange.trading_pair_symbol_map())
+        self.assertIn(self.ex_trading_pair, mapping)
+
+    def test_format_trading_rules_error_path(self):
+        self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(side_effect=Exception("boom"))
+        rule = {"name": self.ex_trading_pair, "trading": "all", "visibility": "all"}
+        rules = self.async_run_with_timeout(self.exchange._format_trading_rules([rule]))
+        self.assertEqual(rules, [])
+
+    def test_get_last_traded_price_success_and_error(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange._api_get = AsyncMock(return_value=[{"name": self.ex_trading_pair, "lastPrice": "100"}])
+        price = self.async_run_with_timeout(self.exchange._get_last_traded_price(self.trading_pair))
+        self.assertEqual(price, 100.0)
+
+        self.exchange._api_get = AsyncMock(side_effect=Exception("boom"))
+        with self.assertRaises(Exception):
+            self.async_run_with_timeout(self.exchange._get_last_traded_price(self.trading_pair))
+
+    def test_update_positions_sets_and_removes(self):
+        self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        self.exchange._perpetual_trading.set_position = MagicMock()
+        self.exchange._perpetual_trading.remove_position = MagicMock()
+        self.exchange._api_get = AsyncMock(return_value={
+            "list": [
+                {"instrument": self.ex_trading_pair, "quantity": "1", "side": "BUY", "leverage": "2"},
+                {"instrument": self.ex_trading_pair, "quantity": "0", "side": "BUY", "leverage": "2"},
+            ]
+        })
+        self.async_run_with_timeout(self.exchange._update_positions())
+        self.exchange._perpetual_trading.set_position.assert_called()
+        self.exchange._perpetual_trading.remove_position.assert_called()
+
+    def test_update_order_fills_from_trades_processes_fill(self):
+        self.exchange._last_poll_timestamp = 0
+        self.exchange._set_current_timestamp(self.exchange.UPDATE_ORDER_STATUS_MIN_INTERVAL * 2)
+        order_id = "EX1"
+        self.exchange.start_tracking_order(
+            order_id="OID1",
+            exchange_order_id=order_id,
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("1"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange._api_get = AsyncMock(return_value={
+            "list": [{"orderId": order_id, "executionId": "E1", "fillPrice": "10", "fillQuantity": "1"}]
+        })
+        self.exchange._order_tracker.process_trade_update = MagicMock()
+        self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
+        self.exchange._order_tracker.process_trade_update.assert_called()
+
+    def test_update_order_status_processes_update(self):
+        self.exchange._last_poll_timestamp = 0
+        self.exchange._set_current_timestamp(self.exchange.UPDATE_ORDER_STATUS_MIN_INTERVAL * 2)
+        order_id = "EX2"
+        self.exchange.start_tracking_order(
+            order_id="OID2",
+            exchange_order_id=order_id,
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("1"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._api_get = AsyncMock(return_value={"id": order_id, "status": "FILLED"})
+        self.exchange._order_tracker.process_order_update = MagicMock()
+        self.async_run_with_timeout(self.exchange._update_order_status())
+        self.exchange._order_tracker.process_order_update.assert_called()
+
+    def test_update_order_status_handles_error(self):
+        self.exchange._last_poll_timestamp = 0
+        self.exchange._set_current_timestamp(self.exchange.UPDATE_ORDER_STATUS_MIN_INTERVAL * 2)
+        self.exchange.start_tracking_order(
+            order_id="OID3",
+            exchange_order_id="EX3",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("1"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._api_get = AsyncMock(side_effect=Exception("boom"))
+        self.async_run_with_timeout(self.exchange._update_order_status())
+
+    def test_get_position_mode_and_set_mode(self):
+        mode = self.async_run_with_timeout(self.exchange._get_position_mode())
+        self.assertEqual(mode, PositionMode.ONEWAY)
+        result, msg = self.async_run_with_timeout(self.exchange._trading_pair_position_mode_set(PositionMode.ONEWAY, self.trading_pair))
+        self.assertTrue(result)
+        self.assertEqual(msg, "")
+        result, msg = self.async_run_with_timeout(self.exchange._trading_pair_position_mode_set(PositionMode.HEDGE, self.trading_pair))
+        self.assertFalse(result)
+        self.assertNotEqual(msg, "")
+
+    def test_set_trading_pair_leverage_success_and_error(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange._api_put = AsyncMock(return_value={"leverage": 3})
+        result, msg = self.async_run_with_timeout(self.exchange._set_trading_pair_leverage(self.trading_pair, 3))
+        self.assertTrue(result)
+        self.assertEqual(msg, "")
+
+        self.exchange._api_put = AsyncMock(side_effect=Exception("boom"))
+        result, msg = self.async_run_with_timeout(self.exchange._set_trading_pair_leverage(self.trading_pair, 5))
+        self.assertFalse(result)
+        self.assertIn("Unable to set leverage", msg)
+
+    def test_fetch_last_fee_payment_success_and_error(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange._api_get = AsyncMock(return_value={"list": [{"coin": self.base_asset, "quantity": "1", "fundingRate": "0.1", "updatedAt": 123}]})
+        ts, rate, payment = self.async_run_with_timeout(self.exchange._fetch_last_fee_payment(self.trading_pair))
+        self.assertEqual(ts, 123)
+        self.assertEqual(rate, Decimal("0.1"))
+        self.assertEqual(payment, Decimal("1"))
+
+        self.exchange._api_get = AsyncMock(side_effect=Exception("boom"))
+        ts, rate, payment = self.async_run_with_timeout(self.exchange._fetch_last_fee_payment(self.trading_pair))
+        self.assertEqual(rate, Decimal("-1"))
+
 
 class EvedexPerpetualOrderCreationTests(IsolatedAsyncioWrapperTestCase):
     """Test order creation functionality."""
@@ -563,6 +878,7 @@ class EvedexPerpetualPositionTests(IsolatedAsyncioWrapperTestCase):
 
 class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
     """Test WebSocket functionality with Centrifuge protocol."""
+    level = 0
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -572,6 +888,28 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         cls.trading_pair = f"{cls.base_asset}-{cls.quote_asset}"
         cls.ex_trading_pair = f"{cls.base_asset}-{cls.quote_asset}"
         cls.user_exchange_id = "12345"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.log_records = []
+        self.exchange = EvedexPerpetualDerivative(
+            evedex_perpetual_api_key="testAPIKey",
+            evedex_perpetual_private_key="0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",  # noqa: mock
+            trading_pairs=[self.trading_pair],
+            domain=CONSTANTS.DEFAULT_DOMAIN,
+        )
+        self.exchange._set_current_timestamp(1640780000)
+        self.exchange.logger().setLevel(1)
+        self.exchange.logger().addHandler(self)
+
+    def handle(self, record):
+        self.log_records.append(record)
+
+    def _is_logged(self, log_level: str, message: str) -> bool:
+        return any(record.levelname == log_level and record.getMessage() == message for record in self.log_records)
+
+    def async_run_with_timeout(self, coroutine, timeout: float = 5):
+        return self.local_event_loop.run_until_complete(asyncio.wait_for(coroutine, timeout))
 
     def _order_ws_update(self, status: str = "NEW") -> Dict[str, Any]:
         """
@@ -701,6 +1039,222 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         ]
         for status in statuses:
             self.assertIn(status, CONSTANTS.ORDER_STATE)
+
+    def test_fetch_access_token_success(self):
+        self.exchange._api_get = AsyncMock(return_value={"token": "abc", "tokenId": "1"})
+        result = self.async_run_with_timeout(self.exchange._fetch_access_token())
+        self.assertEqual(result["token"], "abc")
+
+    def test_fetch_access_token_failure(self):
+        self.exchange._api_get = AsyncMock(side_effect=Exception("boom"))
+        result = self.async_run_with_timeout(self.exchange._fetch_access_token())
+        self.assertEqual(result, {})
+        self.assertTrue(self._is_logged("WARNING", "Failed to fetch access token: boom"))
+
+    def test_get_all_pairs_prices_list_response(self):
+        self.exchange._api_get = AsyncMock(return_value=[
+            {"name": self.ex_trading_pair, "lastPrice": 100.5}
+        ])
+        result = self.async_run_with_timeout(self.exchange.get_all_pairs_prices())
+        self.assertEqual(result, [{"symbol": self.ex_trading_pair, "price": "100.5"}])
+
+    def test_get_all_pairs_prices_single_response(self):
+        self.exchange._api_get = AsyncMock(return_value={"name": self.ex_trading_pair, "markPrice": 99.1})
+        result = self.async_run_with_timeout(self.exchange.get_all_pairs_prices())
+        self.assertEqual(result, [{"symbol": self.ex_trading_pair, "price": "99.1"}])
+
+    def test_generate_order_id_format(self):
+        order_id = self.exchange._generate_order_id()
+        self.assertRegex(order_id, r"^\d{5}:[0-9a-f]{26}$")
+
+    def test_place_limit_order(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=3)
+        self.exchange._api_post = AsyncMock(return_value={"id": "ex_1", "createdAt": 123})
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_limit_order = MagicMock(return_value="0xsig")
+
+        exchange_order_id, transact_time = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID1",
+                trading_pair=self.trading_pair,
+                amount=Decimal("1"),
+                trade_type=TradeType.BUY,
+                order_type=OrderType.LIMIT,
+                price=Decimal("100"),
+                position_action=PositionAction.OPEN,
+            )
+        )
+
+        self.assertEqual(exchange_order_id, "ex_1")
+        self.assertEqual(transact_time, 123)
+        call_kwargs = self.exchange._api_post.call_args.kwargs
+        self.assertEqual(call_kwargs["path_url"], CONSTANTS.LIMIT_ORDER_PATH_URL)
+        self.assertEqual(call_kwargs["data"]["leverage"], 3)
+        self.assertEqual(call_kwargs["data"]["quantity"], "1")
+        self.assertEqual(call_kwargs["data"]["limitPrice"], "100")
+        self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
+
+    def test_place_market_order(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=2)
+        self.exchange._api_post = AsyncMock(return_value={"id": "ex_2", "createdAt": 456})
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_market_order = MagicMock(return_value="0xsig")
+
+        exchange_order_id, transact_time = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID2",
+                trading_pair=self.trading_pair,
+                amount=Decimal("2"),
+                trade_type=TradeType.SELL,
+                order_type=OrderType.MARKET,
+                price=Decimal("10"),
+                position_action=PositionAction.OPEN,
+            )
+        )
+
+        self.assertEqual(exchange_order_id, "ex_2")
+        self.assertEqual(transact_time, 456)
+        call_kwargs = self.exchange._api_post.call_args.kwargs
+        self.assertEqual(call_kwargs["path_url"], CONSTANTS.MARKET_ORDER_PATH_URL)
+        self.assertEqual(call_kwargs["data"]["cashQuantity"], "20")
+        self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
+
+    def test_place_close_position_order(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=4)
+        self.exchange._api_post = AsyncMock(return_value={"id": "ex_3", "createdAt": 789})
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_position_close = MagicMock(return_value="0xsig")
+
+        exchange_order_id, transact_time = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID3",
+                trading_pair=self.trading_pair,
+                amount=Decimal("3"),
+                trade_type=TradeType.SELL,
+                order_type=OrderType.LIMIT,
+                price=Decimal("10"),
+                position_action=PositionAction.CLOSE,
+            )
+        )
+
+        self.assertEqual(exchange_order_id, "ex_3")
+        self.assertEqual(transact_time, 789)
+        call_kwargs = self.exchange._api_post.call_args.kwargs
+        self.assertEqual(
+            call_kwargs["path_url"],
+            CONSTANTS.CLOSE_POSITION_PATH_URL.format(instrument=self.ex_trading_pair),
+        )
+        self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
+
+    def test_place_order_handles_503(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=1)
+        self.exchange._api_post = AsyncMock(side_effect=IOError("503 Service Unavailable"))
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_limit_order = MagicMock(return_value="0xsig")
+
+        exchange_order_id, _ = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID4",
+                trading_pair=self.trading_pair,
+                amount=Decimal("1"),
+                trade_type=TradeType.BUY,
+                order_type=OrderType.LIMIT,
+                price=Decimal("100"),
+                position_action=PositionAction.OPEN,
+            )
+        )
+
+        self.assertEqual(exchange_order_id, "UNKNOWN")
+
+    def test_place_cancel(self):
+        order = InFlightOrder(
+            client_order_id="OIDC",
+            exchange_order_id="100234",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            amount=Decimal("1"),
+            price=Decimal("100"),
+            creation_timestamp=self.exchange.current_timestamp,
+        )
+        self.exchange._api_delete = AsyncMock()
+        result = self.async_run_with_timeout(self.exchange._place_cancel("OIDC", order))
+        self.assertTrue(result)
+        self.exchange._api_delete.assert_called_once()
+
+    def test_all_trade_updates_for_order(self):
+        order = InFlightOrder(
+            client_order_id="OIDT",
+            exchange_order_id="200",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            amount=Decimal("1"),
+            price=Decimal("10"),
+            creation_timestamp=self.exchange.current_timestamp,
+        )
+        self.exchange._api_get = AsyncMock(return_value=[
+            {
+                "executionId": "trade_1",
+                "fillPrice": "10",
+                "fillQuantity": "2",
+                "fee": [
+                    {"coin": "usdt", "quantity": "0.1"},
+                    {"coin": "total", "quantity": "0"}
+                ]
+            }
+        ])
+        updates = self.async_run_with_timeout(self.exchange._all_trade_updates_for_order(order))
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0].trade_id, "trade_1")
+        self.assertEqual(updates[0].fee.flat_fees[0].token, "USDT")
+
+    def test_request_order_status(self):
+        order = InFlightOrder(
+            client_order_id="OIDU",
+            exchange_order_id="300",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.SELL,
+            amount=Decimal("1"),
+            price=Decimal("10"),
+            creation_timestamp=self.exchange.current_timestamp,
+        )
+        self.exchange._api_get = AsyncMock(return_value={"id": "300", "status": "CANCELLED"})
+        order_update = self.async_run_with_timeout(self.exchange._request_order_status(order))
+        self.assertEqual(order_update.new_state, OrderState.CANCELED)
+
+    def test_process_user_stream_event_order_update(self):
+        self.exchange._process_order_update = AsyncMock()
+        event_message = {
+            "push": {"channel": "futures-perp:order:123", "pub": {"data": {"id": "1"}}}
+        }
+        self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
+        self.exchange._process_order_update.assert_awaited_once()
+
+    def test_process_user_stream_event_order_filled(self):
+        self.exchange._process_order_fill = AsyncMock()
+        event_message = {
+            "push": {"channel": "futures-perp:orderFilled:123", "pub": {"data": {"id": "1"}}}
+        }
+        self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
+        self.exchange._process_order_fill.assert_awaited_once()
+
+    def test_process_user_stream_event_account_update(self):
+        self.exchange._process_account_update = AsyncMock()
+        event_message = {
+            "push": {"channel": "futures-perp:user:123", "pub": {"data": {"id": "1"}}}
+        }
+        self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
+        self.exchange._process_account_update.assert_awaited_once()
 
 
 if __name__ == "__main__":

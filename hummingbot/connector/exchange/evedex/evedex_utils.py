@@ -52,7 +52,9 @@ def build_api_factory_config_map() -> Dict[str, str]:
     """
     Build config map for API factory.
     """
+    api_key = getattr(KEYS, "evedex_api_key", None)
+    private_key = getattr(KEYS, "evedex_private_key", None)
     return {
-        "evedex_api_key": KEYS.evedex_api_key.get_secret_value() if KEYS.evedex_api_key else "",
-        "evedex_private_key": KEYS.evedex_private_key.get_secret_value() if KEYS.evedex_private_key else "",
+        "evedex_api_key": api_key.get_secret_value() if api_key else "",
+        "evedex_private_key": private_key.get_secret_value() if private_key else "",
     }

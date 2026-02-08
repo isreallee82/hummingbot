@@ -3,7 +3,7 @@ import asyncio
 import time
 import unittest
 from typing import Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from hummingbot.connector.exchange.evedex import evedex_constants as CONSTANTS, evedex_web_utils as web_utils
 from hummingbot.connector.exchange.evedex.evedex_api_order_book_data_source import EvedexAPIOrderBookDataSource
@@ -217,6 +217,24 @@ class TestEvedexAPIOrderBookDataSource(unittest.IsolatedAsyncioTestCase):
         # self.assertIn("ws_url", call_kwargs)
         # self.assertIn("ping_timeout", call_kwargs)
 
+    async def test_connected_websocket_assistant_cancels_ping_task(self):
+        ping_task = asyncio.create_task(asyncio.sleep(10))
+        self.data_source._ping_task = ping_task
+        await self.data_source._connected_websocket_assistant()
+        self.assertTrue(ping_task.cancelled() or ping_task.done())
+
+    async def test_ping_loop_sends_and_cancels(self):
+        sleep_mock = AsyncMock(side_effect=[None, asyncio.CancelledError])
+        with patch("asyncio.sleep", sleep_mock):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.data_source._ping_loop(self.ws_assistant)
+        self.ws_assistant.send.assert_called()
+
+    async def test_ping_loop_handles_exception(self):
+        sleep_mock = AsyncMock(side_effect=Exception("boom"))
+        with patch("asyncio.sleep", sleep_mock):
+            await self.data_source._ping_loop(self.ws_assistant)
+
     async def test_subscribe_channels(self):
         """Test subscription to Centrifugo channels: spot:orderBook-{instrument}-0.1 and spot:recent-trade-{instrument}."""
         await self.data_source._subscribe_channels(self.ws_assistant)
@@ -224,6 +242,84 @@ class TestEvedexAPIOrderBookDataSource(unittest.IsolatedAsyncioTestCase):
         # Should have sent connect message + 2 subscription messages per trading pair
         # Connect message is sent first, then subscriptions
         self.assertGreaterEqual(self.ws_assistant.send.call_count, 2)
+
+    async def test_subscribe_channels_exception(self):
+        self.ws_assistant.send = AsyncMock(side_effect=Exception("boom"))
+        with self.assertRaises(Exception):
+            await self.data_source._subscribe_channels(self.ws_assistant)
+
+    async def test_on_order_stream_interruption_cancels_ping_task(self):
+        ping_task = asyncio.create_task(asyncio.sleep(10))
+        self.data_source._ping_task = ping_task
+        await self.data_source._on_order_stream_interruption(self.ws_assistant)
+        self.assertTrue(ping_task.cancelled() or ping_task.done())
+        self.assertIsNone(self.data_source._ws_assistant)
+
+    async def test_get_last_traded_prices_handles_error(self):
+        self.connector._api_get = AsyncMock(side_effect=Exception("boom"))
+        result = await self.data_source.get_last_traded_prices([self.trading_pair])
+        self.assertEqual(result, {})
+
+    async def test_subscribe_to_trading_pair_without_ws(self):
+        self.data_source._ws_assistant = None
+        result = await self.data_source.subscribe_to_trading_pair(self.trading_pair)
+        self.assertFalse(result)
+
+    async def test_subscribe_to_trading_pair_success(self):
+        self.data_source._ws_assistant = self.ws_assistant
+        result = await self.data_source.subscribe_to_trading_pair(self.trading_pair)
+
+        self.assertTrue(result)
+        self.assertIn(self.trading_pair, self.data_source._trading_pairs)
+        self.assertGreaterEqual(self.ws_assistant.send.call_count, 2)
+
+    async def test_subscribe_to_trading_pair_exception(self):
+        self.data_source._ws_assistant = self.ws_assistant
+        self.ws_assistant.send = AsyncMock(side_effect=Exception("boom"))
+        result = await self.data_source.subscribe_to_trading_pair(self.trading_pair)
+        self.assertFalse(result)
+
+    async def test_unsubscribe_from_trading_pair_without_ws(self):
+        self.data_source._ws_assistant = None
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+        self.assertFalse(result)
+
+    async def test_unsubscribe_from_trading_pair_success(self):
+        self.data_source._ws_assistant = self.ws_assistant
+        self.data_source.add_trading_pair(self.trading_pair)
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+
+        self.assertTrue(result)
+        self.assertNotIn(self.trading_pair, self.data_source._trading_pairs)
+        self.assertGreaterEqual(self.ws_assistant.send.call_count, 2)
+
+    async def test_unsubscribe_from_trading_pair_exception(self):
+        self.data_source._ws_assistant = self.ws_assistant
+        self.ws_assistant.send = AsyncMock(side_effect=Exception("boom"))
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+        self.assertFalse(result)
+
+    async def test_process_message_for_unknown_channel_pong(self):
+        ws = MagicMock()
+        ws.send = AsyncMock()
+        await self.data_source._process_message_for_unknown_channel({"ping": {}}, ws)
+        ws.send.assert_called()
+
+    async def test_process_message_for_unknown_channel_empty(self):
+        ws = MagicMock()
+        ws.send = AsyncMock()
+        await self.data_source._process_message_for_unknown_channel({}, ws)
+        ws.send.assert_called()
+
+    def test_channel_originating_message_orderbook(self):
+        event_message = {"push": {"channel": "spot:orderBook-BTC-USDT-0.1", "pub": {"data": {}}}}
+        channel = self.data_source._channel_originating_message(event_message)
+        self.assertEqual(channel, self.data_source._diff_messages_queue_key)
+
+    def test_channel_originating_message_trade(self):
+        event_message = {"push": {"channel": "spot:recent-trade-BTC-USDT", "pub": {"data": {}}}}
+        channel = self.data_source._channel_originating_message(event_message)
+        self.assertEqual(channel, self.data_source._trade_messages_queue_key)
 
     async def test_parse_order_book_diff_message(self):
         """Test parsing order book diff message from spot:orderBook-{instrument}-0.1 channel (Centrifugo push format)."""
@@ -240,6 +336,16 @@ class TestEvedexAPIOrderBookDataSource(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(diff_msg.content["asks"]), 2)
         self.assertEqual(diff_msg.content["bids"][0][0], 49950.0)
         self.assertEqual(diff_msg.content["bids"][0][1], 1.0)
+
+    async def test_parse_order_book_diff_message_with_list_entries(self):
+        raw_message = self._order_book_ws_update()
+        raw_message["push"]["pub"]["data"]["orderBook"]["bids"] = [[49950.0, 1.0]]
+        raw_message["push"]["pub"]["data"]["orderBook"]["asks"] = [[50050.0, 0.8]]
+        message_queue = asyncio.Queue()
+
+        await self.data_source._parse_order_book_diff_message(raw_message, message_queue)
+
+        self.assertEqual(message_queue.qsize(), 1)
 
     async def test_parse_order_book_diff_message_unknown_symbol(self):
         """Test parsing order book message with unknown trading pair symbol."""
@@ -322,18 +428,6 @@ class TestEvedexAPIOrderBookDataSource(unittest.IsolatedAsyncioTestCase):
         await self.data_source._parse_trade_message(raw_message, message_queue)
 
         self.assertEqual(message_queue.qsize(), 2)
-
-    def test_channel_originating_message_orderbook(self):
-        """Test channel detection for order book messages (Centrifugo push format)."""
-        message = {"push": {"channel": f"spot:orderBook-{self.ex_trading_pair}-0.1", "pub": {"data": {}}}}
-        result = self.data_source._channel_originating_message(message)
-        self.assertEqual(result, self.data_source._diff_messages_queue_key)
-
-    def test_channel_originating_message_trade(self):
-        """Test channel detection for trade messages (Centrifugo push format)."""
-        message = {"push": {"channel": f"spot:recent-trade-{self.ex_trading_pair}", "pub": {"data": {}}}}
-        result = self.data_source._channel_originating_message(message)
-        self.assertEqual(result, self.data_source._trade_messages_queue_key)
 
     def test_channel_originating_message_unknown(self):
         """Test channel detection for unknown channels (Centrifugo push format)."""

@@ -4,7 +4,7 @@ import time
 import unittest
 from decimal import Decimal
 from typing import Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from hummingbot.connector.derivative.evedex_perpetual import evedex_perpetual_constants as CONSTANTS
 from hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_api_order_book_data_source import (
@@ -135,6 +135,15 @@ class TestEvedexPerpetualAPIOrderBookDataSource(unittest.IsolatedAsyncioTestCase
         self.assertEqual(call_kwargs.get("path_url"), CONSTANTS.INSTRUMENTS_PATH_URL)
         self.assertEqual(call_kwargs.get("params"), {"instrument": self.ex_trading_pair, "fields": "metrics"})
 
+    async def test_request_instrument_info_single_response(self):
+        """Test instrument info request when API returns single dict."""
+        single = self._instrument_info_response()[0]
+        self.connector._api_get.return_value = single
+
+        result = await self.data_source._request_instrument_info(self.trading_pair)
+
+        self.assertEqual(result, single)
+
     async def test_request_order_book_snapshot(self):
         """Test order book snapshot request from /api/market/{instrument}/deep."""
         expected_response = self._order_book_snapshot_response()
@@ -174,6 +183,24 @@ class TestEvedexPerpetualAPIOrderBookDataSource(unittest.IsolatedAsyncioTestCase
         # Should have sent Centrifugo connect message
         self.ws_assistant.send.assert_called()
 
+    async def test_connected_websocket_assistant_cancels_ping_task(self):
+        ping_task = asyncio.create_task(asyncio.sleep(10))
+        self.data_source._ping_task = ping_task
+        await self.data_source._connected_websocket_assistant()
+        self.assertTrue(ping_task.cancelled() or ping_task.done())
+
+    async def test_ping_loop_sends_and_cancels(self):
+        sleep_mock = AsyncMock(side_effect=[None, asyncio.CancelledError])
+        with patch("asyncio.sleep", sleep_mock):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.data_source._ping_loop(self.ws_assistant)
+        self.ws_assistant.send.assert_called()
+
+    async def test_ping_loop_handles_exception(self):
+        sleep_mock = AsyncMock(side_effect=Exception("boom"))
+        with patch("asyncio.sleep", sleep_mock):
+            await self.data_source._ping_loop(self.ws_assistant)
+
     async def test_subscribe_channels(self):
         """Test subscription to Centrifugo channels."""
         await self.data_source._subscribe_channels(self.ws_assistant)
@@ -192,6 +219,74 @@ class TestEvedexPerpetualAPIOrderBookDataSource(unittest.IsolatedAsyncioTestCase
         # Verify at least one trade subscription
         trade_subs = [p for p in payloads if "subscribe" in p and "recent-trade" in p.get("subscribe", {}).get("channel", "")]
         self.assertGreater(len(trade_subs), 0)
+
+    async def test_subscribe_channels_exception(self):
+        self.ws_assistant.send = AsyncMock(side_effect=Exception("boom"))
+        with self.assertRaises(Exception):
+            await self.data_source._subscribe_channels(self.ws_assistant)
+
+    async def test_subscribe_to_trading_pair_without_ws(self):
+        self.data_source._ws_assistant = None
+        result = await self.data_source.subscribe_to_trading_pair(self.trading_pair)
+        self.assertFalse(result)
+
+    async def test_subscribe_to_trading_pair_success(self):
+        self.data_source._ws_assistant = self.ws_assistant
+        result = await self.data_source.subscribe_to_trading_pair(self.trading_pair)
+
+        self.assertTrue(result)
+        self.assertIn(self.trading_pair, self.data_source._trading_pairs)
+        self.assertGreaterEqual(self.ws_assistant.send.call_count, 2)
+
+    async def test_unsubscribe_from_trading_pair_without_ws(self):
+        self.data_source._ws_assistant = None
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+        self.assertFalse(result)
+
+    async def test_unsubscribe_from_trading_pair_success(self):
+        self.data_source._ws_assistant = self.ws_assistant
+        self.data_source.add_trading_pair(self.trading_pair)
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+
+        self.assertTrue(result)
+        self.assertNotIn(self.trading_pair, self.data_source._trading_pairs)
+        self.assertGreaterEqual(self.ws_assistant.send.call_count, 2)
+
+    async def test_unsubscribe_from_trading_pair_exception(self):
+        self.data_source._ws_assistant = self.ws_assistant
+        self.ws_assistant.send = AsyncMock(side_effect=Exception("boom"))
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+        self.assertFalse(result)
+
+    async def test_process_message_for_unknown_channel_pong(self):
+        ws = MagicMock()
+        ws.send = AsyncMock()
+        await self.data_source._process_message_for_unknown_channel({"ping": {}}, ws)
+        ws.send.assert_called()
+
+    async def test_process_message_for_unknown_channel_empty(self):
+        ws = MagicMock()
+        ws.send = AsyncMock()
+        await self.data_source._process_message_for_unknown_channel({}, ws)
+        ws.send.assert_called()
+
+    def test_channel_originating_message_non_dict(self):
+        self.assertEqual(self.data_source._channel_originating_message("ping"), "")
+
+    def test_channel_originating_message_orderbook(self):
+        event_message = {"push": {"channel": "futures-perp:orderBook-XRPUSD-0.1", "pub": {"data": {}}}}
+        channel = self.data_source._channel_originating_message(event_message)
+        self.assertEqual(channel, self.data_source._diff_messages_queue_key)
+
+    def test_channel_originating_message_trade(self):
+        event_message = {"push": {"channel": "futures-perp:recent-trade-XRPUSD", "pub": {"data": {}}}}
+        channel = self.data_source._channel_originating_message(event_message)
+        self.assertEqual(channel, self.data_source._trade_messages_queue_key)
+
+    def test_channel_originating_message_funding(self):
+        event_message = {"push": {"channel": "futures-perp:position", "pub": {"data": {}}}}
+        channel = self.data_source._channel_originating_message(event_message)
+        self.assertEqual(channel, self.data_source._funding_info_messages_queue_key)
 
 
 class TestEvedexPerpetualOrderBookWebSocket(unittest.IsolatedAsyncioTestCase):
@@ -229,6 +324,23 @@ class TestEvedexPerpetualOrderBookWebSocket(unittest.IsolatedAsyncioTestCase):
             }
         }
 
+    def _order_book_ws_update_with_list(self) -> Dict:
+        return {
+            "push": {
+                "channel": f"futures-perp:orderBook-{self.ex_trading_pair.replace('-', '')}-0.1",
+                "pub": {
+                    "data": {
+                        "instrument": self.ex_trading_pair,
+                        "orderBook": {
+                            "t": int(time.time() * 1000),
+                            "bids": [[49950.0, 1.0]],
+                            "asks": [[50050.0, 0.8]],
+                        }
+                    }
+                }
+            }
+        }
+
     def _trade_ws_message(self) -> Dict:
         """Mock WebSocket message from Centrifugo push format."""
         return {
@@ -245,6 +357,43 @@ class TestEvedexPerpetualOrderBookWebSocket(unittest.IsolatedAsyncioTestCase):
                 }
             }
         }
+
+    def _trade_ws_message_list(self) -> Dict:
+        return {
+            "push": {
+                "channel": f"futures-perp:recent-trade-{self.ex_trading_pair.replace('-', '')}",
+                "pub": {
+                    "data": [
+                        {
+                            "instrument": self.ex_trading_pair,
+                            "side": "BUY",
+                            "fillPrice": 50000.0,
+                            "fillQuantity": 0.5,
+                            "executionId": "trade_1"
+                        },
+                        {
+                            "instrument": self.ex_trading_pair,
+                            "side": "SELL",
+                            "fillPrice": 50010.0,
+                            "fillQuantity": 0.2,
+                            "executionId": "trade_2"
+                        }
+                    ]
+                }
+            }
+        }
+
+    def setUp(self):
+        super().setUp()
+        self.connector = MagicMock()
+        self.connector.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        self.api_factory = MagicMock()
+        self.data_source = EvedexPerpetualAPIOrderBookDataSource(
+            trading_pairs=[self.trading_pair],
+            connector=self.connector,
+            api_factory=self.api_factory,
+            domain=CONSTANTS.DEFAULT_DOMAIN,
+        )
 
     def test_orderbook_channel_format(self):
         """Test order book channel naming: futures-perp:orderBook-{instrument}-0.1."""
@@ -283,6 +432,47 @@ class TestEvedexPerpetualOrderBookWebSocket(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fillPrice", data)
         self.assertIn("fillQuantity", data)
         self.assertIn("executionId", data)
+
+    async def test_parse_order_book_diff_message(self):
+        raw_message = self._order_book_ws_update()
+        message_queue = asyncio.Queue()
+
+        await self.data_source._parse_order_book_diff_message(raw_message, message_queue)
+
+        self.assertEqual(message_queue.qsize(), 1)
+
+    async def test_parse_order_book_diff_message_with_list_entries(self):
+        raw_message = self._order_book_ws_update_with_list()
+        message_queue = asyncio.Queue()
+
+        await self.data_source._parse_order_book_diff_message(raw_message, message_queue)
+
+        self.assertEqual(message_queue.qsize(), 1)
+
+    async def test_parse_trade_message(self):
+        raw_message = self._trade_ws_message()
+        message_queue = asyncio.Queue()
+
+        await self.data_source._parse_trade_message(raw_message, message_queue)
+
+        self.assertEqual(message_queue.qsize(), 1)
+
+    async def test_parse_trade_message_list(self):
+        raw_message = self._trade_ws_message_list()
+        message_queue = asyncio.Queue()
+
+        await self.data_source._parse_trade_message(raw_message, message_queue)
+
+        self.assertEqual(message_queue.qsize(), 2)
+
+    async def test_parse_trade_message_unknown_symbol(self):
+        raw_message = self._trade_ws_message()
+        self.connector.trading_pair_associated_to_exchange_symbol = AsyncMock(side_effect=KeyError("unknown"))
+        message_queue = asyncio.Queue()
+
+        await self.data_source._parse_trade_message(raw_message, message_queue)
+
+        self.assertEqual(message_queue.qsize(), 0)
 
 
 class TestEvedexPerpetualFundingInfo(unittest.TestCase):

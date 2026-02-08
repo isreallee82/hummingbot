@@ -436,15 +436,15 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
             pub_data = push_data.get("pub", {})
             data = pub_data.get("data", {})
 
-            # Try using instrument from data directly
-            instrument = data.get("instrument", "")
-            try:
-                trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
-            except KeyError:
-                return
-
             trades = data if isinstance(data, list) else [data]
             for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
+                instrument = trade.get("instrument", "")
+                try:
+                    trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
+                except KeyError:
+                    continue
                 trade_message: OrderBookMessage = OrderBookMessage(
                     OrderBookMessageType.TRADE,
                     {

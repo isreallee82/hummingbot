@@ -132,6 +132,25 @@ class EvedexRateSourceTest(IsolatedAsyncioWrapperTestCase):
 
         self.assertEqual({}, prices)
 
+    async def test_get_evedex_prices_skips_missing_symbol(self):
+        rate_source = EvedexRateSource()
+        rate_source.get_prices.cache_clear()
+        mock_exchange = MagicMock()
+
+        async def mock_get_all_pairs_prices():
+            return [{"symbol": None, "price": "1.0"}]
+
+        async def mock_trading_pair_associated_to_exchange_symbol(symbol: str):
+            return combine_to_hb_trading_pair("XRP", "USDT")
+
+        mock_exchange.get_all_pairs_prices = mock_get_all_pairs_prices
+        mock_exchange.trading_pair_associated_to_exchange_symbol = mock_trading_pair_associated_to_exchange_symbol
+        rate_source._exchange = mock_exchange
+
+        prices = await rate_source.get_prices()
+
+        self.assertEqual({}, prices)
+
     async def test_ensure_exchange_creates_connector(self):
         rate_source = EvedexRateSource()
         self.assertIsNone(rate_source._exchange)
