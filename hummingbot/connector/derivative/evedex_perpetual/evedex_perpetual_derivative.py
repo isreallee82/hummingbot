@@ -172,7 +172,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             instruments = response if isinstance(response, list) else [response]
             for instrument in instruments:
                 symbol = instrument.get("name")
-                price = instrument.get("lastPrice") or instrument.get("markPrice")
+                price = instrument.get("markPrice")
                 if symbol and price:
                     results.append({
                         "symbol": symbol,

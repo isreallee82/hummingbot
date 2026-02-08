@@ -1053,7 +1053,7 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
 
     def test_get_all_pairs_prices_list_response(self):
         self.exchange._api_get = AsyncMock(return_value=[
-            {"name": self.ex_trading_pair, "lastPrice": 100.5}
+            {"name": self.ex_trading_pair, "markPrice": 100.5}
         ])
         result = self.async_run_with_timeout(self.exchange.get_all_pairs_prices())
         self.assertEqual(result, [{"symbol": self.ex_trading_pair, "price": "100.5"}])
