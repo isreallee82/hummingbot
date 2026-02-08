@@ -1201,21 +1201,31 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
             price=Decimal("10"),
             creation_timestamp=self.exchange.current_timestamp,
         )
-        self.exchange._api_get = AsyncMock(return_value=[
-            {
-                "executionId": "trade_1",
-                "fillPrice": "10",
-                "fillQuantity": "2",
-                "fee": [
-                    {"coin": "usdt", "quantity": "0.1"},
-                    {"coin": "total", "quantity": "0"}
-                ]
-            }
-        ])
+        self.exchange._api_get = AsyncMock(return_value={
+            "list": [
+                {
+                    "id": "200",
+                    "exchangeRequestId": "req_1",
+                    "quantity": "2",
+                    "unFilledQuantity": "0",
+                    "filledAvgPrice": "10",
+                    "fee": [
+                        {"coin": "usdt", "quantity": "0.1"},
+                        {"coin": "total", "quantity": "0"}
+                    ]
+                }
+            ]
+        })
         updates = self.async_run_with_timeout(self.exchange._all_trade_updates_for_order(order))
         self.assertEqual(len(updates), 1)
-        self.assertEqual(updates[0].trade_id, "trade_1")
+        self.assertEqual(updates[0].trade_id, "req_1")
         self.assertEqual(updates[0].fee.flat_fees[0].token, "USDT")
+        self.exchange._api_get.assert_called_once_with(
+            path_url=CONSTANTS.GET_ORDERS_PATH_URL,
+            params={"status": "FILLED", "offset": 0, "limit": 500},
+            is_auth_required=True,
+            limit_id=CONSTANTS.GET_ORDERS_PATH_URL,
+        )
 
     def test_request_order_status(self):
         order = InFlightOrder(

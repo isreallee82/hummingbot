@@ -393,17 +393,24 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         trade_updates = []
         try:
             exchange_order_id = await order.get_exchange_order_id()
-            path_url = CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id) + "/fill"
-
-            all_fills_response = await self._api_get(
-                path_url=path_url,
+            orders_response = await self._api_get(
+                path_url=CONSTANTS.GET_ORDERS_PATH_URL,
+                params={
+                    "status": "FILLED",
+                    "offset": 0,
+                    "limit": 500,
+                },
                 is_auth_required=True,
-                limit_id=CONSTANTS.GET_ORDER_PATH_URL)
+                limit_id=CONSTANTS.GET_ORDERS_PATH_URL)
 
-            for trade in all_fills_response:
+            order_list = orders_response.get("list", []) if isinstance(orders_response, dict) else orders_response
+            for order_data in order_list:
+                if str(order_data.get("id", "")) != exchange_order_id:
+                    continue
+
                 position_action = PositionAction.OPEN if order.trade_type is TradeType.BUY else PositionAction.CLOSE
 
-                fee_list = trade.get("fee", [])
+                fee_list = order_data.get("fee", [])
                 flat_fees = []
                 for fee_item in fee_list:
                     coin = str(fee_item.get("coin", "USDT")).upper()
@@ -421,15 +428,23 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     flat_fees=flat_fees
                 )
 
+                total_quantity = Decimal(str(order_data.get("quantity", 0)))
+                unfilled_quantity = Decimal(str(order_data.get("unFilledQuantity", 0)))
+                filled_quantity = total_quantity - unfilled_quantity
+                filled_avg_price = Decimal(str(order_data.get("filledAvgPrice", 0)))
+                if filled_quantity <= 0:
+                    continue
+
+                trade_id = str(order_data.get("exchangeRequestId", exchange_order_id))
                 trade_update: TradeUpdate = TradeUpdate(
-                    trade_id=str(trade.get("executionId", "")),
+                    trade_id=trade_id,
                     client_order_id=order.client_order_id,
                     exchange_order_id=exchange_order_id,
                     trading_pair=order.trading_pair,
                     fill_timestamp=time.time(),
-                    fill_price=Decimal(str(trade.get("fillPrice", 0))),
-                    fill_base_amount=Decimal(str(trade.get("fillQuantity", 0))),
-                    fill_quote_amount=Decimal(str(trade.get("fillQuantity", 0))) * Decimal(str(trade.get("fillPrice", 0))),
+                    fill_price=filled_avg_price,
+                    fill_base_amount=filled_quantity,
+                    fill_quote_amount=filled_quantity * filled_avg_price,
                     fee=fee,
                 )
                 trade_updates.append(trade_update)
