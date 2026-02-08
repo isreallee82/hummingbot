@@ -100,20 +100,15 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         snapshot_timestamp: float = time.time()
         snapshot_response.update({"trading_pair": trading_pair})
 
-        # Convert Evedex format to standard format - handle both dict and array formats
-        bids = []
-        for bid in snapshot_response.get("bids", []):
-            if isinstance(bid, dict):
-                bids.append([str(bid.get("price", 0)), str(bid.get("quantity", 0))])
-            else:
-                bids.append([str(bid[0]), str(bid[1])])
-
-        asks = []
-        for ask in snapshot_response.get("asks", []):
-            if isinstance(ask, dict):
-                asks.append([str(ask.get("price", 0)), str(ask.get("quantity", 0))])
-            else:
-                asks.append([str(ask[0]), str(ask[1])])
+        # Convert Evedex dict format to standard format
+        bids = [
+            [str(entry.get("price", 0)), str(entry.get("quantity", 0))]
+            for entry in snapshot_response.get("bids", [])
+        ]
+        asks = [
+            [str(entry.get("price", 0)), str(entry.get("quantity", 0))]
+            for entry in snapshot_response.get("asks", [])
+        ]
 
         snapshot_msg: OrderBookMessage = OrderBookMessage(OrderBookMessageType.SNAPSHOT, {
             "trading_pair": trading_pair,
@@ -401,20 +396,15 @@ class EvedexPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 return
             orderbook = data.get("orderBook", {})
 
-            # Handle both dict and array formats
-            bids = []
-            for bid in orderbook.get("bids", []):
-                if isinstance(bid, dict):
-                    bids.append([str(bid.get("price", 0)), str(bid.get("quantity", 0))])
-                else:
-                    bids.append([str(bid[0]), str(bid[1])])
-
-            asks = []
-            for ask in orderbook.get("asks", []):
-                if isinstance(ask, dict):
-                    asks.append([str(ask.get("price", 0)), str(ask.get("quantity", 0))])
-                else:
-                    asks.append([str(ask[0]), str(ask[1])])
+            # Handle Evedex dict format
+            bids = [
+                [str(entry.get("price", 0)), str(entry.get("quantity", 0))]
+                for entry in orderbook.get("bids", [])
+            ]
+            asks = [
+                [str(entry.get("price", 0)), str(entry.get("quantity", 0))]
+                for entry in orderbook.get("asks", [])
+            ]
 
             order_book_message: OrderBookMessage = OrderBookMessage(OrderBookMessageType.DIFF, {
                 "trading_pair": trading_pair,

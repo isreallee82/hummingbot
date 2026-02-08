@@ -294,46 +294,70 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
         # Get leverage
         leverage = self.get_leverage(trading_pair)
+        leverage_int = int(leverage)
         side = CONSTANTS.SIDE_BUY if trade_type is TradeType.BUY else CONSTANTS.SIDE_SELL
         chain_id = CONSTANTS.CHAIN_ID
 
         cash_quantity = None
         limit_id = None
+        base_params = {
+            "id": evedex_order_id,
+            "instrument": symbol,
+            "leverage": leverage_int,
+            "chainId": chain_id,
+        }
         if position_action == PositionAction.CLOSE:
             path_url = CONSTANTS.CLOSE_POSITION_PATH_URL.format(instrument=symbol)
             limit_id = CONSTANTS.CLOSE_POSITION_PATH_URL
             api_params = {
-                "id": evedex_order_id,
-                "instrument": symbol,
-                "leverage": int(leverage),
+                **base_params,
                 "quantity": str(amount),
-                "chainId": chain_id,
+            }
+            signer = self.authenticator.sign_position_close
+            signer_kwargs = {
+                "order_id": evedex_order_id,
+                "instrument": symbol,
+                "leverage": leverage_int,
+                "quantity": amount,
+                "chain_id": chain_id,
             }
         elif order_type == OrderType.MARKET:
             path_url = CONSTANTS.MARKET_ORDER_PATH_URL
             cash_quantity = amount * price if price != s_decimal_NaN else amount
-
             api_params = {
-                "id": evedex_order_id,
-                "instrument": symbol,
+                **base_params,
                 "side": side,
                 "cashQuantity": str(cash_quantity),
                 "timeInForce": CONSTANTS.TIME_IN_FORCE_IOC,
-                "leverage": int(leverage),
-                "chainId": chain_id,
+            }
+            signer = self.authenticator.sign_market_order
+            signer_kwargs = {
+                "order_id": evedex_order_id,
+                "instrument": symbol,
+                "side": side,
+                "time_in_force": CONSTANTS.TIME_IN_FORCE_IOC,
+                "leverage": leverage_int,
+                "cash_quantity": cash_quantity,
+                "chain_id": chain_id,
             }
         else:
             path_url = CONSTANTS.LIMIT_ORDER_PATH_URL
-
             api_params = {
-                "id": evedex_order_id,
-                "instrument": symbol,
+                **base_params,
                 "side": side,
                 "quantity": str(amount),
                 "limitPrice": str(price),
                 "timeInForce": CONSTANTS.TIME_IN_FORCE_GTC,
-                "leverage": int(leverage),
-                "chainId": chain_id,
+            }
+            signer = self.authenticator.sign_limit_order
+            signer_kwargs = {
+                "order_id": evedex_order_id,
+                "instrument": symbol,
+                "side": side,
+                "leverage": leverage_int,
+                "quantity": amount,
+                "limit_price": price,
+                "chain_id": chain_id,
             }
 
         # Add EIP-712 signature (required by EvedEx)
@@ -343,34 +367,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 "Please configure evedex_perpetual_private_key in your connector settings."
             )
 
-        if position_action == PositionAction.CLOSE:
-            api_params["signature"] = self.authenticator.sign_position_close(
-                order_id=evedex_order_id,
-                instrument=symbol,
-                leverage=int(leverage),
-                quantity=amount,
-                chain_id=chain_id,
-            )
-        elif order_type == OrderType.MARKET:
-            api_params["signature"] = self.authenticator.sign_market_order(
-                order_id=evedex_order_id,
-                instrument=symbol,
-                side=side,
-                time_in_force=CONSTANTS.TIME_IN_FORCE_IOC,
-                leverage=int(leverage),
-                cash_quantity=cash_quantity,
-                chain_id=chain_id,
-            )
-        else:
-            api_params["signature"] = self.authenticator.sign_limit_order(
-                order_id=evedex_order_id,
-                instrument=symbol,
-                side=side,
-                leverage=int(leverage),
-                quantity=amount,
-                limit_price=price,
-                chain_id=chain_id,
-            )
+        api_params["signature"] = signer(**signer_kwargs)
 
         try:
             order_result = await self._api_post(
