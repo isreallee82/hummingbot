@@ -477,6 +477,29 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
         await self.connector._update_positions()
         self.assertEqual(0, len(self.connector.account_positions))
 
+    async def test_update_positions_sets_short_position_amount_as_negative(self):
+        self.connector.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        self.connector._api_get = AsyncMock(return_value={
+            "positions": [
+                {
+                    "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
+                    "instrument_name": self.ex_trading_pair,
+                    "side": "sell",
+                    "amount": "2",
+                    "avg_entry_price": "100",
+                    "unrealized_pnl": "1",
+                    "leverage": "3",
+                }
+            ]
+        })
+
+        await self.connector._update_positions()
+
+        positions = list(self.connector.account_positions.values())
+        self.assertEqual(1, len(positions))
+        self.assertEqual(PositionSide.SHORT, positions[0].position_side)
+        self.assertEqual(Decimal("-2"), positions[0].amount)
+
     async def test_set_trading_pair_leverage_missing_instrument(self):
         result = await self.connector._set_trading_pair_leverage(self.trading_pair, 5)
 
@@ -498,6 +521,58 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
         result = await self.connector._set_trading_pair_leverage(self.trading_pair, 5)
 
         self.assertEqual((False, "Error setting leverage: boom"), result)
+
+    @patch("hummingbot.connector.derivative.aevo_perpetual.aevo_perpetual_derivative.safe_ensure_future")
+    async def test_on_order_failure_ignores_reduce_only_rejection_for_close_orders(self, safe_ensure_future_mock):
+        self.connector._order_tracker.process_order_update = MagicMock()
+        self.connector._update_positions = AsyncMock()
+        safe_ensure_future_mock.side_effect = lambda coro: coro.close()
+        exception = IOError(
+            "Error executing request POST https://api.aevo.xyz/orders. HTTP status is 400. "
+            "Error: {\"error\":\"NO_POSITION_REDUCE_ONLY\"}"
+        )
+
+        self.connector._on_order_failure(
+            order_id="order-9",
+            trading_pair=self.trading_pair,
+            amount=Decimal("0.2"),
+            trade_type=TradeType.SELL,
+            order_type=OrderType.LIMIT,
+            price=Decimal("100"),
+            exception=exception,
+            position_action=PositionAction.CLOSE,
+        )
+
+        self.connector._order_tracker.process_order_update.assert_called_once()
+        order_update = self.connector._order_tracker.process_order_update.call_args.args[0]
+        self.assertEqual(OrderState.CANCELED, order_update.new_state)
+        self.assertEqual("order-9", order_update.client_order_id)
+        self.assertEqual(self.trading_pair, order_update.trading_pair)
+        self.assertEqual(exception.__class__.__name__, order_update.misc_updates["error_type"])
+        safe_ensure_future_mock.assert_called_once()
+        self.assertTrue(
+            any(
+                "Ignoring rejected reduce-only close order order-9" in record.getMessage()
+                for record in self.log_records
+            )
+        )
+
+    @patch("hummingbot.connector.exchange_py_base.ExchangePyBase._on_order_failure")
+    async def test_on_order_failure_delegates_to_base_for_non_reduce_only_rejections(self, base_on_order_failure_mock):
+        exception = IOError("some other error")
+
+        self.connector._on_order_failure(
+            order_id="order-10",
+            trading_pair=self.trading_pair,
+            amount=Decimal("0.2"),
+            trade_type=TradeType.SELL,
+            order_type=OrderType.LIMIT,
+            price=Decimal("100"),
+            exception=exception,
+            position_action=PositionAction.CLOSE,
+        )
+
+        base_on_order_failure_mock.assert_called_once()
 
     async def test_process_order_message_updates_tracker(self):
         tracked_order = InFlightOrder(
@@ -567,6 +642,24 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
 
         position: Position = self.connector.account_positions[pos_key]
         self.assertEqual(Decimal("2"), position.amount)
+
+    async def test_process_position_message_sets_short_position_with_negative_amount(self):
+        self.connector.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        pos_key = self.connector._perpetual_trading.position_key(self.trading_pair, PositionSide.SHORT)
+
+        await self.connector._process_position_message({
+            "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
+            "instrument_name": self.ex_trading_pair,
+            "side": "sell",
+            "amount": "2",
+            "avg_entry_price": "100",
+            "unrealized_pnl": "1",
+            "leverage": "3",
+        })
+
+        position: Position = self.connector.account_positions[pos_key]
+        self.assertEqual(PositionSide.SHORT, position.position_side)
+        self.assertEqual(Decimal("-2"), position.amount)
 
     async def test_user_stream_event_listener_routes_messages(self):
         self.connector._process_order_message = MagicMock()

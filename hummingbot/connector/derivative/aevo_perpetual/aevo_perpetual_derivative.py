@@ -124,6 +124,10 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
     def funding_fee_poll_interval(self) -> int:
         return 120
 
+    @staticmethod
+    def _signed_position_amount(amount: Decimal, position_side: PositionSide) -> Decimal:
+        return -amount if position_side == PositionSide.SHORT else amount
+
     async def _make_network_check_request(self):
         await self._api_get(path_url=self.check_network_request_path)
 
@@ -173,6 +177,52 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
         is_order_not_exist = CONSTANTS.NOT_EXIST_ERROR in error_message
 
         return is_order_not_exist
+
+    def _is_reduce_only_rejection_error(self, exception: Exception) -> bool:
+        error_message = str(exception)
+        return any(error_code in error_message for error_code in CONSTANTS.REDUCE_ONLY_REJECTION_ERRORS)
+
+    def _on_order_failure(
+        self,
+        order_id: str,
+        trading_pair: str,
+        amount: Decimal,
+        trade_type: TradeType,
+        order_type: OrderType,
+        price: Optional[Decimal],
+        exception: Exception,
+        **kwargs,
+    ):
+        position_action = kwargs.get("position_action")
+
+        if position_action == PositionAction.CLOSE and self._is_reduce_only_rejection_error(exception):
+            self.logger().info(
+                f"Ignoring rejected reduce-only close order {order_id} ({trade_type.name} {trading_pair}): {exception}"
+            )
+            self._order_tracker.process_order_update(OrderUpdate(
+                trading_pair=trading_pair,
+                update_timestamp=self.current_timestamp,
+                new_state=OrderState.CANCELED,
+                client_order_id=order_id,
+                misc_updates={
+                    "error_message": str(exception),
+                    "error_type": exception.__class__.__name__,
+                },
+            ))
+            safe_ensure_future(self._update_positions())
+
+            return
+
+        super()._on_order_failure(
+            order_id=order_id,
+            trading_pair=trading_pair,
+            amount=amount,
+            trade_type=trade_type,
+            order_type=order_type,
+            price=price,
+            exception=exception,
+            **kwargs,
+        )
 
     def _create_web_assistants_factory(self) -> WebAssistantsFactory:
         return web_utils.build_api_factory(
@@ -539,7 +589,10 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
             trading_pair = await self.trading_pair_associated_to_exchange_symbol(position["instrument_name"])
             active_pairs.add(trading_pair)
             position_side = PositionSide.LONG if position.get("side") == "buy" else PositionSide.SHORT
-            amount = Decimal(position.get("amount", "0"))
+            amount = self._signed_position_amount(
+                amount=Decimal(position.get("amount", "0")),
+                position_side=position_side,
+            )
             entry_price = Decimal(position.get("avg_entry_price", "0"))
             unrealized_pnl = Decimal(position.get("unrealized_pnl", "0"))
             leverage = Decimal(position.get("leverage", "1"))
@@ -653,7 +706,10 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
 
         trading_pair = await self.trading_pair_associated_to_exchange_symbol(position["instrument_name"])
         position_side = PositionSide.LONG if position.get("side") == "buy" else PositionSide.SHORT
-        amount = Decimal(position.get("amount", "0"))
+        amount = self._signed_position_amount(
+            amount=Decimal(position.get("amount", "0")),
+            position_side=position_side,
+        )
         entry_price = Decimal(position.get("avg_entry_price", "0"))
         unrealized_pnl = Decimal(position.get("unrealized_pnl", "0"))
         leverage = Decimal(position.get("leverage", "1"))
