@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import time
 import uuid
 from collections import defaultdict
@@ -524,23 +525,10 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     await self._process_order_update(data)
                 elif "futures-perp:position" in channel:
                     await self._process_position_update(data)
-                elif "futures-perp:user" in channel:
-                    # user channel provides AccountEvent
-                    await self._process_account_update(data)
                 elif "futures-perp:orderFilled" in channel:
                     await self._process_order_fill(data)
-                elif "futures-perp:position" in channel:
-                    await self._process_funding_update(data)
-
-    async def _process_account_update(self, account_data: Dict[str, Any]):
-        """
-        Process AccountEvent from user-{userExchangeId} channel.
-        AccountEvent: { user: string, marginCall: boolean, updatedAt: string }
-        """
-        # Account updates indicate margin call status - log for now
-        margin_call = account_data.get("marginCall", False)
-        if margin_call:
-            self.logger().warning("Margin call triggered!")
+                elif "futures-perp:funding" in channel:
+                    await self._process_balance_update(data)
 
     async def _process_order_fill(self, fill_data: Dict[str, Any]):
         """
@@ -696,32 +684,25 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 self._perpetual_trading.remove_position(pos_key)
 
     async def _process_balance_update(self, balance_data: Dict[str, Any]):
-        # Handle AvailableBalance type structure from types.ts:
-        # {
-        #   currency: string,
-        #   funding: { currency: string, balance: number },
-        #   availableBalance: number,
-        #   position: AvailableBalancePosition[],
-        #   openOrder: AvailableBalanceOpenOrder[],
-        #   updatedAt: string
-        # }
         if isinstance(balance_data, dict):
+            if "coin" in balance_data and "quantity" in balance_data and "funding" not in balance_data:
+                asset_name = str(balance_data.get("coin", "USDT")).upper()
+                delta = Decimal(str(balance_data.get("quantity", 0)))
+                current_total = self._account_balances.get(asset_name, Decimal("0"))
+                current_available = self._account_available_balances.get(asset_name, current_total)
+                self._account_balances[asset_name] = current_total + delta
+                self._account_available_balances[asset_name] = current_available + delta
+                return
+
             # Single AvailableBalance object
             funding = balance_data.get("funding", {})
             asset_name = balance_data.get("currency", funding.get("currency", "USDT"))
+            asset_name = str(asset_name).upper()
             total_balance = Decimal(str(funding.get("balance", 0)))
             available_balance = Decimal(str(balance_data.get("availableBalance", total_balance)))
 
             self._account_balances[asset_name] = total_balance
             self._account_available_balances[asset_name] = available_balance
-        elif isinstance(balance_data, list):
-            # List of WalletBalance objects: { currency, balance, balanceUSD }
-            for balance in balance_data:
-                asset_name = balance.get("currency", "USDT")
-                total_balance = Decimal(str(balance.get("balance", 0)))
-                self._account_balances[asset_name] = total_balance
-                if asset_name not in self._account_available_balances:
-                    self._account_available_balances[asset_name] = total_balance
 
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
         """
@@ -882,24 +863,54 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             # Use the fill endpoint to get recent fills
             for trading_pair in trading_pairs:
                 try:
+                    order_map = trading_pairs_to_order_map.get(trading_pair, {})
+                    if not order_map:
+                        continue
+
+                    earliest_creation_ts = min(
+                        (o.creation_timestamp for o in order_map.values() if o.creation_timestamp),
+                        default=self.current_timestamp
+                    )
+                    after_ts = self._last_poll_timestamp if self._last_poll_timestamp > 0 else earliest_creation_ts
+                    after_ts = max(0, after_ts - 1)
+                    before_ts = self.current_timestamp + 1
+                    if after_ts >= before_ts:
+                        after_ts = max(0, before_ts - 1)
+
+                    after_iso = datetime.datetime.fromtimestamp(
+                        after_ts, tz=datetime.timezone.utc
+                    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+                    before_iso = datetime.datetime.fromtimestamp(
+                        before_ts, tz=datetime.timezone.utc
+                    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+
                     exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
                     fills = await self._api_get(
                         path_url=CONSTANTS.ORDER_FILLS_PATH_URL,
                         params={
                             "instrument": exchange_symbol,
-                            "after": "2020-01-01T00:00:00Z",
-                            "before": "2030-01-01T00:00:00Z"
+                            "after": after_iso,
+                            "before": before_iso
                         },
                         is_auth_required=True)
 
                     fill_list = fills.get("list", []) if isinstance(fills, dict) else fills
-                    order_map = trading_pairs_to_order_map.get(trading_pair, {})
 
                     for fill in fill_list:
-                        order_id = str(fill.get("orderId", ""))
+                        order_id = str(fill.get("order"))
                         if order_id in order_map:
                             tracked_order: InFlightOrder = order_map.get(order_id)
                             position_action = PositionAction.OPEN if tracked_order.trade_type is TradeType.BUY else PositionAction.CLOSE
+
+                            created_at = fill.get("createdAt")
+                            fill_timestamp = time.time()
+                            if created_at:
+                                try:
+                                    fill_timestamp = datetime.datetime.fromisoformat(
+                                        created_at.replace("Z", "+00:00")
+                                    ).timestamp()
+                                except Exception:
+                                    pass
 
                             fee = TradeFeeBase.new_perpetual_fee(
                                 fee_schema=self.trade_fee_schema(),
@@ -909,11 +920,11 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                             )
 
                             trade_update: TradeUpdate = TradeUpdate(
-                                trade_id=str(fill.get("executionId", "")),
+                                trade_id=str(fill.get("id")),
                                 client_order_id=tracked_order.client_order_id,
                                 exchange_order_id=order_id,
                                 trading_pair=trading_pair,
-                                fill_timestamp=time.time(),
+                                fill_timestamp=fill_timestamp,
                                 fill_price=Decimal(str(fill.get("fillPrice", 0))),
                                 fill_base_amount=Decimal(str(fill.get("fillQuantity", 0))),
                                 fill_quote_amount=Decimal(str(fill.get("fillQuantity", 0))) * Decimal(str(fill.get("fillPrice", 0))),
