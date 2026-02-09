@@ -548,22 +548,6 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._perpetual_trading.set_position.assert_called()
         self.exchange._perpetual_trading.remove_position.assert_called()
 
-    def test_process_balance_update_dict_and_list(self):
-        self.async_run_with_timeout(self.exchange._process_balance_update({
-            "currency": "usdt",
-            "funding": {"currency": "usdt", "balance": 5},
-            "availableBalance": 4,
-        }))
-        self.async_run_with_timeout(self.exchange._process_balance_update({
-            "coin": "usdt",
-            "quantity": "1.5",
-            "createdAt": "2026-02-09T01:24:54.937Z",
-            "updatedAt": "2026-02-09T02:00:00.252Z",
-        }))
-        self.assertIn("USDT", self.exchange._account_balances)
-        self.assertEqual(self.exchange._account_balances["USDT"], Decimal("6.5"))
-        self.assertEqual(self.exchange._account_available_balances["USDT"], Decimal("5.5"))
-
     def test_format_trading_rules_and_initialize_mapping(self):
         rule = {
             "name": self.ex_trading_pair,
@@ -1265,14 +1249,6 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         }
         self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
         self.exchange._process_order_fill.assert_awaited_once()
-
-    def test_process_user_stream_event_funding_update(self):
-        self.exchange._process_balance_update = AsyncMock()
-        event_message = {
-            "push": {"channel": "futures-perp:funding-123", "pub": {"data": {"id": "1"}}}
-        }
-        self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
-        self.exchange._process_balance_update.assert_awaited_once()
 
 
 if __name__ == "__main__":

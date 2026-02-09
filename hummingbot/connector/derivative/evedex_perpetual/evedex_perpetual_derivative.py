@@ -527,8 +527,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     await self._process_position_update(data)
                 elif "futures-perp:orderFilled" in channel:
                     await self._process_order_fill(data)
-                elif "futures-perp:funding" in channel:
-                    await self._process_balance_update(data)
 
     async def _process_order_fill(self, fill_data: Dict[str, Any]):
         """
@@ -682,27 +680,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 self._perpetual_trading.set_position(pos_key, _position)
             else:
                 self._perpetual_trading.remove_position(pos_key)
-
-    async def _process_balance_update(self, balance_data: Dict[str, Any]):
-        if isinstance(balance_data, dict):
-            if "coin" in balance_data and "quantity" in balance_data and "funding" not in balance_data:
-                asset_name = str(balance_data.get("coin", "USDT")).upper()
-                delta = Decimal(str(balance_data.get("quantity", 0)))
-                current_total = self._account_balances.get(asset_name, Decimal("0"))
-                current_available = self._account_available_balances.get(asset_name, current_total)
-                self._account_balances[asset_name] = current_total + delta
-                self._account_available_balances[asset_name] = current_available + delta
-                return
-
-            # Single AvailableBalance object
-            funding = balance_data.get("funding", {})
-            asset_name = balance_data.get("currency", funding.get("currency", "USDT"))
-            asset_name = str(asset_name).upper()
-            total_balance = Decimal(str(funding.get("balance", 0)))
-            available_balance = Decimal(str(balance_data.get("availableBalance", total_balance)))
-
-            self._account_balances[asset_name] = total_balance
-            self._account_available_balances[asset_name] = available_balance
 
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
         """
