@@ -928,7 +928,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 try:
                     exchange_order_id = await tracked_order.get_exchange_order_id()
                     path_url = CONSTANTS.GET_ORDER_PATH_URL.format(orderId=exchange_order_id)
-
                     order_update = await self._api_get(
                         path_url=path_url,
                         is_auth_required=True,
