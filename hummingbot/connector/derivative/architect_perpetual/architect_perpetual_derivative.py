@@ -60,6 +60,7 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         self._additional_instruments_info: Dict[str, "AdditionalInstrumentInfo"] = {}
         self._real_time_balance_update = False  # no WS updates for balances
         self._trading_rules_updates_event = Event()
+        self._trading_pair_parsing_warrning_issued: set[str] = set()
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @property
@@ -205,24 +206,25 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
                 symbol, base, quote = self._get_symbol_base_and_quote_from_exchange_info_instrument(
                     instrument_data=instrument_data
                 )
-                trading_pair = combine_to_hb_trading_pair(base=base, quote=quote)
-                ticker_data = tickers_map[symbol]
-                price_band = AdditionalInstrumentInfo(
-                    leverage=int(s_decimal_hundred / Decimal(instrument_data["initial_margin_pct"])),
-                    upper_price_bound=Decimal(ticker_data["pu"]),
-                    lower_price_bound=Decimal(ticker_data["pl"]),
-                )
-                self._additional_instruments_info[trading_pair] = price_band
-                min_order_size = Decimal(instrument_data["minimum_order_size"])
-                trading_rule = TradingRule(
-                    trading_pair=trading_pair,
-                    min_order_size=min_order_size,
-                    min_price_increment=Decimal(instrument_data["tick_size"]),
-                    min_base_amount_increment=min_order_size,
-                    min_notional_size=min_order_size * price_band.lower_price_bound,
-                )
-                self._trading_rules[trading_rule.trading_pair] = trading_rule
-                self._perpetual_trading.set_leverage(trading_pair, float(price_band.leverage))
+                if symbol is not None:
+                    trading_pair = combine_to_hb_trading_pair(base=base, quote=quote)
+                    ticker_data = tickers_map[symbol]
+                    price_band = AdditionalInstrumentInfo(
+                        leverage=int(s_decimal_hundred / Decimal(instrument_data["initial_margin_pct"])),
+                        upper_price_bound=Decimal(ticker_data["pu"]),
+                        lower_price_bound=Decimal(ticker_data["pl"]),
+                    )
+                    self._additional_instruments_info[trading_pair] = price_band
+                    min_order_size = Decimal(instrument_data["minimum_order_size"])
+                    trading_rule = TradingRule(
+                        trading_pair=trading_pair,
+                        min_order_size=min_order_size,
+                        min_price_increment=Decimal(instrument_data["tick_size"]),
+                        min_base_amount_increment=min_order_size,
+                        min_notional_size=min_order_size * price_band.lower_price_bound,
+                    )
+                    self._trading_rules[trading_rule.trading_pair] = trading_rule
+                    self._perpetual_trading.set_leverage(trading_pair, float(price_band.leverage))
             except Exception:
                 if instrument_data["symbol"] != "TEST-PERP":
                     self.logger().exception(
@@ -440,9 +442,9 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         return trade_updates
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
-        response = await self._api_post(
+        response = await self._api_get(
             path_url=CONSTANTS.ORDER_STATUS_ENDPOINT,
-            data={"client_order_id": int(tracked_order.client_order_id)},
+            params={"client_order_id": int(tracked_order.client_order_id)},
             is_auth_required=True,
         )
         if "error" in response:
@@ -490,25 +492,29 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
                 symbol, base, quote = self._get_symbol_base_and_quote_from_exchange_info_instrument(
                     instrument_data=instrument_data
                 )
-                trading_pair = combine_to_hb_trading_pair(base, quote)
-                mapping[symbol] = trading_pair
+                if symbol is not None:
+                    trading_pair = combine_to_hb_trading_pair(base, quote)
+                    mapping[symbol] = trading_pair
             except Exception as exception:
-                if instrument_data["symbol"] != "TEST-PERP":
-                    self.logger().error(
-                        f"There was an error parsing a trading pair information ({exception})."
-                        f" Symbol data: {instrument_data}."
-                    )
+                self.logger().error(
+                    f"There was an error parsing a trading pair information ({exception})."
+                    f" Symbol data: {instrument_data}."
+                )
         self._set_trading_pair_symbol_map(mapping)
 
-    @staticmethod
-    def _get_symbol_base_and_quote_from_exchange_info_instrument(instrument_data) -> Tuple[str, str, str]:
+    def _get_symbol_base_and_quote_from_exchange_info_instrument(
+        self, instrument_data
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         symbol = instrument_data["symbol"]
         quote = instrument_data["quote_currency"]
         match = re.match(pattern=fr"(\w+){quote}-PERP", string=symbol)
         if match is not None:
             base = match.group(1)
         else:
-            raise IOError(f"Could not parse base token for {symbol}.")
+            if symbol not in self._trading_pair_parsing_warrning_issued:
+                self.logger().warning(f"Could not parse base token for {symbol}.")
+                self._trading_pair_parsing_warrning_issued.add(symbol)
+            return None, None, None
         return symbol, base, quote
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
