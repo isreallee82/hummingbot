@@ -226,10 +226,9 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
                     self._trading_rules[trading_rule.trading_pair] = trading_rule
                     self._perpetual_trading.set_leverage(trading_pair, float(price_band.leverage))
             except Exception:
-                if instrument_data["symbol"] != "TEST-PERP":
-                    self.logger().exception(
-                        f"Error parsing the trading pair rule: {instrument_data}. Skipping."
-                    )
+                self.logger().exception(
+                    f"Error parsing the trading pair rule: {instrument_data}. Skipping."
+                )
         self._initialize_trading_pair_symbols_from_exchange_info(exchange_info=exchange_info)
         self._trading_rules_updates_event.set()
 
