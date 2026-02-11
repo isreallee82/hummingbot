@@ -134,6 +134,10 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         trading_rule: TradingRule = self._trading_rules[trading_pair]
         return trading_rule.sell_order_collateral_token
 
+    async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
+        pairs_prices = await self._api_get(path_url=CONSTANTS.TICKERS_INFO_ENDPOINT, is_auth_required=True)
+        return pairs_prices
+
     def buy(
         self,
         trading_pair: str,
@@ -510,10 +514,14 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         if match is not None:
             base = match.group(1)
         else:
-            if symbol not in self._trading_pair_parsing_warrning_issued:
-                self.logger().warning(f"Could not parse base token for {symbol}.")
-                self._trading_pair_parsing_warrning_issued.add(symbol)
-            return None, None, None
+            alt_match = re.match(pattern=r"(\w+)-PERP", string=symbol)
+            if alt_match is not None:
+                base = alt_match.group(1)
+            else:
+                if symbol not in self._trading_pair_parsing_warrning_issued:
+                    self.logger().warning(f"Could not parse base token for {symbol}.")
+                    self._trading_pair_parsing_warrning_issued.add(symbol)
+                return None, None, None
         return symbol, base, quote
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
