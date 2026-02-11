@@ -884,7 +884,7 @@ class ClientConfigMap(BaseClientModel):
         if isinstance(v, tuple(RATE_SOURCE_MODES.values())):
             sub_model = v
         elif isinstance(v, dict):
-            sub_model = RATE_SOURCE_MODES[v["name"]].model_construct()
+            sub_model = RATE_SOURCE_MODES[v["name"]].model_construct(**v)
         elif isinstance(v, str):
             sub_model = RATE_SOURCE_MODES[v].model_construct()
         elif v not in RATE_SOURCE_MODES:
