@@ -219,6 +219,44 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
             params={"instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE},
         )
 
+    async def test_get_all_pairs_prices_formats_response(self):
+        self.connector._api_get = AsyncMock(return_value=[
+            {
+                "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
+                "instrument_name": self.ex_trading_pair,
+                "mark_price": "2000",
+            },
+            {
+                "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
+                "instrument_name": "BTC-PERP",
+                "index_price": "50000",
+            },
+            {
+                "instrument_type": "OPTION",
+                "instrument_name": "ETH-30JUN23-1600-C",
+                "mark_price": "10",
+            },
+            {
+                "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
+                "mark_price": "123",
+            },
+        ])
+
+        result = await self.connector.get_all_pairs_prices()
+
+        self.assertEqual(
+            [
+                {"symbol": self.ex_trading_pair, "price": "2000"},
+                {"symbol": "BTC-PERP", "price": "50000"},
+            ],
+            result,
+        )
+        self.connector._api_get.assert_awaited_once_with(
+            path_url=CONSTANTS.MARKETS_PATH_URL,
+            params={"instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE},
+            limit_id=CONSTANTS.MARKETS_PATH_URL,
+        )
+
     async def test_create_order_book_data_source(self):
         data_source = self.connector._create_order_book_data_source()
 

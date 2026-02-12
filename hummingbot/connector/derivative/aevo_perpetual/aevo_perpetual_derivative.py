@@ -144,6 +144,28 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
     def supported_order_types(self) -> List[OrderType]:
         return [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET]
 
+    async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
+        pairs_data = await self._api_get(
+            path_url=CONSTANTS.MARKETS_PATH_URL,
+            params={"instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE},
+            limit_id=CONSTANTS.MARKETS_PATH_URL,
+        )
+        pairs_prices: List[Dict[str, str]] = []
+
+        for pair_data in pairs_data:
+            symbol = pair_data.get("instrument_name")
+            price = pair_data.get("index_price")
+
+            if symbol is None or price is None:
+                continue
+
+            pairs_prices.append({
+                "symbol": symbol,
+                "price": price,
+            })
+
+        return pairs_prices
+
     def supported_position_modes(self):
         return [PositionMode.ONEWAY]
 
