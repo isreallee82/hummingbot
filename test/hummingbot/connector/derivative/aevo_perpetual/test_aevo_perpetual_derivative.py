@@ -224,7 +224,7 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
             {
                 "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
                 "instrument_name": self.ex_trading_pair,
-                "mark_price": "2000",
+                "index_price": "2000",
             },
             {
                 "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
