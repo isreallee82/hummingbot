@@ -18,7 +18,13 @@ class PacificaPerpetualAuth(AuthBase):
         # aka "account"; we pass it to some GET requests and to all POST requests
         self.user_wallet_public_key = user_wallet_public_key
 
-        self.keypair = Keypair.from_bytes(base58.b58decode(self.agent_wallet_private_key))
+        self._keypair = None
+
+    @property
+    def keypair(self):
+        if self._keypair is None:
+            self._keypair = Keypair.from_bytes(base58.b58decode(self.agent_wallet_private_key))
+        return self._keypair
 
     async def rest_authenticate(self, request: RESTRequest) -> RESTRequest:
         if request.method == RESTMethod.POST:
