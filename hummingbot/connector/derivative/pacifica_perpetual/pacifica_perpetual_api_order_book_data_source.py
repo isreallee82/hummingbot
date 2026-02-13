@@ -37,6 +37,7 @@ class PacificaPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         self._connector = connector
         self._api_factory = api_factory
         self._domain = domain
+        self._ping_task: Optional[asyncio.Task] = None
 
     async def get_last_traded_prices(self, trading_pairs: List[str], domain: Optional[str] = None) -> Dict[str, float]:
         return await self._connector.get_last_traded_prices(trading_pairs=trading_pairs)
@@ -178,6 +179,7 @@ class PacificaPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         ws: WSAssistant = await self._api_factory.get_ws_assistant()
 
         await ws.connect(ws_url=web_utils.wss_url(self._domain), ws_headers=self._get_headers())
+        self._ping_task = safe_ensure_future(self._ping_loop(ws))
         return ws
 
     async def _subscribe_channels(self, ws: WSAssistant):
@@ -222,14 +224,17 @@ class PacificaPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
             self.logger().info("Subscribed to public order book and trade channels...")
 
-            # Start ping loop
-            self._ping_task = safe_ensure_future(self._ping_loop(ws))
-
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger().exception("Unexpected error occurred subscribing to order book trading pairs.")
             raise
+
+    async def _on_order_stream_interruption(self, websocket_assistant: Optional[WSAssistant] = None):
+        await super()._on_order_stream_interruption(websocket_assistant)
+        if self._ping_task is not None:
+            self._ping_task.cancel()
+            self._ping_task = None
 
     async def _ping_loop(self, ws: WSAssistant):
         while True:
@@ -238,6 +243,10 @@ class PacificaPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
                 ping_request = WSJSONRequest(payload={"method": "ping"})
                 await ws.send(ping_request)
             except asyncio.CancelledError:
+                raise
+            except RuntimeError as e:
+                if "WS is not connected" in str(e):
+                    return
                 raise
             except Exception:
                 self.logger().warning("Error sending ping to Pacifica WebSocket", exc_info=True)

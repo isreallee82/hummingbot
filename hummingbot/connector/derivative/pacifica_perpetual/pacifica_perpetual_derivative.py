@@ -78,6 +78,8 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
 
         self._order_history_last_poll_timestamp: Dict[str, float] = {}
 
+        self._fee_tier = 0
+
         super().__init__(balance_asset_limit=balance_asset_limit, rate_limits_share_pct=rate_limits_share_pct)
 
     @property
@@ -94,23 +96,18 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
 
     @property
     def rate_limits_rules(self):
-        # We need to construct a custom RateLimit for the global limit, because its limit value
-        # depends on whether we have a valid API Config Key or not.
         if not self.api_config_key:
             return CONSTANTS.RATE_LIMITS
 
-        global_limit_value = CONSTANTS.PACIFICA_TIER_2_LIMIT if self.api_config_key else CONSTANTS.PACIFICA_TIER_1_LIMIT
+        tier2_limit = CONSTANTS.FEE_TIER_LIMITS.get(self._fee_tier, CONSTANTS.PACIFICA_TIER_2_LIMIT)
 
         global_limit = RateLimit(
             limit_id=CONSTANTS.PACIFICA_LIMIT_ID,
-            limit=global_limit_value,
+            limit=tier2_limit,
             time_interval=CONSTANTS.PACIFICA_LIMIT_INTERVAL
         )
 
-        # We return the list of rules where the first rule (the global one) is replaced/ensured to be our correct one.
-        # Since CONSTANTS.RATE_LIMITS already has a global limit entry, we can just return a new list
-        # where the first item is our dynamic global limit.
-        return [global_limit] + CONSTANTS.RATE_LIMITS[1:]
+        return [global_limit] + CONSTANTS.RATE_LIMITS_TIER_2[1:]
 
     async def _api_request(
         self,
@@ -491,7 +488,9 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
         self._account_available_balances.clear()
 
         self._account_balances[asset] = Decimal(str(data["account_equity"]))
+        self._account_balances[asset] = Decimal(str(data["account_equity"]))
         self._account_available_balances[asset] = Decimal(str(data["available_to_spend"]))
+        self._fee_tier = data.get("fee_level", 0)
 
     async def _update_positions(self):
         """
@@ -889,7 +888,7 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
         for trading_pair in self._trading_pairs:
             self._trading_fees[trading_pair] = trade_fee_schema
 
-        self.logger().error("TRADE FEES UPDATED")
+        self.logger().info("Trading fees updated")
 
     async def _fetch_last_fee_payment(self, trading_pair: str) -> Tuple[float, Decimal, Decimal]:
         """
@@ -931,7 +930,7 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
 
         data = response.get("data")
         if not data:
-            self.logger().error(f"Failed to fetch last fee payment (no data): {response}")
+            self.logger().debug(f"Failed to fetch last fee payment (no data): {response}")
             return 0, Decimal("-1"), Decimal("-1")
 
         # check if the first page has the trading pair we need
@@ -976,7 +975,7 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
 
             data = response.get("data")
             if not data:
-                self.logger().error(f"Failed to fetch last fee payment (no data): {response}")
+                self.logger().debug(f"Failed to fetch last fee payment (no data): {response}")
                 return 0, Decimal("-1"), Decimal("-1")
 
             if data[0]["created_at"] < one_hour_back_timestamp:
@@ -1318,7 +1317,8 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
         :param index_price: the index price
         :param mark_price: the mark price
         """
-        if self._prices[trading_pair] is None or timestamp >= self._prices[trading_pair].timestamp:
+        existing = self._prices.get(trading_pair)
+        if existing is None or timestamp >= existing.timestamp:
             self._prices[trading_pair] = PacificaPerpetualPriceRecord(
                 timestamp=timestamp,
                 index_price=index_price,
@@ -1371,8 +1371,11 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
         return round(fee_amount, 6)
 
     async def start_network(self):
-        self.logger().info("Starting network...")
         await self._fetch_or_create_api_config_key()
+        # status polling is already started in super().start_network() -> _status_polling_loop()
+        # but we need to ensure fee tier is fetched immediately
+        # we call it before super() so that the rate limits are correctly set before the periodic loops start
+        await self._update_balances()
         await super().start_network()
 
     async def get_all_pairs_prices(self) -> List[Dict[str, Any]]:
