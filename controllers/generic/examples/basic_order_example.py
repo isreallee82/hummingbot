@@ -7,7 +7,7 @@ from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction,
 
 
 class BasicOrderExampleConfig(ControllerConfigBase):
-    controller_name: str = "basic_order_example"
+    controller_name: str = "examples.basic_order_example"
     connector_name: str = "binance_perpetual"
     trading_pair: str = "WLD-USDT"
     side: TradeType = TradeType.BUY

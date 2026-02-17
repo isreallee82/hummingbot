@@ -1,24 +1,31 @@
+import os
+from typing import List
+
 import pandas as pd
 import pandas_ta as ta  # noqa: F401
+from pydantic import Field
 
 from hummingbot.client.ui.interface_utils import format_df_for_printout
 from hummingbot.connector.connector_base import ConnectorBase, Dict
+from hummingbot.core.data_type.common import MarketDict
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
-from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
+from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
 
 
-class VolatilityScreener(ScriptStrategyBase):
-    exchange = "binance_perpetual"
-    trading_pairs = ["BTC-USDT", "ETH-USDT", "BNB-USDT", "NEO-USDT", "INJ-USDT", "API3-USDT", "TRB-USDT",
-                     "LPT-USDT", "SOL-USDT", "LTC-USDT", "DOT-USDT", "LINK-USDT", "UNI-USDT", "AAVE-USDT",
-                     "YFI-USDT", "SNX-USDT", "COMP-USDT", "MKR-USDT", "SUSHI-USDT", "CRV-USDT", "1INCH-USDT",
-                     "BAND-USDT", "KAVA-USDT", "KNC-USDT", "OMG-USDT", "REN-USDT", "ZRX-USDT", "BAL-USDT",
-                     "GRT-USDT", "ZEC-USDT", "XMR-USDT", "XTZ-USDT", "ALGO-USDT", "ATOM-USDT", "ZIL-USDT",
-                     "DASH-USDT", "DOGE-USDT", "EGLD-USDT", "EOS-USDT", "ETC-USDT", "FIL-USDT", "ICX-USDT",
-                     "IOST-USDT", "IOTA-USDT", "KSM-USDT", "LRC-USDT", "POL-USDT", "NEAR-USDT", "OCEAN-USDT",
-                     "ONT-USDT", "QTUM-USDT", "RVN-USDT", "SKL-USDT", "STORJ-USDT", "SXP-USDT",
-                     "TRX-USDT", "VET-USDT", "WAVES-USDT", "XLM-USDT", "XRP-USDT"]
+class VolatilityScreenerConfig(StrategyV2ConfigBase):
+    script_file_name: str = os.path.basename(__file__)
+    controllers_config: List[str] = []
+    exchange: str = Field(default="binance_perpetual")
+    trading_pairs: list = Field(default=["BTC-USDT", "ETH-USDT", "BNB-USDT", "SOL-USDT", "MET-USDT"])
+
+    def update_markets(self, markets: MarketDict) -> MarketDict:
+        # For screener strategies, we don't typically need to add the trading pairs to markets
+        # since we're only consuming data (candles), not placing orders
+        return markets
+
+
+class VolatilityScreener(StrategyV2Base):
     intervals = ["3m"]
     max_records = 1000
 
@@ -28,20 +35,18 @@ class VolatilityScreener(ScriptStrategyBase):
     top_n = 20
     report_interval = 60 * 60 * 6  # 6 hours
 
-    # we can initialize any trading pair since we only need the candles
-    markets = {"binance_paper_trade": {"BTC-USDT"}}
-
-    def __init__(self, connectors: Dict[str, ConnectorBase]):
-        super().__init__(connectors)
+    def __init__(self, connectors: Dict[str, ConnectorBase], config: VolatilityScreenerConfig):
+        super().__init__(connectors, config)
+        self.config = config
         self.last_time_reported = 0
-        combinations = [(trading_pair, interval) for trading_pair in self.trading_pairs for interval in
+        combinations = [(trading_pair, interval) for trading_pair in config.trading_pairs for interval in
                         self.intervals]
 
         self.candles = {f"{combinations[0]}_{combinations[1]}": None for combinations in combinations}
         # we need to initialize the candles for each trading pair
         for combination in combinations:
             candle = CandlesFactory.get_candle(
-                CandlesConfig(connector=self.exchange, trading_pair=combination[0], interval=combination[1],
+                CandlesConfig(connector=config.exchange, trading_pair=combination[0], interval=combination[1],
                               max_records=self.max_records))
             candle.start()
             self.candles[f"{combination[0]}_{combination[1]}"] = candle
@@ -90,9 +95,9 @@ class VolatilityScreener(ScriptStrategyBase):
 
             # adding bbands metrics
             df.ta.bbands(length=self.volatility_interval, append=True)
-            df["bbands_width_pct"] = df[f"BBB_{self.volatility_interval}_2.0"]
+            df["bbands_width_pct"] = df[f"BBB_{self.volatility_interval}_2.0_2.0"]
             df["bbands_width_pct_mean"] = df["bbands_width_pct"].rolling(self.volatility_interval).mean()
-            df["bbands_percentage"] = df[f"BBP_{self.volatility_interval}_2.0"]
+            df["bbands_percentage"] = df[f"BBP_{self.volatility_interval}_2.0_2.0"]
             df["natr"] = ta.natr(df["high"], df["low"], df["close"], length=self.volatility_interval)
             market_metrics[trading_pair_interval] = df.iloc[-1]
         volatility_metrics_df = pd.DataFrame(market_metrics).T

@@ -1,16 +1,32 @@
-from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
+import os
+
+from pydantic import Field
+
+from hummingbot.core.data_type.common import MarketDict
+from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
 
 
-class FormatStatusExample(ScriptStrategyBase):
+class FormatStatusExampleConfig(StrategyV2ConfigBase):
+    script_file_name: str = os.path.basename(__file__)
+    exchanges: list = Field(default=["binance_paper_trade", "kucoin_paper_trade", "gate_io_paper_trade"])
+    trading_pairs: list = Field(default=["ETH-USDT", "BTC-USDT", "POL-USDT", "AVAX-USDT", "WLD-USDT", "DOGE-USDT", "SHIB-USDT", "XRP-USDT", "SOL-USDT"])
+
+    def update_markets(self, markets: MarketDict) -> MarketDict:
+        # Add all combinations of exchanges and trading pairs
+        for exchange in self.exchanges:
+            markets[exchange] = markets.get(exchange, set()) | set(self.trading_pairs)
+        return markets
+
+
+class FormatStatusExample(StrategyV2Base):
     """
     This example shows how to add a custom format_status to a strategy and query the order book.
     Run the command status --live, once the strategy starts.
     """
-    markets = {
-        "binance_paper_trade": {"ETH-USDT", "BTC-USDT", "POL-USDT", "AVAX-USDT", "WLD-USDT", "DOGE-USDT", "SHIB-USDT", "XRP-USDT", "SOL-USDT"},
-        "kucoin_paper_trade": {"ETH-USDT", "BTC-USDT", "POL-USDT", "AVAX-USDT", "WLD-USDT", "DOGE-USDT", "SHIB-USDT", "XRP-USDT", "SOL-USDT"},
-        "gate_io_paper_trade": {"ETH-USDT", "BTC-USDT", "POL-USDT", "AVAX-USDT", "WLD-USDT", "DOGE-USDT", "SHIB-USDT", "XRP-USDT", "SOL-USDT"},
-    }
+
+    def __init__(self, connectors, config: FormatStatusExampleConfig):
+        super().__init__(connectors, config)
+        self.config = config
 
     def format_status(self) -> str:
         """
