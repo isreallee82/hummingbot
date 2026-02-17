@@ -1,15 +1,29 @@
+import os
+from decimal import Decimal
+
+from pydantic import Field
+
+from hummingbot.core.data_type.common import MarketDict, OrderType
 from hummingbot.core.event.events import BuyOrderCreatedEvent, MarketOrderFailureEvent, SellOrderCreatedEvent
 from hummingbot.remote_iface.mqtt import ExternalEventFactory, ExternalTopicFactory
-from hummingbot.strategy.script_strategy_base import Decimal, OrderType, ScriptStrategyBase
+from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
 
 
-class ExternalEventsExample(ScriptStrategyBase):
+class ExternalEventsExampleConfig(StrategyV2ConfigBase):
+    script_file_name: str = os.path.basename(__file__)
+    exchange: str = Field(default="kucoin_paper_trade")
+    trading_pair: str = Field(default="BTC-USDT")
+
+    def update_markets(self, markets: MarketDict) -> MarketDict:
+        markets[self.exchange] = markets.get(self.exchange, set()) | {self.trading_pair}
+        return markets
+
+
+class ExternalEventsExample(StrategyV2Base):
     """
     Simple script that uses the external events plugin to create buy and sell
     market orders.
     """
-    #: Define markets
-    markets = {"kucoin_paper_trade": {"BTC-USDT"}}
 
     # ------ Using Factory Classes ------
     # hbot/{id}/external/events/*
@@ -51,9 +65,9 @@ class ExternalEventsExample(ScriptStrategyBase):
 
     def execute_order(self, amount: Decimal, is_buy: bool):
         if is_buy:
-            self.buy("kucoin_paper_trade", "BTC-USDT", amount, OrderType.MARKET)
+            self.buy(self.config.exchange, self.config.trading_pair, amount, OrderType.MARKET)
         else:
-            self.sell("kucoin_paper_trade", "BTC-USDT", amount, OrderType.MARKET)
+            self.sell(self.config.exchange, self.config.trading_pair, amount, OrderType.MARKET)
 
     def did_create_buy_order(self, event: BuyOrderCreatedEvent):
         """
