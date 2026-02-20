@@ -298,6 +298,51 @@ class PacificaPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
 
         self.assertEqual("123456789", exchange_order_id)
 
+    @aioresponses()
+    async def test_place_market_order(self, req_mock):
+        """Verify market orders hit /orders/create_market with slippage_percent."""
+        await self._simulate_trading_rules_initialized()
+        url = web_utils.public_rest_url(CONSTANTS.CREATE_MARKET_ORDER_PATH_URL, domain=self.domain)
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+
+        mock_response = {
+            "success": True,
+            "data": {
+                "order_id": 987654321
+            }
+        }
+
+        req_mock.post(regex_url, body=json.dumps(mock_response))
+
+        order_id = "test_market_order_1"
+        exchange_order_id, timestamp = await self.exchange._place_order(
+            order_id=order_id,
+            trading_pair=self.trading_pair,
+            amount=Decimal("1.0"),
+            trade_type=TradeType.SELL,
+            order_type=OrderType.MARKET,
+            price=Decimal("1900.0"),
+            position_action=PositionAction.CLOSE
+        )
+
+        self.assertEqual("987654321", exchange_order_id)
+
+        # Verify the request was sent to the market order endpoint
+        sent_request = None
+        for key, calls in req_mock.requests.items():
+            if key[0] == "POST":
+                sent_request = calls[0]
+                break
+
+        self.assertIsNotNone(sent_request)
+        sent_data = json.loads(sent_request.kwargs["data"])
+
+        # Market order must include slippage_percent (required by Pacifica API)
+        self.assertEqual(CONSTANTS.MARKET_ORDER_MAX_SLIPPAGE, sent_data["slippage_percent"])
+        # Note: "type" field is popped by the auth layer during signing, so it won't be in sent_data
+        self.assertEqual("ask", sent_data["side"])
+        self.assertTrue(sent_data["reduce_only"])
+
     def test_properties(self):
         self.assertEqual(self.domain, self.exchange.name)
         self.assertEqual(CONSTANTS.RATE_LIMITS, self.exchange.rate_limits_rules)

@@ -404,6 +404,7 @@ class PacificaPerpetualDerivative(PerpetualDerivativePyBase):
                 data["tif"] = "ALO"
         elif order_type == OrderType.MARKET:
             data["type"] = "create_market_order"
+            data["slippage_percent"] = CONSTANTS.MARKET_ORDER_MAX_SLIPPAGE
 
         response = await self._api_post(
             path_url=api_endpoint_url,

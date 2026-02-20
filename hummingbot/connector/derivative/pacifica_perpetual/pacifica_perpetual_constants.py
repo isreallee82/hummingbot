@@ -42,6 +42,9 @@ GET_FEES_INFO_PATH_URL = "/info/fees"
 CREATE_MARKET_ORDER_PATH_URL = "/orders/create_market"
 CREATE_LIMIT_ORDER_PATH_URL = "/orders/create"
 
+# Default maximum slippage tolerance for market orders (percentage string, e.g. "5" = 5%)
+MARKET_ORDER_MAX_SLIPPAGE = "5"
+
 # WebSocket Channels
 
 WS_ORDER_BOOK_SNAPSHOT_CHANNEL = "book"
