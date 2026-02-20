@@ -396,7 +396,8 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
         )
         if order_type is OrderType.MARKET:
             reference_price = self.get_mid_price(trading_pair) if price.is_nan() else price
-            price = reference_price * (Decimal("1") + CONSTANTS.MARKET_ORDER_SLIPPAGE)
+            market_price = reference_price * (Decimal("1") + CONSTANTS.MARKET_ORDER_SLIPPAGE)
+            price = self.quantize_order_price(trading_pair, market_price)
 
         safe_ensure_future(self._create_order(
             trade_type=TradeType.BUY,
@@ -422,7 +423,8 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
         )
         if order_type is OrderType.MARKET:
             reference_price = self.get_mid_price(trading_pair) if price.is_nan() else price
-            price = reference_price * (Decimal("1") - CONSTANTS.MARKET_ORDER_SLIPPAGE)
+            market_price = reference_price * (Decimal("1") - CONSTANTS.MARKET_ORDER_SLIPPAGE)
+            price = self.quantize_order_price(trading_pair, market_price)
 
         safe_ensure_future(self._create_order(
             trade_type=TradeType.SELL,

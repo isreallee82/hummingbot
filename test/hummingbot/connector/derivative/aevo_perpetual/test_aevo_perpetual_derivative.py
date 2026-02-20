@@ -282,6 +282,7 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
     @patch("hummingbot.connector.derivative.aevo_perpetual.aevo_perpetual_derivative.safe_ensure_future")
     async def test_buy_market_adjusts_price_with_slippage(self, safe_future_mock):
         self.connector.get_mid_price = MagicMock(return_value=Decimal("100"))
+        self.connector.quantize_order_price = MagicMock(return_value=Decimal("101"))
         self.connector._create_order = MagicMock()
 
         order_id = self.connector.buy(
@@ -292,14 +293,16 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
         )
 
         self.assertIsNotNone(order_id)
-        expected_price = Decimal("100") * (Decimal("1") + CONSTANTS.MARKET_ORDER_SLIPPAGE)
+        expected_raw_price = Decimal("100") * (Decimal("1") + CONSTANTS.MARKET_ORDER_SLIPPAGE)
+        self.connector.quantize_order_price.assert_called_once_with(self.trading_pair, expected_raw_price)
         self.connector._create_order.assert_called_once()
-        self.assertEqual(expected_price, self.connector._create_order.call_args.kwargs["price"])
+        self.assertEqual(Decimal("101"), self.connector._create_order.call_args.kwargs["price"])
         self.assertEqual(1, safe_future_mock.call_count)
 
     @patch("hummingbot.connector.derivative.aevo_perpetual.aevo_perpetual_derivative.safe_ensure_future")
     async def test_sell_market_adjusts_price_with_slippage(self, safe_future_mock):
         self.connector.get_mid_price = MagicMock(return_value=Decimal("100"))
+        self.connector.quantize_order_price = MagicMock(return_value=Decimal("99"))
         self.connector._create_order = MagicMock()
 
         order_id = self.connector.sell(
@@ -310,9 +313,10 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
         )
 
         self.assertIsNotNone(order_id)
-        expected_price = Decimal("100") * (Decimal("1") - CONSTANTS.MARKET_ORDER_SLIPPAGE)
+        expected_raw_price = Decimal("100") * (Decimal("1") - CONSTANTS.MARKET_ORDER_SLIPPAGE)
+        self.connector.quantize_order_price.assert_called_once_with(self.trading_pair, expected_raw_price)
         self.connector._create_order.assert_called_once()
-        self.assertEqual(expected_price, self.connector._create_order.call_args.kwargs["price"])
+        self.assertEqual(Decimal("99"), self.connector._create_order.call_args.kwargs["price"])
         self.assertEqual(1, safe_future_mock.call_count)
 
     async def test_place_order_raises_when_instrument_missing(self):
