@@ -2009,22 +2009,33 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         base_response = self.trading_rules_request_mock_response
         mock_api.post(self.trading_rules_url, body=json.dumps(base_response))
 
-        # Mock DEX markets response with perpMeta
-        dex_response = [{
-            "name": "xyz",
-            "perpMeta": [{
-                "name": "xyz:XYZ100",
-                "szDecimals": 3
-            }, {
-                "name": "xyz:TSLA",
-                "szDecimals": 2
-            }]
+        # Mock allPerpMetas response (meta-only payloads; assetCtxs fetched per dex)
+        dex_perp_meta = [{
+            "name": "xyz:XYZ100",
+            "szDecimals": 3
+        }, {
+            "name": "xyz:TSLA",
+            "szDecimals": 2
         }]
+        dex_asset_ctxs = [{
+            "markPx": "100.0",
+            "openInterest": "1.0",
+        }, {
+            "markPx": "200.0",
+            "openInterest": "1.0",
+        }]
+        dex_response = [
+            {"universe": [{"name": "BTC", "szDecimals": 5}], "collateralToken": 0, "marginTables": []},
+            {"universe": dex_perp_meta, "collateralToken": 0, "marginTables": []},
+        ]
         mock_api.post(self.trading_rules_url, body=json.dumps(dex_response))
-
-        # Mock meta endpoint for DEX
-        dex_meta_response = [{"universe": dex_response[0]["perpMeta"]}, {}]
-        mock_api.post(self.trading_rules_url, body=json.dumps(dex_meta_response))
+        mock_api.post(
+            self.trading_rules_url,
+            body=json.dumps([
+                {"universe": dex_perp_meta, "collateralToken": 0, "marginTables": []},
+                dex_asset_ctxs,
+            ]),
+        )
 
         self.async_run_with_timeout(self.exchange._update_trading_rules())
 
@@ -2044,12 +2055,19 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         base_response = self.trading_rules_request_mock_response
         mock_api.post(self.trading_rules_url, body=json.dumps(base_response))
 
-        dex_response = [{
-            "name": "xyz",
-            "perpMeta": [{"name": "xyz:XYZ100", "szDecimals": 3}]
-        }]
+        dex_perp_meta = [{"name": "xyz:XYZ100", "szDecimals": 3}]
+        dex_response = [
+            {"universe": [{"name": "BTC", "szDecimals": 5}], "collateralToken": 0, "marginTables": []},
+            {"universe": dex_perp_meta, "collateralToken": 0, "marginTables": []},
+        ]
         mock_api.post(self.trading_rules_url, body=json.dumps(dex_response))
-        mock_api.post(self.trading_rules_url, body=json.dumps([{"universe": dex_response[0]["perpMeta"]}]))
+        mock_api.post(
+            self.trading_rules_url,
+            body=json.dumps([
+                {"universe": dex_perp_meta, "collateralToken": 0, "marginTables": []},
+                [{"markPx": "100.0", "openInterest": "1.0"}],
+            ]),
+        )
 
         self.async_run_with_timeout(self.exchange._initialize_trading_pair_symbol_map())
 
@@ -2364,17 +2382,17 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         ]
         mock_api.post(url, body=json.dumps(base_response))
 
-        # Mock DEX markets response
-        dex_response = [{
-            "name": "xyz",
-            "perpMeta": [{"name": "xyz:XYZ100", "szDecimals": 3}],
-            "assetCtxs": [{"markPx": "25349.0"}]
-        }]
+        # Mock allPerpMetas meta-only response (assetCtxs will be fetched per dex)
+        dex_perp_meta = [{"name": "xyz:XYZ100", "szDecimals": 3}]
+        dex_response = [
+            {"universe": [{"name": "BTC", "szDecimals": 5}], "collateralToken": 0, "marginTables": []},
+            {"universe": dex_perp_meta, "collateralToken": 0, "marginTables": []},
+        ]
         mock_api.post(url, body=json.dumps(dex_response))
 
         # Mock metaAndAssetCtxs for DEX
         dex_meta_response = [
-            {"universe": [{"name": "xyz:XYZ100", "szDecimals": 3}]},
+            {"universe": dex_perp_meta},
             [{"markPx": "25349.0"}]
         ]
         mock_api.post(url, body=json.dumps(dex_meta_response))
@@ -2510,7 +2528,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
             "time": 1640780000000,
             "delta": {
                 "coin": "BTC",
-                "USD": "0.5",
+                "usdc": "0.5",
                 "fundingRate": "0.0001"
             }
         }]
@@ -2537,7 +2555,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
             "time": 1640780000000,
             "delta": {
                 "coin": "BTC",
-                "USD": "0",  # Zero payment
+                "usdc": "0",  # Zero payment
                 "fundingRate": "0.0001"
             }
         }]
@@ -2969,7 +2987,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         )
 
     def test_format_trading_rules_with_hip3_markets(self):
-        """Test _format_trading_rules processes HIP-3 DEX markets from hip_3_result (lines 300, 321, 329, 335)."""
+        """Test _format_trading_rules processes HIP-3 DEX markets from _dex_markets."""
         # Initialize trading rules first to setup symbol mapping
         self._simulate_trading_rules_initialized()
 
@@ -3371,13 +3389,12 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         """Test _format_trading_rules HIP-3 exception path (lines 855-856)."""
         self._simulate_trading_rules_initialized()
 
-        # Setup HIP-3 market data with missing required fields
-        self.exchange.hip_3_result = [
-            {
-                "name": "xyz:AAPL",
-                # Missing markPx, openInterest - will cause exception
-            }
-        ]
+        # Setup HIP-3 market data with missing required ctx fields
+        self.exchange._dex_markets = [{
+            "name": "xyz",
+            "perpMeta": [{"name": "xyz:AAPL", "szDecimals": 3}],
+            "assetCtxs": [{}],  # Missing markPx/openInterest after merge -> triggers exception path
+        }]
 
         # Setup symbol mapping for HIP-3 market
         from bidict import bidict
