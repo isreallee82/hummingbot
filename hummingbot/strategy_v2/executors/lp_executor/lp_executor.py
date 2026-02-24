@@ -101,12 +101,22 @@ class LPExecutor(ExecutorBase):
 
             case LPExecutorStates.OUT_OF_RANGE:
                 # Position active but out of range
-                # Auto-close if configured and duration exceeded
-                if self.config.auto_close_out_of_range_seconds is not None:
+                # Auto-close if configured and duration exceeded (directional)
+                if self._current_price is not None:
                     out_of_range_seconds = self.lp_position_state.get_out_of_range_seconds(current_time)
-                    if out_of_range_seconds and out_of_range_seconds >= self.config.auto_close_out_of_range_seconds:
+                    auto_close_seconds = None
+
+                    # Check if price is above range (>= upper_price)
+                    if self._current_price >= self.lp_position_state.upper_price:
+                        auto_close_seconds = self.config.auto_close_above_range_seconds
+                    # Check if price is below range (<= lower_price)
+                    elif self._current_price <= self.lp_position_state.lower_price:
+                        auto_close_seconds = self.config.auto_close_below_range_seconds
+
+                    if auto_close_seconds is not None and out_of_range_seconds and out_of_range_seconds >= auto_close_seconds:
+                        direction = "above" if self._current_price >= self.lp_position_state.upper_price else "below"
                         self.logger().info(
-                            f"Position out of range for {out_of_range_seconds}s >= {self.config.auto_close_out_of_range_seconds}s, closing"
+                            f"Position {direction} range for {out_of_range_seconds}s >= {auto_close_seconds}s, closing"
                         )
                         self.close_type = CloseType.EARLY_STOP
                         self.lp_position_state.state = LPExecutorStates.CLOSING
