@@ -52,7 +52,8 @@ class TestLPExecutorConfig(TestCase):
         self.assertEqual(config.base_amount, Decimal("0"))
         self.assertEqual(config.quote_amount, Decimal("0"))
         self.assertEqual(config.side, 0)
-        self.assertIsNone(config.auto_close_out_of_range_seconds)
+        self.assertIsNone(config.auto_close_above_range_seconds)
+        self.assertIsNone(config.auto_close_below_range_seconds)
         self.assertIsNone(config.extra_params)
         self.assertFalse(config.keep_position)
 
@@ -68,14 +69,16 @@ class TestLPExecutorConfig(TestCase):
             base_amount=Decimal("1.5"),
             quote_amount=Decimal("150"),
             side=1,
-            auto_close_out_of_range_seconds=300,
+            auto_close_above_range_seconds=300,
+            auto_close_below_range_seconds=600,
             extra_params={"strategyType": 0},
             keep_position=True,
         )
         self.assertEqual(config.base_amount, Decimal("1.5"))
         self.assertEqual(config.quote_amount, Decimal("150"))
         self.assertEqual(config.side, 1)
-        self.assertEqual(config.auto_close_out_of_range_seconds, 300)
+        self.assertEqual(config.auto_close_above_range_seconds, 300)
+        self.assertEqual(config.auto_close_below_range_seconds, 600)
         self.assertEqual(config.extra_params, {"strategyType": 0})
         self.assertTrue(config.keep_position)
 

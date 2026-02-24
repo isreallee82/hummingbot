@@ -397,9 +397,9 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             mock_stop.assert_called_once()
 
     async def test_control_task_out_of_range_auto_close(self):
-        """Test control_task auto-closes when out of range too long"""
+        """Test control_task auto-closes when out of range too long (above range)"""
         config = self.get_default_config()
-        config.auto_close_out_of_range_seconds = 60
+        config.auto_close_above_range_seconds = 60  # Auto-close when price above upper_price
         executor = self.get_executor(config)
         executor._status = RunnableStatus.RUNNING
         executor.lp_position_state.state = LPExecutorStates.OUT_OF_RANGE
