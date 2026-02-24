@@ -75,6 +75,7 @@ ORDER_STATE = {
     "canceled": OrderState.CANCELED,
     "rejected": OrderState.FAILED,
     "badAloPxRejected": OrderState.FAILED,
+    "minTradeNtlRejected": OrderState.FAILED,
     "reduceOnlyCanceled": OrderState.CANCELED,
     "perpMarginRejected": OrderState.FAILED,
     "selfTradeCanceled": OrderState.CANCELED,
