@@ -547,24 +547,32 @@ class LPRebalancer(ControllerBase):
 
         # Config summary
         side_names = {0: "BOTH", 1: "BUY", 2: "SELL"}
-        line = f"| Config: side={side_names.get(self.config.side, '?')}, total={self.config.total_amount_quote} {self._quote_token}, width={self.config.position_width_pct}%"
+        line = f"| Config: side={side_names.get(self.config.side, '?')}, total_amount={self.config.total_amount_quote} {self._quote_token}, position_width={self.config.position_width_pct}%, rebalance_seconds={self.config.rebalance_seconds}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
-        # Position value and fees
+        # Position fees and assets
         if executor and not executor.is_done:
-            # Show fees and value
             custom = executor.custom_info
-            total_fees_quote = Decimal(str(custom.get("fees_earned_quote", 0)))
+
+            # Fees row: base_fee + quote_fee = total
+            base_fee = Decimal(str(custom.get("base_fee", 0)))
+            quote_fee = Decimal(str(custom.get("quote_fee", 0)))
+            fees_earned_quote = Decimal(str(custom.get("fees_earned_quote", 0)))
+            line = f"| Fees Earned: {float(base_fee):.6f} {self._base_token} + {float(quote_fee):.6f} {self._quote_token} = {float(fees_earned_quote):.6f} {self._quote_token}"
+            status.append(line + " " * (box_width - len(line) + 1) + "|")
+
+            # Value row: base_amount + quote_amount = total value
+            base_amount = Decimal(str(custom.get("base_amount", 0)))
+            quote_amount = Decimal(str(custom.get("quote_amount", 0)))
             total_value_quote = Decimal(str(custom.get("total_value_quote", 0)))
-            line = f"| Fees: {float(total_fees_quote):.6f} {self._quote_token}  |  Value: {float(total_value_quote):.4f} {self._quote_token}"
+            line = f"| Position Value: {float(base_amount):.6f} {self._base_token} + {float(quote_amount):.6f} {self._quote_token} = {float(total_value_quote):.4f} {self._quote_token}"
             status.append(line + " " * (box_width - len(line) + 1) + "|")
 
             # Position range visualization
             lower_price = executor.custom_info.get("lower_price")
             upper_price = executor.custom_info.get("upper_price")
-            current_price = executor.custom_info.get("current_price")
 
-            if lower_price and upper_price and current_price:
+            if lower_price and upper_price and self._pool_price:
                 # Show rebalance thresholds (convert % to decimal)
                 # Takes into account price limits - rebalance only happens within limits
                 threshold = self.config.rebalance_threshold_pct / Decimal("100")
@@ -583,7 +591,7 @@ class LPRebalancer(ControllerBase):
                 else:
                     upper_str = f"{float(upper_threshold):.{price_decimals}f}"
 
-                line = f"| Price: {float(current_price):.{price_decimals}f}  |  Rebalance if: <{lower_str} or >{upper_str}"
+                line = f"| Price: {float(self._pool_price):.{price_decimals}f}  |  Rebalance if: <{lower_str} or >{upper_str}"
                 status.append(line + " " * (box_width - len(line) + 1) + "|")
 
                 state = executor.custom_info.get("state", "UNKNOWN")
@@ -603,7 +611,7 @@ class LPRebalancer(ControllerBase):
 
                 range_viz = self._create_price_range_visualization(
                     Decimal(str(lower_price)),
-                    Decimal(str(current_price)),
+                    self._pool_price,
                     Decimal(str(upper_price))
                 )
                 for viz_line in range_viz.split('\n'):
@@ -626,28 +634,26 @@ class LPRebalancer(ControllerBase):
             self.config.sell_price_min, self.config.sell_price_max,
             self.config.buy_price_min, self.config.buy_price_max
         ])
-        if has_limits:
-            current_price_rate = self.market_data_provider.get_rate(self.config.trading_pair)
-            if current_price_rate:
-                # Get position bounds if available
-                pos_lower = None
-                pos_upper = None
-                if executor:
-                    pos_lower = executor.custom_info.get("lower_price")
-                    pos_upper = executor.custom_info.get("upper_price")
-                    if pos_lower:
-                        pos_lower = Decimal(str(pos_lower))
-                    if pos_upper:
-                        pos_upper = Decimal(str(pos_upper))
+        if has_limits and self._pool_price:
+            # Get position bounds if available
+            pos_lower = None
+            pos_upper = None
+            if executor:
+                pos_lower = executor.custom_info.get("lower_price")
+                pos_upper = executor.custom_info.get("upper_price")
+                if pos_lower:
+                    pos_lower = Decimal(str(pos_lower))
+                if pos_upper:
+                    pos_upper = Decimal(str(pos_upper))
 
-                status.append("|" + " " * box_width + "|")
-                limits_viz = self._create_price_limits_visualization(
-                    current_price_rate, pos_lower, pos_upper, price_decimals
-                )
-                if limits_viz:
-                    for viz_line in limits_viz.split('\n'):
-                        line = f"| {viz_line}"
-                        status.append(line + " " * (box_width - len(line) + 1) + "|")
+            status.append("|" + " " * box_width + "|")
+            limits_viz = self._create_price_limits_visualization(
+                self._pool_price, pos_lower, pos_upper, price_decimals
+            )
+            if limits_viz:
+                for viz_line in limits_viz.split('\n'):
+                    line = f"| {viz_line}"
+                    status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         # Balance comparison table (formatted like main balance table)
         status.append("|" + " " * box_width + "|")
@@ -685,34 +691,31 @@ class LPRebalancer(ControllerBase):
             line = f"| Balances: Error fetching ({e})"
             status.append(line + " " * (box_width - len(line) + 1) + "|")
 
-        # Session summary (closed positions only)
-        if self.executors_info:
-            status.append("|" + " " * box_width + "|")
+        # Closed positions summary
+        status.append("|" + " " * box_width + "|")
 
-            closed = [e for e in self.executors_info if e.is_done]
+        closed = [e for e in self.executors_info if e.is_done]
 
-            # Count closed by side (config.side: 0=both, 1=buy, 2=sell)
-            both_count = len([e for e in closed if getattr(e.config, "side", None) == 0])
-            buy_count = len([e for e in closed if getattr(e.config, "side", None) == 1])
-            sell_count = len([e for e in closed if getattr(e.config, "side", None) == 2])
+        # Count closed by side (config.side: 0=both, 1=buy, 2=sell)
+        both_count = len([e for e in closed if getattr(e.config, "side", None) == 0])
+        buy_count = len([e for e in closed if getattr(e.config, "side", None) == 1])
+        sell_count = len([e for e in closed if getattr(e.config, "side", None) == 2])
 
-            # Calculate fees from closed positions
-            total_fees_base = Decimal("0")
-            total_fees_quote = Decimal("0")
+        # Calculate fees from closed positions
+        total_fees_base = Decimal("0")
+        total_fees_quote = Decimal("0")
 
-            current_price = self.market_data_provider.get_rate(self.config.trading_pair) or Decimal("0")
+        for e in closed:
+            total_fees_base += Decimal(str(e.custom_info.get("base_fee", 0)))
+            total_fees_quote += Decimal(str(e.custom_info.get("quote_fee", 0)))
 
-            for e in closed:
-                total_fees_base += Decimal(str(e.custom_info.get("base_fee", 0)))
-                total_fees_quote += Decimal(str(e.custom_info.get("quote_fee", 0)))
+        pool_price = self._pool_price or Decimal("0")
+        total_fees_value = total_fees_base * pool_price + total_fees_quote
 
-            total_fees_value = total_fees_base * current_price + total_fees_quote
-
-            # Closed positions summary
-            line = f"| Closed Positions: {len(closed)} (both:{both_count} buy:{buy_count} sell:{sell_count})"
-            status.append(line + " " * (box_width - len(line) + 1) + "|")
-            line = f"| Total Fees Earned: {float(total_fees_base):.6f} {self._base_token} + {float(total_fees_quote):.6f} {self._quote_token} = {float(total_fees_value):.6f} {self._quote_token}"
-            status.append(line + " " * (box_width - len(line) + 1) + "|")
+        line = f"| Closed Positions: {len(closed)} (both:{both_count} buy:{buy_count} sell:{sell_count})"
+        status.append(line + " " * (box_width - len(line) + 1) + "|")
+        line = f"| Total Fees Collected: {float(total_fees_base):.6f} {self._base_token} + {float(total_fees_quote):.6f} {self._quote_token} = {float(total_fees_value):.6f} {self._quote_token}"
+        status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         status.append("+" + "-" * box_width + "+")
         return status
