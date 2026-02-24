@@ -634,7 +634,6 @@ class AevoPerpetualDerivative(PerpetualDerivativePyBase):
                         leverage=leverage,
                     )
                 )
-                self._perpetual_trading.set_leverage(trading_pair, int(leverage))
             else:
                 self._perpetual_trading.remove_position(pos_key)
 

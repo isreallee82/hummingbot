@@ -542,6 +542,27 @@ class AevoPerpetualDerivativeAsyncTests(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(PositionSide.SHORT, positions[0].position_side)
         self.assertEqual(Decimal("-2"), positions[0].amount)
 
+    async def test_update_positions_does_not_override_configured_leverage(self):
+        self.connector.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        self.connector._perpetual_trading.set_leverage(self.trading_pair, 3)
+        self.connector._api_get = AsyncMock(return_value={
+            "positions": [
+                {
+                    "instrument_type": CONSTANTS.PERPETUAL_INSTRUMENT_TYPE,
+                    "instrument_name": self.ex_trading_pair,
+                    "side": "buy",
+                    "amount": "2",
+                    "avg_entry_price": "100",
+                    "unrealized_pnl": "1",
+                    "leverage": "1",
+                }
+            ]
+        })
+
+        await self.connector._update_positions()
+
+        self.assertEqual(3, self.connector._perpetual_trading.get_leverage(self.trading_pair))
+
     async def test_set_trading_pair_leverage_missing_instrument(self):
         result = await self.connector._set_trading_pair_leverage(self.trading_pair, 5)
 
