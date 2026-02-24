@@ -4,6 +4,7 @@ from hummingbot.core.data_type.in_flight_order import OrderState
 EXCHANGE_NAME = "hyperliquid_perpetual"
 BROKER_ID = "HBOT"
 MAX_ORDER_ID_LEN = None
+MIN_NOTIONAL_SIZE = 10
 
 MARKET_ORDER_SLIPPAGE = 0.05
 

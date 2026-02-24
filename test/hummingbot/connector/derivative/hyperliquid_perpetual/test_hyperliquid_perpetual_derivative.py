@@ -333,7 +333,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
                            min_base_amount_increment=step_size,
                            min_price_increment=price_size,
                            min_order_size=min_order_size,
-                           min_notional_size=Decimal("10"),
+                           min_notional_size=Decimal(str(CONSTANTS.MIN_NOTIONAL_SIZE)),
                            buy_order_collateral_token=collateral_token,
                            sell_order_collateral_token=collateral_token,
                            )

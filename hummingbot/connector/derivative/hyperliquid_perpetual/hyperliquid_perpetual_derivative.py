@@ -903,7 +903,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
         coin_infos: list = exchange_info_dict[0]['universe']
         price_infos: list = exchange_info_dict[1]
         return_val: list = []
-        min_notional_size = Decimal("10")
+        min_notional_size = Decimal(str(CONSTANTS.MIN_NOTIONAL_SIZE))
         for coin_info, price_info in zip(coin_infos, price_infos):
             try:
                 ex_symbol = f'{coin_info["name"]}'
