@@ -327,12 +327,13 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
 
         step_size = Decimal(str(10 ** -coin_info.get("szDecimals")))
         price_size = Decimal(str(10 ** -len(price_info.get("markPx").split('.')[1])))
-        _min_order_size = Decimal(str(10 ** -len(price_info.get("openInterest").split('.')[1])))
+        min_order_size = step_size
 
         return TradingRule(self.trading_pair,
                            min_base_amount_increment=step_size,
                            min_price_increment=price_size,
-                           min_order_size=_min_order_size,
+                           min_order_size=min_order_size,
+                           min_notional_size=Decimal("10"),
                            buy_order_collateral_token=collateral_token,
                            sell_order_collateral_token=collateral_token,
                            )

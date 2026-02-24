@@ -903,6 +903,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
         coin_infos: list = exchange_info_dict[0]['universe']
         price_infos: list = exchange_info_dict[1]
         return_val: list = []
+        min_notional_size = Decimal("10")
         for coin_info, price_info in zip(coin_infos, price_infos):
             try:
                 ex_symbol = f'{coin_info["name"]}'
@@ -910,14 +911,15 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                 step_size = Decimal(str(10 ** -coin_info.get("szDecimals")))
 
                 price_size = Decimal(str(10 ** -len(price_info.get("markPx").split('.')[1])))
-                _min_order_size = Decimal(str(10 ** -len(price_info.get("openInterest").split('.')[1])))
+                min_order_size = step_size
                 collateral_token = CONSTANTS.CURRENCY
                 return_val.append(
                     TradingRule(
                         trading_pair,
                         min_base_amount_increment=step_size,
                         min_price_increment=price_size,
-                        min_order_size=_min_order_size,
+                        min_order_size=min_order_size,
+                        min_notional_size=min_notional_size,
                         buy_order_collateral_token=collateral_token,
                         sell_order_collateral_token=collateral_token,
                     )
@@ -936,7 +938,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
 
                 step_size = Decimal(str(10 ** -dex_info.get("szDecimals")))
                 price_size = Decimal(str(10 ** -len(dex_info.get("markPx").split('.')[1])))
-                _min_order_size = Decimal(str(10 ** -len(dex_info.get("openInterest").split('.')[1])))
+                min_order_size = step_size
                 collateral_token = quote
 
                 return_val.append(
@@ -944,7 +946,8 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                         trading_pair,
                         min_base_amount_increment=step_size,
                         min_price_increment=price_size,
-                        min_order_size=_min_order_size,
+                        min_order_size=min_order_size,
+                        min_notional_size=min_notional_size,
                         buy_order_collateral_token=collateral_token,
                         sell_order_collateral_token=collateral_token,
                     )
