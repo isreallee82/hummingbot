@@ -3455,3 +3455,111 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         )
 
         self.assertGreaterEqual(len(rules), 1)
+
+    def test_infer_hip3_dex_name_handles_non_dict_and_multi_prefix(self):
+        result = self.exchange._infer_hip3_dex_name([
+            None,
+            {"name": "xyz:AAPL"},
+            {"name": "flx:TSLA"},
+        ])
+
+        self.assertIsNone(result)
+
+    def test_parse_all_perp_metas_response_handles_invalid_entries_and_mismatch(self):
+        parsed = self.exchange._parse_all_perp_metas_response([
+            "invalid-entry",  # ignored
+            [{"universe": []}],  # no markets
+            [
+                {"universe": [{"name": "xyz:AAPL", "szDecimals": 3}]},
+                [{"markPx": "100.0"}, {"markPx": "101.0"}],  # mismatch length
+            ],
+        ])
+
+        self.assertEqual(1, len(parsed))
+        self.assertEqual("xyz", parsed[0]["name"])
+        self.assertEqual(2, len(parsed[0]["assetCtxs"]))
+
+    def test_extract_asset_ctxs_from_meta_and_ctxs_response_returns_none_for_malformed_response(self):
+        self.assertIsNone(self.exchange._extract_asset_ctxs_from_meta_and_ctxs_response({"unexpected": "shape"}))
+
+    def test_iter_hip3_merged_markets_skips_invalid_rows(self):
+        markets = list(self.exchange._iter_hip3_merged_markets(dex_markets=[{
+            "name": "xyz",
+            "perpMeta": [
+                None,  # invalid perp_meta
+                {"name": "xyz:AAPL", "szDecimals": 3},  # invalid asset_ctx type
+                {"name": "BTC", "szDecimals": 5},  # not HIP-3
+                {"name": "xyz:TSLA", "szDecimals": 2},  # valid
+            ],
+            "assetCtxs": [
+                {},
+                "invalid-ctx",
+                {"markPx": "50000.0", "openInterest": "1.0"},
+                {"markPx": "200.0", "openInterest": "1.0"},
+            ],
+        }]))
+
+        self.assertEqual(1, len(markets))
+        self.assertEqual("xyz:TSLA", markets[0]["name"])
+
+    def test_fetch_and_cache_hip3_market_data_returns_empty_when_disabled_or_non_list(self):
+        self.exchange._enable_hip3_markets = False
+        result_disabled = self.async_run_with_timeout(self.exchange._fetch_and_cache_hip3_market_data())
+        self.assertEqual([], result_disabled)
+
+        self.exchange._enable_hip3_markets = True
+        self.exchange._api_post = AsyncMock(return_value={"unexpected": "shape"})
+        result_non_list = self.async_run_with_timeout(self.exchange._fetch_and_cache_hip3_market_data())
+        self.assertEqual([], result_non_list)
+
+    def test_hydrate_dex_markets_asset_ctxs_handles_skip_malformed_mismatch_and_exception(self):
+        async def api_post_side_effect(*args, **kwargs):
+            dex_name = kwargs["data"]["dex"]
+            if dex_name == "badshape":
+                return {"unexpected": "shape"}
+            if dex_name == "mismatch":
+                return [
+                    {"universe": [{"name": "mismatch:A"}, {"name": "mismatch:B"}]},
+                    [{"markPx": "1.0", "openInterest": "1.0"}],  # mismatch
+                ]
+            if dex_name == "boom":
+                raise RuntimeError("boom")
+            raise AssertionError(f"Unexpected dex requested: {dex_name}")
+
+        self.exchange._api_post = AsyncMock(side_effect=api_post_side_effect)
+
+        dex_markets = [
+            None,  # skipped (non-dict)
+            {  # already complete -> pass through
+                "name": "complete",
+                "perpMeta": [{"name": "complete:A"}],
+                "assetCtxs": [{"markPx": "1.0", "openInterest": "1.0"}],
+            },
+            {  # no dex name -> pass through
+                "perpMeta": [{"name": "xyz:NO_NAME"}],
+                "assetCtxs": [],
+            },
+            {  # malformed response
+                "name": "malformed",
+                "perpMeta": [{"name": "malformed:A"}],
+                "assetCtxs": [],
+            },
+            {  # mismatched hydrated ctxs
+                "name": "mismatch",
+                "perpMeta": [{"name": "mismatch:A"}, {"name": "mismatch:B"}],
+                "assetCtxs": [],
+            },
+            {  # exception while fetching
+                "name": "exception",
+                "perpMeta": [{"name": "exception:A"}],
+                "assetCtxs": [],
+            },
+        ]
+
+        hydrated = self.async_run_with_timeout(self.exchange._hydrate_dex_markets_asset_ctxs(dex_markets))
+
+        self.assertEqual(5, len(hydrated))
+        self.assertEqual("complete", hydrated[0]["name"])
+        self.assertEqual("malformed", hydrated[2]["name"])
+        self.assertEqual(1, len(hydrated[3]["assetCtxs"]))
+        self.assertEqual("exception", hydrated[4]["name"])
