@@ -102,6 +102,7 @@ class LPHistoryCommand:
                     "Quote Amt": f"{u.quote_amount:.4f}" if u.quote_amount else "0",
                     "Base Fee": f"{u.base_fee:.6f}" if u.base_fee else "-",
                     "Quote Fee": f"{u.quote_fee:.6f}" if u.quote_fee else "-",
+                    "Tx Fee": f"{u.trade_fee_in_quote:.6f}" if u.trade_fee_in_quote else "-",
                 })
             df = pd.DataFrame(data)
             lines.extend(["", "  LP Position Updates:"] +
@@ -204,6 +205,10 @@ class LPHistoryCommand:
         total_position_rent_refunded = sum(Decimal(str(u.position_rent_refunded or 0)) for u in closes)
         net_rent = total_position_rent - total_position_rent_refunded
 
+        # Calculate total transaction fees (from both ADD and REMOVE operations)
+        total_tx_fees = sum(Decimal(str(u.trade_fee_in_quote or 0)) for u in opens)
+        total_tx_fees += sum(Decimal(str(u.trade_fee_in_quote or 0)) for u in closes)
+
         # Calculate values using stored mid_price from each transaction (for accurate realized P&L)
         # Each ADD valued at its mid_price, each REMOVE valued at its mid_price
         total_open_value = Decimal("0")
@@ -224,10 +229,11 @@ class LPHistoryCommand:
             total_close_value += base_amt * mid_price + quote_amt
             total_fees_value += base_fee * mid_price + quote_fee
 
-        # P&L calculation
+        # P&L calculation (including transaction fees)
         total_returned = total_close_value + total_fees_value
-        position_pnl = total_returned - total_open_value if total_open_value > 0 else Decimal("0")
-        position_roi_pct = (position_pnl / total_open_value * 100) if total_open_value > 0 else Decimal("0")
+        gross_pnl = total_returned - total_open_value if total_open_value > 0 else Decimal("0")
+        net_pnl = gross_pnl - total_tx_fees
+        position_roi_pct = (net_pnl / total_open_value * 100) if total_open_value > 0 else Decimal("0")
 
         # Header with market info
         lines.append(f"\n{market} / {trading_pair}")
@@ -280,11 +286,12 @@ class LPHistoryCommand:
             ["Total add value         ", f"{smart_round(total_open_value, precision)} {quote}"],
             ["Total remove value      ", f"{smart_round(total_close_value, precision)} {quote}"],
             ["Fees collected          ", f"{smart_round(total_fees_value, precision)} {quote}"],
+            ["Transaction fees        ", f"{smart_round(total_tx_fees, precision)} {quote}"],
         ]
         if net_rent != 0:
             perf_data.append(["Rent paid (net)         ", f"{smart_round(net_rent, precision)} SOL"])
         perf_data.extend([
-            ["LP P&L                  ", f"{smart_round(position_pnl, precision)} {quote}"],
+            ["Net P&L                 ", f"{smart_round(net_pnl, precision)} {quote}"],
             ["Return %                ", f"{float(position_roi_pct):.2f}%"],
         ])
         perf_df = pd.DataFrame(data=perf_data)
