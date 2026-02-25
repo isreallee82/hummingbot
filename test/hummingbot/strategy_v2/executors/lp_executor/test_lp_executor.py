@@ -4,7 +4,6 @@ from test.logger_mixin_for_test import LoggerMixinForTest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
-from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig, LPExecutorStates
 from hummingbot.strategy_v2.executors.lp_executor.lp_executor import LPExecutor
 from hummingbot.strategy_v2.models.base import RunnableStatus
@@ -42,7 +41,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         return LPExecutorConfig(
             id="test-lp-1",
             timestamp=1234567890,
-            market=ConnectorPair(connector_name="meteora/clmm", trading_pair="SOL-USDC"),
+            connector_name="meteora/clmm",
+            trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
             upper_price=Decimal("105"),
@@ -60,8 +60,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
     def test_executor_initialization(self):
         """Test executor initializes with correct state"""
         executor = self.get_executor()
-        self.assertEqual(executor.config.market.connector_name, "meteora/clmm")
-        self.assertEqual(executor.config.market.trading_pair, "SOL-USDC")
+        self.assertEqual(executor.config.connector_name, "meteora/clmm")
+        self.assertEqual(executor.config.trading_pair, "SOL-USDC")
         self.assertEqual(executor.lp_position_state.state, LPExecutorStates.NOT_ACTIVE)
         self.assertIsNone(executor._pool_info)
         self.assertEqual(executor._max_retries, 10)
@@ -964,7 +964,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         config = LPExecutorConfig(
             id="test-lp-1",
             timestamp=1234567890,
-            market=ConnectorPair(connector_name="meteora/clmm", trading_pair="SOL-USDC"),
+            connector_name="meteora/clmm",
+            trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
             upper_price=Decimal("105"),

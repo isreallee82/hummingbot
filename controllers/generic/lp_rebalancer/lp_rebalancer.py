@@ -404,10 +404,8 @@ class LPRebalancer(ControllerBase):
 
         return LPExecutorConfig(
             timestamp=self.market_data_provider.time(),
-            market=ConnectorPair(
-                connector_name=self.config.connector_name,
-                trading_pair=self.config.trading_pair,
-            ),
+            connector_name=self.config.connector_name,
+            trading_pair=self.config.trading_pair,
             pool_address=self.config.pool_address,
             lower_price=lower_price,
             upper_price=upper_price,
