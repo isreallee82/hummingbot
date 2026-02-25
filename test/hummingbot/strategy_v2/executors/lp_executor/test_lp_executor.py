@@ -406,11 +406,18 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor.lp_position_state.position_address = "pos123"
         executor.lp_position_state._out_of_range_since = 1234567800.0  # 90 seconds ago
 
-        mock_pool_info = MagicMock()
-        mock_pool_info.price = 110.0  # Out of range
+        # Mock position info with price above upper_price (105)
+        mock_position = MagicMock()
+        mock_position.base_token_amount = 1.0
+        mock_position.quote_token_amount = 100.0
+        mock_position.base_fee_amount = 0.0
+        mock_position.quote_fee_amount = 0.0
+        mock_position.lower_price = 95.0
+        mock_position.upper_price = 105.0
+        mock_position.price = 110.0  # Out of range (above upper_price)
+
         connector = self.strategy.connectors["meteora/clmm"]
-        connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
-        connector.get_position_info = AsyncMock(return_value=None)
+        connector.get_position_info = AsyncMock(return_value=mock_position)
 
         await executor.control_task()
 
