@@ -4,7 +4,7 @@ from typing import Dict, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from hummingbot.strategy_v2.executors.data_types import ConnectorPair, ExecutorConfigBase
+from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
 from hummingbot.strategy_v2.models.executors import TrackedOrder
 
 
@@ -32,8 +32,9 @@ class LPExecutorConfig(ExecutorConfigBase):
     """
     type: Literal["lp_executor"] = "lp_executor"
 
-    # Market and pool identification
-    market: ConnectorPair  # e.g., ConnectorPair(connector_name="meteora/clmm", trading_pair="SOL-USDC")
+    # Market and pool identification (aligned with other executors)
+    connector_name: str
+    trading_pair: str
     pool_address: str
 
     # Position price bounds
@@ -52,7 +53,7 @@ class LPExecutorConfig(ExecutorConfigBase):
     position_offset_pct: Decimal = Decimal("0.01")
 
     # Auto-close: close position after being out of range for this many seconds
-    # None = no auto-close (controller handles rebalancing)
+    # None = no auto-close - position stays open indefinitely until manually closed or executor stopped
     # above_range: closes when price >= upper_price for this duration
     # below_range: closes when price <= lower_price for this duration
     auto_close_above_range_seconds: Optional[int] = None

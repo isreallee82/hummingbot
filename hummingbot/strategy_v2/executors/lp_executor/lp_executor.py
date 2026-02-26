@@ -47,7 +47,7 @@ class LPExecutor(ExecutorBase):
         max_retries: int = 10,
     ):
         # Extract connector names from config for ExecutorBase
-        connectors = [config.market.connector_name]
+        connectors = [config.connector_name]
         super().__init__(strategy, connectors, config, update_interval)
         self.config: LPExecutorConfig = config
         self.lp_position_state = LPExecutorState()
@@ -130,13 +130,13 @@ class LPExecutor(ExecutorBase):
         if not self.lp_position_state.position_address:
             return
 
-        connector = self.connectors.get(self.config.market.connector_name)
+        connector = self.connectors.get(self.config.connector_name)
         if connector is None:
             return
 
         try:
             position_info = await connector.get_position_info(
-                trading_pair=self.config.market.trading_pair,
+                trading_pair=self.config.trading_pair,
                 position_address=self.lp_position_state.position_address
             )
 
@@ -182,9 +182,9 @@ class LPExecutor(ExecutorBase):
 
         Uses the price bounds provided in config directly.
         """
-        connector = self.connectors.get(self.config.market.connector_name)
+        connector = self.connectors.get(self.config.connector_name)
         if connector is None:
-            self.logger().error(f"Connector {self.config.market.connector_name} not found")
+            self.logger().error(f"Connector {self.config.connector_name} not found")
             return
 
         # Use config bounds directly
@@ -195,7 +195,7 @@ class LPExecutor(ExecutorBase):
         self.logger().info(f"Creating position with bounds: [{lower_price:.6f} - {upper_price:.6f}]")
 
         # Generate order_id (same as add_liquidity does internally)
-        order_id = connector.create_market_order_id(TradeType.RANGE, self.config.market.trading_pair)
+        order_id = connector.create_market_order_id(TradeType.RANGE, self.config.trading_pair)
         self.lp_position_state.active_open_order = TrackedOrder(order_id=order_id)
 
         try:
@@ -204,7 +204,7 @@ class LPExecutor(ExecutorBase):
             signature = await connector._clmm_add_liquidity(
                 trade_type=TradeType.RANGE,
                 order_id=order_id,
-                trading_pair=self.config.market.trading_pair,
+                trading_pair=self.config.trading_pair,
                 price=float(mid_price),
                 lower_price=float(lower_price),
                 upper_price=float(upper_price),
@@ -243,7 +243,7 @@ class LPExecutor(ExecutorBase):
 
             # Fetch full position info from chain to get actual amounts and bounds
             position_info = await connector.get_position_info(
-                trading_pair=self.config.market.trading_pair,
+                trading_pair=self.config.trading_pair,
                 position_address=position_address
             )
 
@@ -293,7 +293,7 @@ class LPExecutor(ExecutorBase):
             connector._trigger_add_liquidity_event(
                 order_id=order_id,
                 exchange_order_id=signature,
-                trading_pair=self.config.market.trading_pair,
+                trading_pair=self.config.trading_pair,
                 lower_price=self.lp_position_state.lower_price,
                 upper_price=self.lp_position_state.upper_price,
                 amount=self.lp_position_state.base_amount + self.lp_position_state.quote_amount / current_price,
@@ -341,7 +341,7 @@ class LPExecutor(ExecutorBase):
 
         if self._current_retries >= max_retries:
             msg = (
-                f"LP OPEN FAILED after {max_retries} retries for {self.config.market.trading_pair}.{sig_info} "
+                f"LP OPEN FAILED after {max_retries} retries for {self.config.trading_pair}.{sig_info} "
                 f"Manual intervention required. Error: {error}"
             )
             self.logger().error(msg)
@@ -419,15 +419,15 @@ class LPExecutor(ExecutorBase):
         Close position by directly awaiting the gateway operation.
         No events needed - result is available immediately after await.
         """
-        connector = self.connectors.get(self.config.market.connector_name)
+        connector = self.connectors.get(self.config.connector_name)
         if connector is None:
-            self.logger().error(f"Connector {self.config.market.connector_name} not found")
+            self.logger().error(f"Connector {self.config.connector_name} not found")
             return
 
         # Verify position still exists before trying to close (handles timeout-but-succeeded case)
         try:
             position_info = await connector.get_position_info(
-                trading_pair=self.config.market.trading_pair,
+                trading_pair=self.config.trading_pair,
                 position_address=self.lp_position_state.position_address
             )
             if position_info is None:
@@ -458,7 +458,7 @@ class LPExecutor(ExecutorBase):
             # Other errors - proceed with close attempt
 
         # Generate order_id for tracking
-        order_id = connector.create_market_order_id(TradeType.RANGE, self.config.market.trading_pair)
+        order_id = connector.create_market_order_id(TradeType.RANGE, self.config.trading_pair)
         self.lp_position_state.active_close_order = TrackedOrder(order_id=order_id)
 
         try:
@@ -466,7 +466,7 @@ class LPExecutor(ExecutorBase):
             signature = await connector._clmm_close_position(
                 trade_type=TradeType.RANGE,
                 order_id=order_id,
-                trading_pair=self.config.market.trading_pair,
+                trading_pair=self.config.trading_pair,
                 position_address=self.lp_position_state.position_address,
             )
             # Note: If operation fails, connector now re-raises the exception
@@ -509,7 +509,7 @@ class LPExecutor(ExecutorBase):
             connector._trigger_remove_liquidity_event(
                 order_id=order_id,
                 exchange_order_id=signature,
-                trading_pair=self.config.market.trading_pair,
+                trading_pair=self.config.trading_pair,
                 token_id="0",
                 creation_timestamp=self._strategy.current_timestamp,
                 trade_fee=trade_fee,
@@ -551,7 +551,7 @@ class LPExecutor(ExecutorBase):
 
         if self._current_retries >= max_retries:
             msg = (
-                f"LP CLOSE FAILED after {max_retries} retries for {self.config.market.trading_pair}.{sig_info} "
+                f"LP CLOSE FAILED after {max_retries} retries for {self.config.trading_pair}.{sig_info} "
                 f"Position {self.lp_position_state.position_address} may need manual close. Error: {error}"
             )
             self.logger().error(msg)
@@ -580,12 +580,12 @@ class LPExecutor(ExecutorBase):
         closed on-chain but we didn't receive the confirmation (e.g., timeout-but-succeeded).
         Uses last known position data. This ensures the database is updated.
         """
-        connector = self.connectors.get(self.config.market.connector_name)
+        connector = self.connectors.get(self.config.connector_name)
         if connector is None:
             return
 
         # Generate a synthetic order_id for this event
-        order_id = connector.create_market_order_id(TradeType.RANGE, self.config.market.trading_pair)
+        order_id = connector.create_market_order_id(TradeType.RANGE, self.config.trading_pair)
         # Note: mid_price is the current MARKET price, not the position range midpoint
         current_price = Decimal(str(self._pool_info.price)) if self._pool_info else Decimal("0")
 
@@ -606,7 +606,7 @@ class LPExecutor(ExecutorBase):
         connector._trigger_remove_liquidity_event(
             order_id=order_id,
             exchange_order_id="already-closed",
-            trading_pair=self.config.market.trading_pair,
+            trading_pair=self.config.trading_pair,
             token_id="0",
             creation_timestamp=self._strategy.current_timestamp,
             trade_fee=trade_fee,
@@ -643,7 +643,7 @@ class LPExecutor(ExecutorBase):
 
         Returns Decimal("1") if rate is not available.
         """
-        _, quote_token = split_hb_trading_pair(self.config.market.trading_pair)
+        _, quote_token = split_hb_trading_pair(self.config.trading_pair)
 
         try:
             rate = RateOracle.get_instance().get_pair_rate(f"{quote_token}-USDT")
@@ -662,9 +662,9 @@ class LPExecutor(ExecutorBase):
 
         Returns Decimal("1") if rate is not available.
         """
-        connector = self.connectors.get(self.config.market.connector_name)
+        connector = self.connectors.get(self.config.connector_name)
         native_currency = getattr(connector, '_native_currency', 'SOL') or 'SOL'
-        _, quote_token = split_hb_trading_pair(self.config.market.trading_pair)
+        _, quote_token = split_hb_trading_pair(self.config.trading_pair)
 
         # If native currency is the quote token, no conversion needed
         if native_currency == quote_token:
@@ -861,7 +861,7 @@ class LPExecutor(ExecutorBase):
 
     async def update_pool_info(self):
         """Fetch and store current pool info"""
-        connector = self.connectors.get(self.config.market.connector_name)
+        connector = self.connectors.get(self.config.connector_name)
         if connector is None:
             return
 

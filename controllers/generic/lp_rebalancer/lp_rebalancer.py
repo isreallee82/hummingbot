@@ -404,10 +404,8 @@ class LPRebalancer(ControllerBase):
 
         return LPExecutorConfig(
             timestamp=self.market_data_provider.time(),
-            market=ConnectorPair(
-                connector_name=self.config.connector_name,
-                trading_pair=self.config.trading_pair,
-            ),
+            connector_name=self.config.connector_name,
+            trading_pair=self.config.trading_pair,
             pool_address=self.config.pool_address,
             lower_price=lower_price,
             upper_price=upper_price,
@@ -459,8 +457,9 @@ class LPRebalancer(ControllerBase):
                     available_as_quote = available_base * current_price
                     if available_as_quote < total:
                         self.logger().info(
-                            f"Clamping total from {total} to {available_as_quote:.4f} {self._quote_token} "
-                            f"(closed position returned {self._last_closed_base_amount} + {self._last_closed_base_fee} fees {self._base_token})"
+                            f"Clamping total from {total} to {available_as_quote:.4f} "
+                            f"{self._quote_token} (closed: {self._last_closed_base_amount} + "
+                            f"{self._last_closed_base_fee} fees {self._base_token})"
                         )
                         total = available_as_quote
 
@@ -607,7 +606,11 @@ class LPRebalancer(ControllerBase):
 
         # Config summary
         side_names = {0: "BOTH", 1: "BUY", 2: "SELL"}
-        line = f"| Config: side={side_names.get(self.config.side, '?')}, total_amount={self.config.total_amount_quote} {self._quote_token}, position_width={self.config.position_width_pct}%, rebalance_seconds={self.config.rebalance_seconds}"
+        side_str = side_names.get(self.config.side, '?')
+        amt = self.config.total_amount_quote
+        width = self.config.position_width_pct
+        rebal = self.config.rebalance_seconds
+        line = f"| Config: side={side_str}, amount={amt} {self._quote_token}, width={width}%, rebal={rebal}s"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         # Position fees and assets
@@ -618,14 +621,20 @@ class LPRebalancer(ControllerBase):
             base_fee = Decimal(str(custom.get("base_fee", 0)))
             quote_fee = Decimal(str(custom.get("quote_fee", 0)))
             fees_earned_quote = Decimal(str(custom.get("fees_earned_quote", 0)))
-            line = f"| Fees Earned: {float(base_fee):.6f} {self._base_token} + {float(quote_fee):.6f} {self._quote_token} = {float(fees_earned_quote):.6f} {self._quote_token}"
+            line = (
+                f"| Fees: {float(base_fee):.6f} {self._base_token} + "
+                f"{float(quote_fee):.6f} {self._quote_token} = {float(fees_earned_quote):.6f}"
+            )
             status.append(line + " " * (box_width - len(line) + 1) + "|")
 
             # Value row: base_amount + quote_amount = total value
             base_amount = Decimal(str(custom.get("base_amount", 0)))
             quote_amount = Decimal(str(custom.get("quote_amount", 0)))
             total_value_quote = Decimal(str(custom.get("total_value_quote", 0)))
-            line = f"| Position Value: {float(base_amount):.6f} {self._base_token} + {float(quote_amount):.6f} {self._quote_token} = {float(total_value_quote):.4f} {self._quote_token}"
+            line = (
+                f"| Value: {float(base_amount):.6f} {self._base_token} + "
+                f"{float(quote_amount):.6f} {self._quote_token} = {float(total_value_quote):.4f}"
+            )
             status.append(line + " " * (box_width - len(line) + 1) + "|")
 
             # Position range visualization
@@ -735,17 +744,25 @@ class LPRebalancer(ControllerBase):
             # Base token row
             if self._initial_base_balance is not None:
                 base_change = current_base - self._initial_base_balance
-                line = f"|   {self._base_token:<12} {float(self._initial_base_balance):>14.6f} {float(current_base):>14.6f} {float(base_change):>+16.6f}"
+                init_b = float(self._initial_base_balance)
+                curr_b = float(current_base)
+                chg_b = float(base_change)
+                line = f"|   {self._base_token:<12} {init_b:>14.6f} {curr_b:>14.6f} {chg_b:>+16.6f}"
             else:
-                line = f"|   {self._base_token:<12} {'N/A':>14} {float(current_base):>14.6f} {'N/A':>16}"
+                curr_b = float(current_base)
+                line = f"|   {self._base_token:<12} {'N/A':>14} {curr_b:>14.6f} {'N/A':>16}"
             status.append(line + " " * (box_width - len(line) + 1) + "|")
 
             # Quote token row
             if self._initial_quote_balance is not None:
                 quote_change = current_quote - self._initial_quote_balance
-                line = f"|   {self._quote_token:<12} {float(self._initial_quote_balance):>14.6f} {float(current_quote):>14.6f} {float(quote_change):>+16.6f}"
+                init_q = float(self._initial_quote_balance)
+                curr_q = float(current_quote)
+                chg_q = float(quote_change)
+                line = f"|   {self._quote_token:<12} {init_q:>14.6f} {curr_q:>14.6f} {chg_q:>+16.6f}"
             else:
-                line = f"|   {self._quote_token:<12} {'N/A':>14} {float(current_quote):>14.6f} {'N/A':>16}"
+                curr_q = float(current_quote)
+                line = f"|   {self._quote_token:<12} {'N/A':>14} {curr_q:>14.6f} {'N/A':>16}"
             status.append(line + " " * (box_width - len(line) + 1) + "|")
         except Exception as e:
             line = f"| Balances: Error fetching ({e})"
@@ -772,9 +789,12 @@ class LPRebalancer(ControllerBase):
         pool_price = self._pool_price or Decimal("0")
         total_fees_value = total_fees_base * pool_price + total_fees_quote
 
-        line = f"| Closed Positions: {len(closed)} (both:{both_count} buy:{buy_count} sell:{sell_count})"
+        line = f"| Closed: {len(closed)} (both:{both_count} buy:{buy_count} sell:{sell_count})"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
-        line = f"| Total Fees Collected: {float(total_fees_base):.6f} {self._base_token} + {float(total_fees_quote):.6f} {self._quote_token} = {float(total_fees_value):.6f} {self._quote_token}"
+        fb = float(total_fees_base)
+        fq = float(total_fees_quote)
+        fv = float(total_fees_value)
+        line = f"| Fees Collected: {fb:.6f} {self._base_token} + {fq:.6f} {self._quote_token} = {fv:.6f}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         status.append("+" + "-" * box_width + "+")
@@ -880,8 +900,18 @@ class LPRebalancer(ControllerBase):
         viz_lines.append("Price Limits:")
 
         # Create labels with price ranges
-        sell_label = f"Sell [{float(self.config.sell_price_min):.{price_decimals}f}-{float(self.config.sell_price_max):.{price_decimals}f}]" if self.config.sell_price_min and self.config.sell_price_max else "Sell"
-        buy_label = f"Buy  [{float(self.config.buy_price_min):.{price_decimals}f}-{float(self.config.buy_price_max):.{price_decimals}f}]" if self.config.buy_price_min and self.config.buy_price_max else "Buy "
+        if self.config.sell_price_min and self.config.sell_price_max:
+            s_min = float(self.config.sell_price_min)
+            s_max = float(self.config.sell_price_max)
+            sell_label = f"Sell [{s_min:.{price_decimals}f}-{s_max:.{price_decimals}f}]"
+        else:
+            sell_label = "Sell"
+        if self.config.buy_price_min and self.config.buy_price_max:
+            b_min = float(self.config.buy_price_min)
+            b_max = float(self.config.buy_price_max)
+            buy_label = f"Buy  [{b_min:.{price_decimals}f}-{b_max:.{price_decimals}f}]"
+        else:
+            buy_label = "Buy "
 
         # Find max label length for alignment
         max_label_len = max(len(sell_label), len(buy_label))

@@ -1,7 +1,6 @@
 from decimal import Decimal
 from unittest import TestCase
 
-from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig, LPExecutorState, LPExecutorStates
 from hummingbot.strategy_v2.models.executors import TrackedOrder
 
@@ -31,21 +30,20 @@ class TestLPExecutorStates(TestCase):
 class TestLPExecutorConfig(TestCase):
     """Test LPExecutorConfig"""
 
-    def setUp(self):
-        self.market = ConnectorPair(connector_name="meteora/clmm", trading_pair="SOL-USDC")
-
     def test_config_creation_minimal(self):
         """Test creating config with minimal required fields"""
         config = LPExecutorConfig(
             id="test-1",
             timestamp=1234567890,
-            market=self.market,
+            connector_name="meteora/clmm",
+            trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("100"),
             upper_price=Decimal("110"),
         )
         self.assertEqual(config.type, "lp_executor")
-        self.assertEqual(config.market, self.market)
+        self.assertEqual(config.connector_name, "meteora/clmm")
+        self.assertEqual(config.trading_pair, "SOL-USDC")
         self.assertEqual(config.pool_address, "pool123")
         self.assertEqual(config.lower_price, Decimal("100"))
         self.assertEqual(config.upper_price, Decimal("110"))
@@ -62,7 +60,8 @@ class TestLPExecutorConfig(TestCase):
         config = LPExecutorConfig(
             id="test-2",
             timestamp=1234567890,
-            market=self.market,
+            connector_name="meteora/clmm",
+            trading_pair="SOL-USDC",
             pool_address="pool456",
             lower_price=Decimal("90"),
             upper_price=Decimal("100"),
@@ -88,7 +87,8 @@ class TestLPExecutorConfig(TestCase):
             config = LPExecutorConfig(
                 id=f"test-side-{side}",
                 timestamp=1234567890,
-                market=self.market,
+                connector_name="meteora/clmm",
+                trading_pair="SOL-USDC",
                 pool_address="pool",
                 lower_price=Decimal("100"),
                 upper_price=Decimal("110"),
