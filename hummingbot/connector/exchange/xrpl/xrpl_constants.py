@@ -827,4 +827,16 @@ MARKETS = {
         "base_issuer": "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE",
         "quote_issuer": "rH5CJsqvNqZGxrMyGaqLEoMWRYcVTAPZMt",
     },
+    "EUROP-USDC": {
+        "base": "EUROP",
+        "quote": "USDC",
+        "base_issuer": "rMkEuRii9w9uBMQDnWV5AA43gvYZR9JxVK",
+        "quote_issuer": "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE",
+    },
+    "USDC-EUROP": {
+        "base": "USDC",
+        "quote": "EUROP",
+        "base_issuer": "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE",
+        "quote_issuer": "rMkEuRii9w9uBMQDnWV5AA43gvYZR9JxVK",
+    },
 }
