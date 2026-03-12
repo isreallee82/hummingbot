@@ -14,10 +14,10 @@ class _MockConnector:
     def __init__(self):
         self._api_get = AsyncMock(return_value={"result": {}})
 
-    def exchange_symbol_associated_to_pair(self, trading_pair: str) -> str:
+    async def exchange_symbol_associated_to_pair(self, trading_pair: str) -> str:
         return "BTC_USDT_Perp"
 
-    def trading_pair_associated_to_exchange_symbol(self, symbol: str) -> str:
+    async def trading_pair_associated_to_exchange_symbol(self, symbol: str) -> str:
         return "BTC-USDT"
 
     async def get_last_traded_prices(self, trading_pairs):
@@ -27,7 +27,7 @@ class _MockConnector:
 class GrvtPerpetualAPIOrderBookDataSourceTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
-        self.fixtures_dir = Path(__file__).parent / "fixtures"
+        self.fixtures_dir = Path(__file__).resolve().parents[5] / "grvt" / "fixtures"
         self.connector = _MockConnector()
         self.api_factory = MagicMock()
         self.data_source = GrvtPerpetualAPIOrderBookDataSource(

@@ -1,11 +1,11 @@
 import asyncio
 import time
 import uuid
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from hummingbot.connector.derivative.grvt_perpetual import (
     grvt_perpetual_constants as CONSTANTS,
-    grvt_perpetual_utils as utils,
     grvt_perpetual_web_utils as web_utils,
 )
 from hummingbot.connector.derivative.grvt_perpetual.grvt_perpetual_order_book import GrvtPerpetualOrderBook
@@ -49,24 +49,24 @@ class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         return await self._connector.get_last_traded_prices(trading_pairs=trading_pairs)
 
     async def get_funding_info(self, trading_pair: str) -> FundingInfo:
-        params = {"instrument": self._connector.exchange_symbol_associated_to_pair(trading_pair)}
+        params = {"instrument": await self._connector.exchange_symbol_associated_to_pair(trading_pair)}
         data = await self._connector._api_get(
             path_url=CONSTANTS.TICKER_PATH_URL,
             params=params,
             throttler_limit_id=CONSTANTS.TICKER_PATH_URL,
         )
-        payload = utils.extract_result(data)
+        payload = data["result"]
 
         return FundingInfo(
             trading_pair=trading_pair,
-            index_price=utils.safe_decimal(payload.get("index_price")),
-            mark_price=utils.safe_decimal(payload.get("mark_price")),
+            index_price=Decimal(str(payload.get("index_price", "0"))),
+            mark_price=Decimal(str(payload.get("mark_price", "0"))),
             next_funding_utc_timestamp=0.0,
-            rate=utils.safe_decimal(payload.get("funding_rate_8h_curr")),
+            rate=Decimal(str(payload.get("funding_rate_8h_curr", "0"))),
         )
 
     async def _request_order_book_snapshot(self, trading_pair: str) -> Dict[str, Any]:
-        instrument = self._connector.exchange_symbol_associated_to_pair(trading_pair)
+        instrument = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
         last_error: Optional[Exception] = None
 
         for depth in CONSTANTS.ORDER_BOOK_SNAPSHOT_DEPTHS:
@@ -114,7 +114,7 @@ class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         if self._ws_assistant is None:
             return False
 
-        instrument = self._connector.exchange_symbol_associated_to_pair(trading_pair)
+        instrument = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
         streams = [
             CONSTANTS.WS_PUBLIC_ORDERBOOK_SNAPSHOT_STREAM,
             CONSTANTS.WS_PUBLIC_ORDERBOOK_DIFF_STREAM,
@@ -142,7 +142,7 @@ class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         if self._ws_assistant is None:
             return False
 
-        instrument = self._connector.exchange_symbol_associated_to_pair(trading_pair)
+        instrument = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
         streams = [
             CONSTANTS.WS_PUBLIC_ORDERBOOK_SNAPSHOT_STREAM,
             CONSTANTS.WS_PUBLIC_ORDERBOOK_DIFF_STREAM,
@@ -189,13 +189,34 @@ class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         )
 
     async def _parse_order_book_snapshot_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        message_queue.put_nowait(GrvtPerpetualOrderBook.snapshot_message_from_ws(raw_message))
+        instrument = raw_message["params"]["data"]["feed"]["instrument"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
+        message_queue.put_nowait(
+            GrvtPerpetualOrderBook.snapshot_message_from_ws(
+                raw_message,
+                metadata={"trading_pair": trading_pair},
+            )
+        )
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        message_queue.put_nowait(GrvtPerpetualOrderBook.diff_message_from_exchange(raw_message))
+        instrument = raw_message["params"]["data"]["feed"]["instrument"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
+        message_queue.put_nowait(
+            GrvtPerpetualOrderBook.diff_message_from_exchange(
+                raw_message,
+                metadata={"trading_pair": trading_pair},
+            )
+        )
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        message_queue.put_nowait(GrvtPerpetualOrderBook.trade_message_from_exchange(raw_message))
+        instrument = raw_message["params"]["data"]["feed"]["instrument"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
+        message_queue.put_nowait(
+            GrvtPerpetualOrderBook.trade_message_from_exchange(
+                raw_message,
+                metadata={"trading_pair": trading_pair},
+            )
+        )
 
     async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         stream_data: Dict[str, Any] = raw_message.get("params", {}).get("data", {})
@@ -208,12 +229,12 @@ class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         if instrument is None:
             return
 
-        trading_pair = self._connector.trading_pair_associated_to_exchange_symbol(instrument)
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
         funding_update = FundingInfoUpdate(
             trading_pair=trading_pair,
-            index_price=utils.safe_decimal(data.get("index_price")),
-            mark_price=utils.safe_decimal(data.get("mark_price")),
+            index_price=Decimal(str(data.get("index_price", "0"))),
+            mark_price=Decimal(str(data.get("mark_price", "0"))),
             next_funding_utc_timestamp=0,
-            rate=utils.safe_decimal(data.get("funding_rate_8h_curr")),
+            rate=Decimal(str(data.get("funding_rate_8h_curr", "0"))),
         )
         message_queue.put_nowait(funding_update)

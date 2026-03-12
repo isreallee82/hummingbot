@@ -55,8 +55,6 @@ class GrvtPerpetualAuth(AuthBase):
         api_key: str = "",
         sub_account_id: str = "",
         evm_private_key: str = "",
-        stark_public_key: str = "",
-        stark_signature: str = "",
         domain: str = "grvt_perpetual",
     ):
         self._session_cookie = session_cookie.strip()
@@ -64,8 +62,6 @@ class GrvtPerpetualAuth(AuthBase):
         self._api_key = api_key.strip()
         self._sub_account_id = sub_account_id.strip()
         self._evm_private_key = evm_private_key.strip()
-        self._stark_public_key = stark_public_key.strip()
-        self._stark_signature = stark_signature.strip()
         self._domain = domain
 
     @property

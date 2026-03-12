@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional
 
-from hummingbot.connector.derivative.grvt_perpetual import grvt_perpetual_utils as utils
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.order_book_message import OrderBookMessage, OrderBookMessageType
@@ -53,16 +52,17 @@ class GrvtPerpetualOrderBook(OrderBook):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> OrderBookMessage:
         data = msg.get("result", msg)
-        instrument = data.get("instrument")
-        trading_pair = metadata.get("trading_pair") if metadata else utils.instrument_to_trading_pair(instrument)
-        update_id = cls._safe_int(data.get("event_time"))
-        event_ts = utils.convert_timestamp_to_seconds(data.get("event_time"))
+        if metadata:
+            data = {**data, **metadata}
+        event_time = data["event_time"]
+        update_id = cls._safe_int(event_time)
+        event_ts = int(event_time) * 1e-9
         ts = event_ts or timestamp
 
         return OrderBookMessage(
             OrderBookMessageType.SNAPSHOT,
             {
-                "trading_pair": trading_pair,
+                "trading_pair": data["trading_pair"],
                 "update_id": update_id,
                 "bids": cls._normalize_price_levels(data.get("bids", [])),
                 "asks": cls._normalize_price_levels(data.get("asks", [])),
@@ -78,15 +78,16 @@ class GrvtPerpetualOrderBook(OrderBook):
     ) -> OrderBookMessage:
         stream_data = cls._extract_ws_stream_data(msg)
         data = cls._extract_ws_feed_data(msg)
-        instrument = data.get("instrument")
-        trading_pair = metadata.get("trading_pair") if metadata else utils.instrument_to_trading_pair(instrument)
-        ts = utils.convert_timestamp_to_seconds(data.get("event_time"))
-        update_id = cls._safe_int(stream_data.get("sequence_number"), cls._safe_int(data.get("event_time")))
+        if metadata:
+            data = {**data, **metadata}
+        event_time = data["event_time"]
+        ts = int(event_time) * 1e-9
+        update_id = cls._safe_int(stream_data.get("sequence_number"), cls._safe_int(event_time))
 
         return OrderBookMessage(
             OrderBookMessageType.SNAPSHOT,
             {
-                "trading_pair": trading_pair,
+                "trading_pair": data["trading_pair"],
                 "update_id": update_id,
                 "bids": cls._normalize_price_levels(data.get("bids", [])),
                 "asks": cls._normalize_price_levels(data.get("asks", [])),
@@ -102,16 +103,17 @@ class GrvtPerpetualOrderBook(OrderBook):
     ) -> OrderBookMessage:
         stream_data = cls._extract_ws_stream_data(msg)
         data = cls._extract_ws_feed_data(msg)
-        instrument = data.get("instrument")
-        trading_pair = metadata.get("trading_pair") if metadata else utils.instrument_to_trading_pair(instrument)
-        ts = utils.convert_timestamp_to_seconds(data.get("event_time"))
-        update_id = cls._safe_int(stream_data.get("sequence_number"), cls._safe_int(data.get("event_time")))
+        if metadata:
+            data = {**data, **metadata}
+        event_time = data["event_time"]
+        ts = int(event_time) * 1e-9
+        update_id = cls._safe_int(stream_data.get("sequence_number"), cls._safe_int(event_time))
         first_update_id = cls._safe_int(stream_data.get("prev_sequence_number"), update_id)
 
         return OrderBookMessage(
             OrderBookMessageType.DIFF,
             {
-                "trading_pair": trading_pair,
+                "trading_pair": data["trading_pair"],
                 "first_update_id": first_update_id,
                 "update_id": update_id,
                 "bids": cls._normalize_price_levels(data.get("bids", [])),
@@ -128,19 +130,20 @@ class GrvtPerpetualOrderBook(OrderBook):
     ) -> OrderBookMessage:
         stream_data = cls._extract_ws_stream_data(msg)
         data = cls._extract_ws_feed_data(msg)
-        instrument = data.get("instrument")
-        trading_pair = metadata.get("trading_pair") if metadata else utils.instrument_to_trading_pair(instrument)
+        if metadata:
+            data = {**data, **metadata}
 
-        ts = utils.convert_timestamp_to_seconds(data.get("event_time"))
+        event_time = data["event_time"]
+        ts = int(event_time) * 1e-9
         is_taker_buyer = bool(data.get("is_taker_buyer"))
         trade_id = data.get("trade_id")
         sequence_number = cls._safe_int(stream_data.get("sequence_number"))
-        update_id = sequence_number or cls._safe_int(trade_id, cls._safe_int(data.get("event_time")))
+        update_id = sequence_number or cls._safe_int(trade_id, cls._safe_int(event_time))
 
         return OrderBookMessage(
             OrderBookMessageType.TRADE,
             {
-                "trading_pair": trading_pair,
+                "trading_pair": data["trading_pair"],
                 "trade_type": float(TradeType.BUY.value) if is_taker_buyer else float(TradeType.SELL.value),
                 "trade_id": trade_id or update_id,
                 "update_id": update_id,

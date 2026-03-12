@@ -50,12 +50,7 @@ def auth_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
     )
 
 
-def auth_api_key_login_url(
-    domain: str = CONSTANTS.DEFAULT_DOMAIN,
-    endpoint_override: Optional[str] = None,
-) -> str:
-    if endpoint_override:
-        return endpoint_override
+def auth_api_key_login_url(domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
     return rest_url(
         path_url=CONSTANTS.API_KEY_LOGIN_PATH_URL,
         domain=domain,
@@ -127,9 +122,4 @@ async def get_current_server_time(
         method=RESTMethod.GET,
         throttler_limit_id=CONSTANTS.GLOBAL_PUBLIC_LIMIT_ID,
     )
-
-    server_time = response.get("server_time")
-    if server_time is None:
-        raise KeyError(f"Unexpected server time response: {response}")
-
-    return float(server_time)
+    return float(response["server_time"])

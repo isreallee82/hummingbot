@@ -25,7 +25,6 @@ WS_HEARTBEAT_TIME_INTERVAL = 30
 # Public market data endpoints
 TIME_PATH_URL = "/time"
 EXCHANGE_INFO_PATH_URL = "/v1/instruments"
-ALL_INSTRUMENTS_PATH_URL = "/v1/all_instruments"
 TRADING_RULES_PATH_URL = "/v1/instruments"
 TICKER_PATH_URL = "/v1/ticker"
 SNAPSHOT_PATH_URL = "/v1/book"
@@ -91,12 +90,6 @@ RATE_LIMITS = [
     ),
     RateLimit(
         limit_id=EXCHANGE_INFO_PATH_URL,
-        limit=100,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PUBLIC_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=ALL_INSTRUMENTS_PATH_URL,
         limit=100,
         time_interval=1,
         linked_limits=[LinkedLimitWeightPair(GLOBAL_PUBLIC_LIMIT_ID)],
