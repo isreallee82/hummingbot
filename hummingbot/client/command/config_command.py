@@ -170,7 +170,7 @@ class ConfigCommand:
                 continue
             attr_printout = (
                 "  " * (traversal_item.depth - 1)
-                + (u"\u221F " if not is_windows() else "  ")
+                + ("- " if not is_windows() else "  ")
                 + traversal_item.attr
             ) if traversal_item.depth else traversal_item.attr
             model_data.append((attr_printout, traversal_item.printable_value))
