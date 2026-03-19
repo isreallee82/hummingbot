@@ -160,3 +160,8 @@ RATE_LIMITS = [
 
 ORDER_NOT_EXIST_ERROR_CODE = "ORDER_NOT_FOUND"
 ORDER_NOT_EXIST_MESSAGE = "Order does not exist"
+
+# Error messages from the exchange for detection
+INSUFFICIENT_FUNDS_ERROR = "Insufficient funds"
+TOO_MANY_QUANTITY_ERROR = "Too many quantity"
+UNKNOWN_POSITION_ERROR = "Unknown position"

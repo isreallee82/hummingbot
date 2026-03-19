@@ -30,7 +30,7 @@ from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
-from hummingbot.core.utils.async_utils import safe_gather
+from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.core.utils.estimate_fee import build_trade_fee
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
@@ -382,6 +382,22 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
         except IOError as e:
             error_description = str(e)
+
+            # Handle insufficient funds - force balance refresh and raise
+            if CONSTANTS.INSUFFICIENT_FUNDS_ERROR.lower() in error_description.lower():
+                self.logger().error(f"Insufficient funds detected, refreshing balances: {error_description}")
+                # Schedule balance refresh
+                safe_ensure_future(self._update_balances())
+                raise ValueError(f"Insufficient funds to place order for {trading_pair}: {error_description}")
+
+            # Handle position close errors (Too many quantity / Unknown position)
+            if (CONSTANTS.TOO_MANY_QUANTITY_ERROR.lower() in error_description.lower() or
+                    CONSTANTS.UNKNOWN_POSITION_ERROR.lower() in error_description.lower()):
+                self.logger().error(f"Position error detected, refreshing positions: {error_description}")
+                # Schedule position refresh
+                safe_ensure_future(self._update_positions())
+                raise ValueError(f"Position error for {trading_pair}: {error_description}")
+
             if "503" in error_description:
                 exchange_order_id = "UNKNOWN"
                 transact_time = time.time()
@@ -697,13 +713,20 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     min_order_size = Decimal(str(rule.get("minQuantity", "0.001")))
                     tick_size = Decimal(str(rule.get("priceIncrement", "0.01")))
                     step_size = Decimal(str(rule.get("quantityIncrement", "0.001")))
-                    # Instrument type doesn't have minVolume - calculate from minQuantity * minPrice
-                    min_price = Decimal(str(rule.get("minPrice", "0.01")))
-                    min_notional = min_order_size * min_price if min_price > 0 else Decimal("10")
+                    # Use minVolume if available, otherwise fallback to calculation
+                    min_volume = rule.get("minVolume")
+                    if min_volume is not None and min_volume > 0:
+                        min_notional = Decimal(str(min_volume))
+                    else:
+                        min_price = Decimal(str(rule.get("minPrice", "0.01")))
+                        min_notional = min_order_size * min_price if min_price > 0 else Decimal("10")
 
                     # Get quote asset from the instrument
-                    # to_coin = rule.get("to", {})
-                    collateral_token = "USDT"
+                    to_coin = rule.get("to", {})
+                    collateral_token = to_coin.get("symbol", "USD").upper()
+                    # Evedex uses USD but Hummingbot expects USDT
+                    if collateral_token == "USD":
+                        collateral_token = "USDT"
 
                     return_val.append(
                         TradingRule(
@@ -799,6 +822,9 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
         positions = positions_response.get("list", []) if isinstance(positions_response, dict) else positions_response
 
+        # Track all position keys from the exchange to clean up stale positions later
+        active_position_keys = set()
+
         for position in positions:
             instrument = position.get("instrument", "")
             try:
@@ -814,6 +840,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             pos_key = self._perpetual_trading.position_key(hb_trading_pair, position_side)
 
             if amount != 0:
+                active_position_keys.add(pos_key)
                 _position = Position(
                     trading_pair=hb_trading_pair,
                     position_side=position_side,
@@ -825,6 +852,14 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 self._perpetual_trading.set_position(pos_key, _position)
             else:
                 self._perpetual_trading.remove_position(pos_key)
+
+        # Remove positions for tracked trading pairs that no longer exist on the exchange
+        # This handles cases where positions were closed but the connector didn't receive the update
+        current_position_keys = set(self._perpetual_trading.account_positions.keys())
+        stale_position_keys = current_position_keys - active_position_keys
+        for pos_key in stale_position_keys:
+            self.logger().debug(f"Removing stale position: {pos_key}")
+            self._perpetual_trading.remove_position(pos_key)
 
     async def _update_order_fills_from_trades(self):
         last_tick = int(self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)

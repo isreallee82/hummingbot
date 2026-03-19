@@ -567,6 +567,30 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         mapping = self.async_run_with_timeout(self.exchange.trading_pair_symbol_map())
         self.assertIn(self.ex_trading_pair, mapping)
 
+    def test_format_trading_rules_uses_min_volume_and_collateral_token(self):
+        """Test that _format_trading_rules uses minVolume directly and extracts collateral token from to.symbol."""
+        rule = {
+            "name": self.ex_trading_pair,
+            "trading": "all",
+            "visibility": "all",
+            "from": {"symbol": self.base_asset},
+            "to": {"symbol": "USD"},  # Should be converted to USDT
+            "minQuantity": "0.1",
+            "priceIncrement": "0.01",
+            "quantityIncrement": "0.01",
+            "minPrice": "100",
+            "minVolume": 25.0,  # Should be used directly for min_notional_size
+        }
+        self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        rules = self.async_run_with_timeout(self.exchange._format_trading_rules([rule]))
+        self.assertEqual(len(rules), 1)
+        trading_rule = rules[0]
+        # min_notional should be minVolume (25.0), not minQuantity * minPrice (0.1 * 100 = 10)
+        self.assertEqual(trading_rule.min_notional_size, Decimal("25"))
+        # collateral_token should be USDT (converted from USD)
+        self.assertEqual(trading_rule.buy_order_collateral_token, "USDT")
+        self.assertEqual(trading_rule.sell_order_collateral_token, "USDT")
+
     def test_format_trading_rules_error_path(self):
         self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(side_effect=Exception("boom"))
         rule = {"name": self.ex_trading_pair, "trading": "all", "visibility": "all"}
@@ -1249,6 +1273,118 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         }
         self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
         self.exchange._process_order_fill.assert_awaited_once()
+
+    @aioresponses()
+    def test_update_positions_removes_stale_positions(self, mock_api):
+        """Test that _update_positions removes positions that no longer exist on exchange."""
+        # First, set up a position in the connector's state
+        from hummingbot.connector.derivative.position import Position
+        from hummingbot.core.data_type.common import PositionSide
+
+        pos_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
+        stale_position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.LONG,
+            unrealized_pnl=Decimal("100"),
+            entry_price=Decimal("50000"),
+            amount=Decimal("1"),
+            leverage=Decimal("10"),
+        )
+        self.exchange._perpetual_trading.set_position(pos_key, stale_position)
+
+        # Verify position exists
+        self.assertIn(pos_key, self.exchange._perpetual_trading.account_positions)
+
+        # Mock the exchange response with empty positions list (position closed on exchange)
+        positions_url = web_utils.private_rest_url(CONSTANTS.POSITIONS_PATH_URL)
+        mock_api.get(positions_url, body=json.dumps({"list": [], "count": 0}))
+
+        # Mock trading pair symbol mapping
+        self.exchange._set_trading_pair_symbol_map(
+            {self.ex_trading_pair: self.trading_pair}
+        )
+
+        # Run update_positions
+        self.async_run_with_timeout(self.exchange._update_positions())
+
+        # Verify position was removed
+        self.assertNotIn(pos_key, self.exchange._perpetual_trading.account_positions)
+
+    def test_place_order_insufficient_funds_error(self):
+        """Test that insufficient funds error triggers balance refresh and raises ValueError."""
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=1)
+        self.exchange._update_balances = AsyncMock()
+        self.exchange._api_post = AsyncMock(side_effect=IOError("400 Insufficient funds for order"))
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_limit_order = MagicMock(return_value="0xsig")
+
+        with self.assertRaises(ValueError) as context:
+            self.async_run_with_timeout(
+                self.exchange._place_order(
+                    order_id="OID_INSUFFICIENT",
+                    trading_pair=self.trading_pair,
+                    amount=Decimal("1"),
+                    trade_type=TradeType.BUY,
+                    order_type=OrderType.LIMIT,
+                    price=Decimal("10"),
+                    position_action=PositionAction.OPEN,
+                )
+            )
+
+        self.assertIn("Insufficient funds", str(context.exception))
+        # Balance refresh should be scheduled (via safe_ensure_future)
+
+    def test_place_order_too_many_quantity_error(self):
+        """Test that 'Too many quantity' error triggers position refresh and raises ValueError."""
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=1)
+        self.exchange._update_positions = AsyncMock()
+        self.exchange._api_post = AsyncMock(side_effect=IOError("400 Too many quantity"))
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_position_close = MagicMock(return_value="0xsig")
+
+        with self.assertRaises(ValueError) as context:
+            self.async_run_with_timeout(
+                self.exchange._place_order(
+                    order_id="OID_TOO_MANY",
+                    trading_pair=self.trading_pair,
+                    amount=Decimal("1"),
+                    trade_type=TradeType.SELL,
+                    order_type=OrderType.MARKET,
+                    price=Decimal("10"),
+                    position_action=PositionAction.CLOSE,
+                )
+            )
+
+        self.assertIn("Position error", str(context.exception))
+
+    def test_place_order_unknown_position_error(self):
+        """Test that 'Unknown position' error triggers position refresh and raises ValueError."""
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=1)
+        self.exchange._update_positions = AsyncMock()
+        self.exchange._api_post = AsyncMock(side_effect=IOError("400 Unknown position"))
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_position_close = MagicMock(return_value="0xsig")
+
+        with self.assertRaises(ValueError) as context:
+            self.async_run_with_timeout(
+                self.exchange._place_order(
+                    order_id="OID_UNKNOWN_POS",
+                    trading_pair=self.trading_pair,
+                    amount=Decimal("1"),
+                    trade_type=TradeType.SELL,
+                    order_type=OrderType.MARKET,
+                    price=Decimal("10"),
+                    position_action=PositionAction.CLOSE,
+                )
+            )
+
+        self.assertIn("Position error", str(context.exception))
 
 
 if __name__ == "__main__":
