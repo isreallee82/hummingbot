@@ -205,6 +205,7 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         self._additional_instruments_info.clear()
         self._trading_rules.clear()
         s_decimal_hundred = Decimal("100")
+        tickers_info_printed_on_exception = False
         for instrument_data in exchange_info["instruments"]:
             try:
                 symbol, base, quote = self._get_symbol_base_and_quote_from_exchange_info_instrument(
@@ -228,8 +229,11 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
                         min_notional_size=min_order_size * price_band.lower_price_bound,
                     )
                     self._trading_rules[trading_rule.trading_pair] = trading_rule
-                    self._perpetual_trading.set_leverage(trading_pair, float(price_band.leverage))
+                    self._perpetual_trading.set_leverage(trading_pair, price_band.leverage)
             except Exception:
+                if not tickers_info_printed_on_exception:
+                    self.logger().error(f"Errors while processing tickers info: {tickers_info}.")
+                    tickers_info_printed_on_exception = True
                 self.logger().exception(
                     f"Error parsing the trading pair rule: {instrument_data}. Skipping."
                 )
