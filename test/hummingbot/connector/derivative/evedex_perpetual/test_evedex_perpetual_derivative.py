@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
 from typing import Any, Awaitable, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aioresponses.core import aioresponses
 
@@ -503,12 +503,94 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         )
         self.exchange._order_tracker.start_tracking_order(tracked_order)
         self.exchange._order_tracker.process_trade_update = MagicMock()
+        self.exchange._schedule_balance_update = MagicMock()
         fill_data = {"orderId": "EX123", "executionId": "F1", "fillPrice": "10", "fillQuantity": "1"}
         self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
         self.exchange._order_tracker.process_trade_update.assert_called()
 
-    def test_process_funding_update(self):
-        self.async_run_with_timeout(self.exchange._process_funding_update({"coin": "USDT", "quantity": "0.1"}))
+    def test_process_order_fill_schedules_balance_refresh(self):
+        tracked_order = InFlightOrder(
+            client_order_id="OIDF",
+            exchange_order_id="EX123",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            amount=Decimal("1"),
+            price=Decimal("10"),
+            creation_timestamp=self.exchange.current_timestamp,
+        )
+        self.exchange._order_tracker.start_tracking_order(tracked_order)
+        self.exchange._order_tracker.process_trade_update = MagicMock()
+        self.exchange._update_balances = AsyncMock()
+        scheduled_task = MagicMock()
+        scheduled_task.done.return_value = False
+
+        def schedule(coro):
+            coro.close()
+            return scheduled_task
+
+        fill_data = {"orderId": "EX123", "executionId": "F1", "fillPrice": "10", "fillQuantity": "1"}
+        with patch(
+            "hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_derivative.safe_ensure_future",
+            side_effect=schedule,
+        ) as schedule_mock:
+            self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
+
+        schedule_mock.assert_called_once()
+
+    def test_process_order_fill_with_documented_payload_marks_order_filled(self):
+        self.exchange.start_tracking_order(
+            order_id="OIDF_DOC",
+            exchange_order_id="EX123",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("1"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._schedule_balance_update = MagicMock()
+
+        fill_data = {
+            "id": "EX123",
+            "status": "FILLED",
+            "quantity": "1",
+            "filledAvgPrice": "10",
+            "fillQuantity": "1",
+            "fee": [{"coin": "usdt", "quantity": "0.1"}, {"coin": "total", "quantity": "0"}],
+            "exchangeRequestId": "REQ-1",
+            "completedAt": "2026-03-20T02:42:54.964Z",
+        }
+
+        self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
+        self.async_run_with_timeout(asyncio.sleep(0))
+
+        cached_order = self.exchange._order_tracker.fetch_cached_order("OIDF_DOC")
+        self.assertIsNotNone(cached_order)
+        self.assertEqual(OrderState.FILLED, cached_order.current_state)
+        self.assertIsNone(self.exchange._order_tracker.fetch_tracked_order("OIDF_DOC"))
+        self.assertEqual(1, len(self.order_filled_logger.event_log))
+        self.assertEqual(1, len(self.buy_order_completed_logger.event_log))
+
+    def test_process_order_fill_untracked_fill_refreshes_balance_and_positions(self):
+        self.exchange._schedule_balance_update = MagicMock()
+        self.exchange._schedule_position_update = MagicMock()
+
+        fill_data = {
+            "id": "EX123",
+            "status": "FILLED",
+            "side": "SELL",
+            "quantity": "1",
+            "unFilledQuantity": "0",
+            "filledAvgPrice": "10",
+            "fillQuantity": "1",
+            "updatedAt": "2026-03-20T02:42:54.964Z",
+        }
+
+        self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
+
+        self.exchange._schedule_balance_update.assert_called_once()
+        self.exchange._schedule_position_update.assert_called_once()
 
     def test_process_order_update_with_fill_and_status(self):
         tracked_order = InFlightOrder(
@@ -524,6 +606,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._order_tracker.start_tracking_order(tracked_order)
         self.exchange._order_tracker.process_trade_update = MagicMock()
         self.exchange._order_tracker.process_order_update = MagicMock()
+        self.exchange._schedule_balance_update = MagicMock()
         order_data = {
             "id": "EXU",
             "status": "PARTIALLY_FILLED",
@@ -536,6 +619,187 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._order_tracker.process_trade_update.assert_called()
         self.exchange._order_tracker.process_order_update.assert_called()
 
+    def test_process_order_update_marks_filled_order_closed(self):
+        self.exchange.start_tracking_order(
+            order_id="OIDU_FILLED",
+            exchange_order_id="EXU",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("5"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._schedule_balance_update = MagicMock()
+
+        order_data = {
+            "id": "EXU",
+            "status": "FILLED",
+            "quantity": "5",
+            "unFilledQuantity": "0",
+            "filledAvgPrice": "10",
+            "fee": [{"coin": "usdt", "quantity": "0.1"}, {"coin": "total", "quantity": "0"}],
+            "exchangeRequestId": "REQ-2",
+            "completedAt": "2026-03-20T02:41:34.067Z",
+        }
+
+        self.async_run_with_timeout(self.exchange._process_order_update(order_data))
+        self.async_run_with_timeout(asyncio.sleep(0))
+
+        cached_order = self.exchange._order_tracker.fetch_cached_order("OIDU_FILLED")
+        self.assertIsNotNone(cached_order)
+        self.assertEqual(OrderState.FILLED, cached_order.current_state)
+        self.assertIsNone(self.exchange._order_tracker.fetch_tracked_order("OIDU_FILLED"))
+        self.assertEqual(1, len(self.order_filled_logger.event_log))
+        self.assertEqual(1, len(self.buy_order_completed_logger.event_log))
+
+    def test_process_order_update_treats_partial_market_cancel_as_filled(self):
+        self.exchange.start_tracking_order(
+            order_id="OIDU_PARTIAL_IOC",
+            exchange_order_id="EX_PARTIAL",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.MARKET,
+            trade_type=TradeType.SELL,
+            price=Decimal("10"),
+            amount=Decimal("20"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._schedule_balance_update = MagicMock()
+
+        order_data = {
+            "id": "EX_PARTIAL",
+            "status": "CANCELLED",
+            "type": "MARKET",
+            "timeInForce": "IOC",
+            "side": "SELL",
+            "quantity": "20",
+            "unFilledQuantity": "1",
+            "fillQuantity": "19",
+            "filledAvgPrice": "1.4577",
+            "updatedAt": "2026-03-20T05:16:14.681Z",
+            "fee": [{"coin": "usdt", "quantity": "0.01246334"}],
+        }
+
+        self.async_run_with_timeout(self.exchange._process_order_update(order_data))
+        self.async_run_with_timeout(asyncio.sleep(0))
+
+        cached_order = self.exchange._order_tracker.fetch_cached_order("OIDU_PARTIAL_IOC")
+        self.assertIsNotNone(cached_order)
+        self.assertEqual(OrderState.FILLED, cached_order.current_state)
+        self.assertEqual(Decimal("19"), cached_order.amount)
+        self.assertEqual(1, len(self.order_filled_logger.event_log))
+        self.assertEqual(1, len(self.sell_order_completed_logger.event_log))
+        self.assertEqual(0, len(self.order_cancelled_logger.event_log))
+
+    def test_process_order_update_schedules_balance_refresh_for_cancel(self):
+        self.exchange.start_tracking_order(
+            order_id="OIDU_CANCEL",
+            exchange_order_id="EXC",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("5"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._update_balances = AsyncMock()
+        scheduled_task = MagicMock()
+        scheduled_task.done.return_value = False
+
+        def schedule(coro):
+            coro.close()
+            return scheduled_task
+
+        with patch(
+            "hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_derivative.safe_ensure_future",
+            side_effect=schedule,
+        ) as schedule_mock:
+            self.async_run_with_timeout(
+                self.exchange._process_order_update(
+                    {
+                        "id": "EXC",
+                        "status": "CANCELLED",
+                        "quantity": "5",
+                        "unFilledQuantity": "5",
+                        "updatedAt": "2026-03-20T02:41:33.799Z",
+                    }
+                )
+            )
+
+        schedule_mock.assert_called_once()
+
+    def test_process_order_update_untracked_filled_refreshes_balance_and_positions(self):
+        self.exchange._schedule_balance_update = MagicMock()
+        self.exchange._schedule_position_update = MagicMock()
+
+        self.async_run_with_timeout(
+            self.exchange._process_order_update(
+                {
+                    "id": "EXC",
+                    "status": "FILLED",
+                    "side": "SELL",
+                    "quantity": "5",
+                    "unFilledQuantity": "0",
+                    "fillQuantity": "5",
+                    "updatedAt": "2026-03-20T02:41:33.799Z",
+                }
+            )
+        )
+
+        self.exchange._schedule_balance_update.assert_called_once()
+        self.exchange._schedule_position_update.assert_called_once()
+
+    def test_process_order_update_untracked_cancelled_refreshes_balance_only(self):
+        self.exchange._schedule_balance_update = MagicMock()
+        self.exchange._schedule_position_update = MagicMock()
+
+        self.async_run_with_timeout(
+            self.exchange._process_order_update(
+                {
+                    "id": "EXC",
+                    "status": "CANCELLED",
+                    "side": "BUY",
+                    "quantity": "5",
+                    "unFilledQuantity": "5",
+                    "updatedAt": "2026-03-20T02:41:33.799Z",
+                }
+            )
+        )
+
+        self.exchange._schedule_balance_update.assert_called_once()
+        self.exchange._schedule_position_update.assert_not_called()
+
+    def test_process_order_update_cached_cancelled_refreshes_balance_only(self):
+        self.exchange.start_tracking_order(
+            order_id="OIDU_CACHED_CANCEL",
+            exchange_order_id="EXC",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("5"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._order_tracker.stop_tracking_order("OIDU_CACHED_CANCEL")
+        self.exchange._schedule_balance_update = MagicMock()
+        self.exchange._schedule_position_update = MagicMock()
+
+        self.async_run_with_timeout(
+            self.exchange._process_order_update(
+                {
+                    "id": "EXC",
+                    "status": "CANCELLED",
+                    "side": "BUY",
+                    "quantity": "5",
+                    "unFilledQuantity": "5",
+                    "updatedAt": "2026-03-20T02:41:33.799Z",
+                }
+            )
+        )
+
+        self.exchange._schedule_balance_update.assert_called_once()
+        self.exchange._schedule_position_update.assert_not_called()
+
     def test_process_position_update_sets_and_removes(self):
         self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
         self.exchange._perpetual_trading.set_position = MagicMock()
@@ -547,6 +811,45 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.async_run_with_timeout(self.exchange._process_position_update(position_data))
         self.exchange._perpetual_trading.set_position.assert_called()
         self.exchange._perpetual_trading.remove_position.assert_called()
+
+    def test_process_position_update_keeps_long_position_from_ws_event(self):
+        from hummingbot.connector.derivative.position import Position
+        from hummingbot.core.data_type.common import PositionSide
+
+        other_pair = "ETH-USDT"
+        other_pos_key = self.exchange._perpetual_trading.position_key(other_pair, PositionSide.LONG)
+        self.exchange._perpetual_trading.set_position(
+            other_pos_key,
+            Position(
+                trading_pair=other_pair,
+                position_side=PositionSide.LONG,
+                unrealized_pnl=Decimal("0"),
+                entry_price=Decimal("2000"),
+                amount=Decimal("1"),
+                leverage=Decimal("3"),
+            ),
+        )
+        self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+
+        self.async_run_with_timeout(
+            self.exchange._process_position_update(
+                {
+                    "instrument": self.ex_trading_pair,
+                    "quantity": "1",
+                    "side": "BUY",
+                    "avgPrice": "100",
+                    "leverage": "2",
+                    "unRealizedPnL": "5",
+                }
+            )
+        )
+
+        pos_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
+        position = self.exchange._perpetual_trading.account_positions[pos_key]
+
+        self.assertEqual(position.position_side, PositionSide.LONG)
+        self.assertEqual(position.amount, Decimal("1"))
+        self.assertIn(other_pos_key, self.exchange._perpetual_trading.account_positions)
 
     def test_format_trading_rules_and_initialize_mapping(self):
         rule = {
@@ -620,6 +923,31 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.async_run_with_timeout(self.exchange._update_positions())
         self.exchange._perpetual_trading.set_position.assert_called()
         self.exchange._perpetual_trading.remove_position.assert_called()
+
+    def test_update_positions_sets_short_amount_as_negative(self):
+        from hummingbot.core.data_type.common import PositionSide
+
+        self.exchange.trading_pair_associated_to_exchange_symbol = AsyncMock(return_value=self.trading_pair)
+        self.exchange._api_get = AsyncMock(return_value={
+            "list": [
+                {
+                    "instrument": self.ex_trading_pair,
+                    "quantity": "2",
+                    "side": "SELL",
+                    "avgPrice": "100",
+                    "leverage": "2",
+                    "unRealizedPnL": "-3",
+                }
+            ]
+        })
+
+        self.async_run_with_timeout(self.exchange._update_positions())
+
+        pos_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.SHORT)
+        position = self.exchange._perpetual_trading.account_positions[pos_key]
+
+        self.assertEqual(position.position_side, PositionSide.SHORT)
+        self.assertEqual(position.amount, Decimal("-2"))
 
     def test_update_order_fills_from_trades_processes_fill(self):
         self.exchange._last_poll_timestamp = 0
@@ -978,50 +1306,33 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
             }
         }
 
-    def _balance_ws_update(self) -> Dict[str, Any]:
+    def _funding_ws_update(self) -> Dict[str, Any]:
         """
-        Mock WebSocket message from user-{userExchangeId} channel.
+        Mock WebSocket message from funding-{userExchangeId} channel.
         """
         return {
-            "channel": f"user-{self.user_exchange_id}",
+            "channel": f"funding-{self.user_exchange_id}",
             "data": {
-                "currency": self.base_asset,
-                "funding": {
-                    "currency": self.base_asset,
-                    "balance": 10.0
-                },
-                "availableBalance": 8.0,
-                "position": [],
-                "openOrder": [],
+                "coin": self.quote_asset.lower(),
+                "quantity": "8.0",
                 "updatedAt": "2024-01-01T00:00:00.000Z"
             }
         }
 
     def _position_ws_update(self) -> Dict[str, Any]:
         """
-        Mock WebSocket message for position update from user-{userExchangeId} channel.
+        Mock WebSocket message for position update from position-{userExchangeId} channel.
         """
         return {
-            "channel": f"user-{self.user_exchange_id}",
+            "channel": f"position-{self.user_exchange_id}",
             "data": {
-                "currency": self.quote_asset,
-                "funding": {
-                    "currency": self.quote_asset,
-                    "balance": 5000.0
-                },
-                "availableBalance": 4000.0,
-                "position": [
-                    {
-                        "instrument": self.ex_trading_pair,
-                        "quantity": 1.0,
-                        "entryPrice": 49000.0,
-                        "markPrice": 50000.0,
-                        "unrealizedPnL": 1000.0,
-                        "leverage": 10,
-                        "side": "LONG"
-                    }
-                ],
-                "openOrder": [],
+                "instrument": self.ex_trading_pair,
+                "quantity": 1.0,
+                "entryPrice": 49000.0,
+                "markPrice": 50000.0,
+                "unrealizedPnL": 1000.0,
+                "leverage": 10,
+                "side": "LONG",
                 "updatedAt": "2024-01-01T00:00:00.000Z"
             }
         }
@@ -1029,13 +1340,13 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
     def test_centrifuge_channel_naming(self):
         """Test Centrifuge channel naming patterns."""
         order_channel = f"order-{self.user_exchange_id}"
-        user_channel = f"user-{self.user_exchange_id}"
+        funding_channel = f"funding-{self.user_exchange_id}"
         fills_channel = f"orderFills-{self.user_exchange_id}"
         orderbook_channel = f"orderBook-{self.ex_trading_pair}-OneTenth"
         trade_channel = f"trade-{self.ex_trading_pair}"
 
         self.assertEqual(order_channel, "order-12345")
-        self.assertEqual(user_channel, "user-12345")
+        self.assertEqual(funding_channel, "funding-12345")
         self.assertEqual(fills_channel, "orderFills-12345")
         self.assertEqual(orderbook_channel, f"orderBook-{self.ex_trading_pair}-OneTenth")
         self.assertEqual(trade_channel, f"trade-{self.ex_trading_pair}")
@@ -1139,13 +1450,13 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(call_kwargs["data"]["cashQuantity"], "20")
         self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
 
-    def test_place_close_position_order(self):
+    def test_place_limit_close_order_uses_limit_endpoint(self):
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
         self.exchange.get_leverage = MagicMock(return_value=4)
         self.exchange._api_post = AsyncMock(return_value={"id": "ex_3", "createdAt": 789})
         self.exchange._auth = MagicMock()
         self.exchange._auth.wallet_address = "0xabc"
-        self.exchange._auth.sign_position_close = MagicMock(return_value="0xsig")
+        self.exchange._auth.sign_limit_order = MagicMock(return_value="0xsig")
 
         exchange_order_id, transact_time = self.async_run_with_timeout(
             self.exchange._place_order(
@@ -1161,6 +1472,36 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
 
         self.assertEqual(exchange_order_id, "ex_3")
         self.assertEqual(transact_time, 789)
+        call_kwargs = self.exchange._api_post.call_args.kwargs
+        self.assertEqual(call_kwargs["path_url"], CONSTANTS.LIMIT_ORDER_PATH_URL)
+        self.assertEqual(call_kwargs["data"]["side"], CONSTANTS.SIDE_SELL)
+        self.assertEqual(call_kwargs["data"]["quantity"], "3")
+        self.assertEqual(call_kwargs["data"]["limitPrice"], "10")
+        self.assertEqual(call_kwargs["data"]["timeInForce"], CONSTANTS.TIME_IN_FORCE_GTC)
+        self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
+
+    def test_place_market_close_order_uses_close_position_endpoint(self):
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=4)
+        self.exchange._api_post = AsyncMock(return_value={"id": "ex_4", "createdAt": 987})
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_position_close = MagicMock(return_value="0xsig")
+
+        exchange_order_id, transact_time = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID4",
+                trading_pair=self.trading_pair,
+                amount=Decimal("3"),
+                trade_type=TradeType.SELL,
+                order_type=OrderType.MARKET,
+                price=Decimal("10"),
+                position_action=PositionAction.CLOSE,
+            )
+        )
+
+        self.assertEqual(exchange_order_id, "ex_4")
+        self.assertEqual(transact_time, 987)
         call_kwargs = self.exchange._api_post.call_args.kwargs
         self.assertEqual(
             call_kwargs["path_url"],
@@ -1273,6 +1614,34 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         }
         self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
         self.exchange._process_order_fill.assert_awaited_once()
+
+    def test_process_user_stream_event_user_update_is_ignored(self):
+        self.exchange._process_order_update = AsyncMock()
+        self.exchange._process_position_update = AsyncMock()
+        self.exchange._process_order_fill = AsyncMock()
+        event_message = {
+            "push": {"channel": "futures-perp:user:123", "pub": {"data": {"id": "1"}}}
+        }
+
+        self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
+
+        self.exchange._process_order_update.assert_not_awaited()
+        self.exchange._process_position_update.assert_not_awaited()
+        self.exchange._process_order_fill.assert_not_awaited()
+
+    def test_process_user_stream_event_funding_update_is_ignored(self):
+        self.exchange._process_order_update = AsyncMock()
+        self.exchange._process_position_update = AsyncMock()
+        self.exchange._process_order_fill = AsyncMock()
+        event_message = {
+            "push": {"channel": "futures-perp:funding:123", "pub": {"data": {"coin": "usdt", "quantity": "1"}}}
+        }
+
+        self.async_run_with_timeout(self.exchange._process_user_stream_event(event_message))
+
+        self.exchange._process_order_update.assert_not_awaited()
+        self.exchange._process_position_update.assert_not_awaited()
+        self.exchange._process_order_fill.assert_not_awaited()
 
     @aioresponses()
     def test_update_positions_removes_stale_positions(self, mock_api):

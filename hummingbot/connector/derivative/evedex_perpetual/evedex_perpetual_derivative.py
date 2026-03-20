@@ -26,7 +26,7 @@ from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.api_throttler.data_types import RateLimit
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
-from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderUpdate, TradeUpdate
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
@@ -61,6 +61,9 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         self._position_mode = PositionMode.ONEWAY  # Evedex uses one-way mode
         self._last_trade_history_timestamp = None
         self._auth: Optional[EvedexPerpetualAuth] = None
+        self._real_time_balance_update = False  # Remove this once bybit enables available balance again through ws
+        self._balance_update_task: Optional[asyncio.Task] = None
+        self._position_update_task: Optional[asyncio.Task] = None
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @property
@@ -307,7 +310,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             "leverage": leverage_int,
             "chainId": chain_id,
         }
-        if position_action == PositionAction.CLOSE:
+        if position_action == PositionAction.CLOSE and order_type == OrderType.MARKET:
             path_url = CONSTANTS.CLOSE_POSITION_PATH_URL.format(instrument=symbol)
             limit_id = CONSTANTS.CLOSE_POSITION_PATH_URL
             api_params = {
@@ -544,67 +547,191 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 elif "futures-perp:orderFilled" in channel:
                     await self._process_order_fill(data)
 
-    async def _process_order_fill(self, fill_data: Dict[str, Any]):
-        """
-        Process OrderFill from orderFills-{userExchangeId} channel.
-        OrderFill: { executionId, instrument, side, fillQuantity, fillPrice, createdAt, makerTakerFlag, orderId }
-        """
-        order_id = str(fill_data.get("orderId", ""))
+    def _position_action_for_order(self, tracked_order: InFlightOrder) -> PositionAction:
+        if tracked_order.position != PositionAction.NIL:
+            return tracked_order.position
+        return PositionAction.OPEN if tracked_order.trade_type is TradeType.BUY else PositionAction.CLOSE
 
-        # Find tracked order by exchange_order_id
-        tracked_order = None
-        client_order_id = None
-        for coid, order in self._order_tracker.all_fillable_orders.items():
-            if order.exchange_order_id == order_id:
-                tracked_order = order
-                client_order_id = coid
-                break
+    def _trade_fee_for_update(self, tracked_order: InFlightOrder, fee_list: List[Dict[str, Any]]) -> TradeFeeBase:
+        flat_fees = []
+        for fee_item in fee_list:
+            coin = str(fee_item.get("coin", "USDT")).upper()
+            if coin == "TOTAL":
+                continue
+            amount = Decimal(str(fee_item.get("quantity", 0)))
+            if amount == 0:
+                continue
+            flat_fees.append(TokenAmount(amount=amount, token=coin))
+
+        return TradeFeeBase.new_perpetual_fee(
+            fee_schema=self.trade_fee_schema(),
+            position_action=self._position_action_for_order(tracked_order),
+            percent_token="USDT",
+            flat_fees=flat_fees,
+        )
+
+    @staticmethod
+    def _parse_exchange_timestamp(*raw_timestamps: Any) -> float:
+        for raw_timestamp in raw_timestamps:
+            if raw_timestamp is None:
+                continue
+            try:
+                return datetime.datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+        return time.time()
+
+    @staticmethod
+    def _trade_id_from_fill_data(fill_data: Dict[str, Any], exchange_order_id: str) -> str:
+        filled_quantity = EvedexPerpetualDerivative._filled_amount_from_order_event(fill_data)
+
+        price = fill_data.get("fillPrice", fill_data.get("filledAvgPrice", 0))
+        trade_identifier = (
+            fill_data.get("executionId")
+            or fill_data.get("updatedAt")
+            or fill_data.get("exchangeRequestId")
+            or "trade"
+        )
+        return f"{exchange_order_id}_{trade_identifier}_{filled_quantity}_{price}"
+
+    @staticmethod
+    def _filled_amount_from_order_event(order_data: Dict[str, Any]) -> Decimal:
+        fill_quantity = order_data.get("fillQuantity")
+        if fill_quantity is not None:
+            try:
+                return Decimal(str(fill_quantity))
+            except Exception:
+                return Decimal("0")
+
+        if "quantity" in order_data and "unFilledQuantity" in order_data:
+            try:
+                return Decimal(str(order_data.get("quantity", 0))) - Decimal(str(order_data.get("unFilledQuantity", 0)))
+            except Exception:
+                return Decimal("0")
+
+        return Decimal("0")
+
+    @staticmethod
+    def _is_terminal_order_status(status: Any) -> bool:
+        return str(status).upper() in {"FILLED", "CANCELLED", "REJECTED", "EXPIRED", "ERROR"}
+
+    @staticmethod
+    def _is_ioc_or_market_order_event(order_data: Dict[str, Any], tracked_order: Optional[InFlightOrder] = None) -> bool:
+        raw_type = str(order_data.get("type", "")).upper()
+        time_in_force = str(order_data.get("timeInForce", "")).upper()
+        tracked_order_is_market = tracked_order is not None and tracked_order.order_type == OrderType.MARKET
+        return raw_type == "MARKET" or time_in_force == CONSTANTS.TIME_IN_FORCE_IOC or tracked_order_is_market
+
+    def _should_treat_terminal_partial_order_as_filled(
+        self,
+        order_data: Dict[str, Any],
+        tracked_order: Optional[InFlightOrder] = None,
+    ) -> bool:
+        status = str(order_data.get("status", "")).upper()
+        if status not in {"CANCELLED", "EXPIRED"}:
+            return False
+
+        filled_quantity = self._filled_amount_from_order_event(order_data)
+        if filled_quantity <= Decimal("0"):
+            return False
+
+        order_quantity = Decimal(str(order_data.get("quantity", tracked_order.amount if tracked_order is not None else 0)))
+        return (
+            order_quantity > Decimal("0")
+            and filled_quantity < order_quantity
+            and self._is_ioc_or_market_order_event(order_data, tracked_order)
+        )
+
+    def _normalize_tracked_order_for_terminal_partial_fill(
+        self,
+        tracked_order: Optional[InFlightOrder],
+        order_data: Dict[str, Any],
+    ):
+        if tracked_order is None or not self._should_treat_terminal_partial_order_as_filled(order_data, tracked_order):
+            return
+
+        executed_quantity = self._filled_amount_from_order_event(order_data)
+        if executed_quantity > Decimal("0") and executed_quantity < tracked_order.amount:
+            tracked_order.amount = executed_quantity
+            tracked_order.check_filled_condition()
+
+    def _get_order_state_from_order_data(
+        self,
+        order_data: Dict[str, Any],
+        tracked_order: Optional[InFlightOrder] = None,
+    ) -> Optional[OrderState]:
+        if self._should_treat_terminal_partial_order_as_filled(order_data, tracked_order):
+            return OrderState.FILLED
+        return CONSTANTS.ORDER_STATE.get(str(order_data.get("status", "")))
+
+    async def _process_order_fill(self, fill_data: Dict[str, Any]):
+        # Process OrderFill from orderFills-{userExchangeId} channel.
+        """
+       {'id': '00239:8f0aa829617c4eca834a367cac', 'instrument': 'XRPUSD', 'user': '42520', 'side': 'SELL', 'quantity': 20, 'limitPrice': 0, 'status': 'FILLED', 'unFilledQuantity': 0, 'realizedPnL': 0.0013588, 'createdAt': '2026-03-20T02:42:54.804Z', 'updatedAt': '2026-03-20T02:42:54.804Z', 'filledAvgPrice': 1.4486, 'type': 'MARKET', 'timeInForce': 'IOC', 'cashQuantity': '0.00000000', 'rejectedReason': '', 'fee': [{'coin': 'usdt', 'quantity': 0.0130374}, {'coin': 'total', 'quantity': 0}], 'group': 'manually', 'stopPrice': None, 'triggeredAt': None, 'check': False, 'completedAt': '2026-03-20T02:42:54.964Z', 'exchangeRequestId': '72057614201194187', 'userSession': None, 'fillQuantity': 20}
+        """
+        order_id = str(fill_data.get("orderId", fill_data.get("id", "")))
+        tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(order_id)
+        fill_amount = self._filled_amount_from_order_event(fill_data)
 
         if tracked_order is not None:
-            position_action = PositionAction.OPEN if tracked_order.trade_type is TradeType.BUY else PositionAction.CLOSE
+            fill_price = Decimal(str(fill_data.get("fillPrice", fill_data.get("filledAvgPrice", 0))))
+            fill_timestamp = self._parse_exchange_timestamp(fill_data.get("updatedAt"))
 
-            fee = TradeFeeBase.new_perpetual_fee(
-                fee_schema=self.trade_fee_schema(),
-                position_action=position_action,
-                percent_token="USDT",
-                flat_fees=[],
-            )
+            if fill_amount > Decimal("0"):
+                trade_update: TradeUpdate = TradeUpdate(
+                    trade_id=self._trade_id_from_fill_data(fill_data, order_id),
+                    client_order_id=tracked_order.client_order_id,
+                    exchange_order_id=order_id,
+                    trading_pair=tracked_order.trading_pair,
+                    fill_timestamp=fill_timestamp,
+                    fill_price=fill_price,
+                    fill_base_amount=fill_amount,
+                    fill_quote_amount=fill_amount * fill_price,
+                    fee=self._trade_fee_for_update(tracked_order, fill_data.get("fee", [])),
+                )
+                self._order_tracker.process_trade_update(trade_update)
 
-            trade_update: TradeUpdate = TradeUpdate(
-                trade_id=str(fill_data.get("executionId", "")),
-                client_order_id=client_order_id,
-                exchange_order_id=order_id,
-                trading_pair=tracked_order.trading_pair,
-                fill_timestamp=time.time(),
-                fill_price=Decimal(str(fill_data.get("fillPrice", 0))),
-                fill_base_amount=Decimal(str(fill_data.get("fillQuantity", 0))),
-                fill_quote_amount=Decimal(str(fill_data.get("fillQuantity", 0))) * Decimal(str(fill_data.get("fillPrice", 0))),
-                fee=fee,
-            )
-            self._order_tracker.process_trade_update(trade_update)
+            updatable_order = self._order_tracker.all_updatable_orders_by_exchange_order_id.get(order_id)
+            if updatable_order is not None:
+                self._normalize_tracked_order_for_terminal_partial_fill(updatable_order, fill_data)
+                new_state = self._get_order_state_from_order_data(fill_data, updatable_order) or updatable_order.current_state
+                if new_state != updatable_order.current_state:
+                    order_update = OrderUpdate(
+                        trading_pair=updatable_order.trading_pair,
+                        update_timestamp=fill_timestamp,
+                        new_state=new_state,
+                        client_order_id=updatable_order.client_order_id,
+                        exchange_order_id=order_id,
+                    )
+                    self._order_tracker.process_order_update(order_update)
 
-    async def _process_funding_update(self, funding_data: Dict[str, Any]):
-        """
-        Process FundingEvent from funding-{userExchangeId} channel.
-        FundingEvent: { user: string, coin: string, quantity: string, updatedAt: string }
-        """
-        # Funding updates can be used to track funding payments
-        coin = funding_data.get("coin", "")
-        quantity = Decimal(str(funding_data.get("quantity", 0)))
-        self.logger().info(f"Funding update: {quantity} {coin}")
+            self._schedule_balance_update()
+        elif fill_amount > Decimal("0"):
+            self._schedule_balance_update()
+            self._schedule_position_update()
+
+    def _schedule_balance_update(self):
+        if self._balance_update_task is None or self._balance_update_task.done():
+            self._balance_update_task = safe_ensure_future(self._update_balances())
+
+    def _schedule_position_update(self):
+        if self._position_update_task is None or self._position_update_task.done():
+            self._position_update_task = safe_ensure_future(self._update_positions())
 
     async def _process_order_update(self, order_data: Dict[str, Any]):
         # Order.id is the EXCHANGE order ID, not the client order ID
-        exchange_order_id = str(order_data.get("id", ""))
+        """Process order update from the exchange.
 
-        # Find tracked order by exchange_order_id
-        tracked_order = None
-        client_order_id = None
-        for coid, order in self._order_tracker.all_fillable_orders.items():
-            if order.exchange_order_id == exchange_order_id:
-                tracked_order = order
-                client_order_id = coid
-                break
+        Args:
+            order_data (Dict[str, Any]): The order data received from the exchange.
+            {'id': '00239:9d6ea491b48b471e82a66d6e4c', 'instrument': 'XRPUSD', 'user': '42520', 'side': 'BUY', 'quantity': 20, 'limitPrice': 1.44853206, 'status': 'FILLED', 'unFilledQuantity': 0, 'realizedPnL': 0, 'createdAt': '2026-03-20T02:41:24.587Z', 'updatedAt': '2026-03-20T02:41:33.799Z', 'filledAvgPrice': 1.44853206, 'type': 'LIMIT', 'timeInForce': 'GTC', 'cashQuantity': '0.00000000', 'rejectedReason': '', 'fee': [{'coin': 'usdt', 'quantity': 0.0043456}, {'coin': 'total', 'quantity': 0.01303678854}], 'group': 'manually', 'stopPrice': None, 'triggeredAt': None, 'check': False, 'completedAt': '2026-03-20T02:41:34.067Z', 'exchangeRequestId': '72057614201035602', 'userSession': None, 'fillQuantity': 20}
+        """
+
+        exchange_order_id = str(order_data.get("id", order_data.get("orderId", "")))
+        should_refresh_balance = False
+        should_refresh_position = False
+        tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(exchange_order_id)
+        fill_quantity = self._filled_amount_from_order_event(order_data)
 
         if tracked_order is not None:
             # Calculate filled quantity from Order type fields: quantity - unFilledQuantity
@@ -615,63 +742,55 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             # Only process if there's a new fill (compare with tracked order's executed amount)
             if filled_quantity > tracked_order.executed_amount_base:
                 new_fill_amount = filled_quantity - tracked_order.executed_amount_base
-                position_action = PositionAction.OPEN if tracked_order.trade_type is TradeType.BUY else PositionAction.CLOSE
-
-                fee_list = order_data.get("fee", [])
-                flat_fees = []
-                for fee_item in fee_list:
-                    coin = str(fee_item.get("coin", "USDT")).upper()
-                    self.logger().debug(f"Processing fee item: {fee_item}, parsed coin: {coin}")
-                    if coin == "TOTAL":
-                        continue
-                    amount = Decimal(str(fee_item.get("quantity", 0)))
-                    if amount == 0:
-                        continue
-                    flat_fees.append(TokenAmount(amount=amount, token=coin))
-
-                fee = TradeFeeBase.new_perpetual_fee(
-                    fee_schema=self.trade_fee_schema(),
-                    position_action=position_action,
-                    percent_token="USDT",
-                    flat_fees=flat_fees,
-                )
+                fill_price = Decimal(str(order_data.get("filledAvgPrice", order_data.get("fillPrice", 0))))
+                fill_timestamp = self._parse_exchange_timestamp(order_data.get("updatedAt"))
 
                 trade_update: TradeUpdate = TradeUpdate(
-                    trade_id=f"{exchange_order_id}_{int(time.time() * 1000)}",
-                    client_order_id=client_order_id,
+                    trade_id=self._trade_id_from_fill_data(order_data, exchange_order_id),
+                    client_order_id=tracked_order.client_order_id,
                     exchange_order_id=exchange_order_id,
                     trading_pair=tracked_order.trading_pair,
-                    fill_timestamp=time.time(),
-                    fill_price=Decimal(str(order_data.get("filledAvgPrice", 0))),
+                    fill_timestamp=fill_timestamp,
+                    fill_price=fill_price,
                     fill_base_amount=new_fill_amount,
-                    fill_quote_amount=new_fill_amount * Decimal(str(order_data.get("filledAvgPrice", 0))),
-                    fee=fee,
+                    fill_quote_amount=new_fill_amount * fill_price,
+                    fee=self._trade_fee_for_update(tracked_order, order_data.get("fee", [])),
                 )
                 self._order_tracker.process_trade_update(trade_update)
+                should_refresh_balance = True
 
         # Process order status update - find by exchange_order_id
-        tracked_order = None
-        client_order_id = None
-        for coid, order in self._order_tracker.all_updatable_orders.items():
-            if order.exchange_order_id == exchange_order_id:
-                tracked_order = order
-                client_order_id = coid
-                break
+        tracked_order = self._order_tracker.all_updatable_orders_by_exchange_order_id.get(exchange_order_id)
+        is_updatable_order_tracked = tracked_order is not None
 
         if tracked_order is not None:
-            new_state = CONSTANTS.ORDER_STATE.get(order_data.get("status", ""), tracked_order.current_state)
-
+            self._normalize_tracked_order_for_terminal_partial_fill(tracked_order, order_data)
+            new_state = self._get_order_state_from_order_data(order_data, tracked_order) or tracked_order.current_state
             order_update: OrderUpdate = OrderUpdate(
                 trading_pair=tracked_order.trading_pair,
-                update_timestamp=time.time(),
+                update_timestamp=self._parse_exchange_timestamp(order_data.get("updatedAt")),
                 new_state=new_state,
-                client_order_id=client_order_id,
+                client_order_id=tracked_order.client_order_id,
                 exchange_order_id=exchange_order_id,
             )
             self._order_tracker.process_order_update(order_update)
+            should_refresh_balance = True
+
+        if not is_updatable_order_tracked and self._is_terminal_order_status(order_data.get("status")):
+            should_refresh_balance = True
+            should_refresh_position = fill_quantity > Decimal("0") or str(order_data.get("status", "")).upper() == "FILLED"
+
+        if should_refresh_balance:
+            self._schedule_balance_update()
+        if should_refresh_position:
+            self._schedule_position_update()
 
     async def _process_position_update(self, position_data: Dict[str, Any]):
         positions = position_data if isinstance(position_data, list) else [position_data]
+        await self._apply_position_updates(positions=positions, remove_stale=False)
+
+    async def _apply_position_updates(self, positions: List[Dict[str, Any]], remove_stale: bool):
+        active_position_keys = set()
 
         for position in positions:
             instrument = position.get("instrument", "")
@@ -680,21 +799,45 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             except KeyError:
                 continue
 
-            side = PositionSide.LONG if position.get("side") == "BUY" else PositionSide.SHORT
-            amount = Decimal(str(position.get("quantity", 0)))
-            pos_key = self._perpetual_trading.position_key(trading_pair, side)
-
-            if amount != 0:
-                _position = Position(
-                    trading_pair=trading_pair,
-                    position_side=side,
-                    unrealized_pnl=Decimal(str(position.get("unRealizedPnL", 0))),
-                    entry_price=Decimal(str(position.get("avgPrice", 0))),
-                    amount=amount,
-                    leverage=Decimal(str(position.get("leverage", 1)))
-                )
-                self._perpetual_trading.set_position(pos_key, _position)
+            raw_side = str(position.get("side", "")).upper()
+            if raw_side in {"BUY", "LONG"}:
+                position_side = PositionSide.LONG
+            elif raw_side in {"SELL", "SHORT"}:
+                position_side = PositionSide.SHORT
             else:
+                self.logger().debug(f"Skipping position update with unsupported side '{raw_side}': {position}")
+                continue
+
+            amount = Decimal(str(position.get("quantity", 0)))
+            pos_key = self._perpetual_trading.position_key(trading_pair, position_side)
+
+            if amount != Decimal("0"):
+                active_position_keys.add(pos_key)
+                signed_amount = -amount if position_side == PositionSide.SHORT else amount
+                unrealized_pnl = Decimal(str(position.get("unRealizedPnL", position.get("unrealizedPnL", 0))))
+                entry_price = Decimal(str(position.get("avgPrice", position.get("entryPrice", 0))))
+                leverage = Decimal(str(position.get("leverage", 1)))
+
+                self._perpetual_trading.set_position(
+                    pos_key,
+                    Position(
+                        trading_pair=trading_pair,
+                        position_side=position_side,
+                        unrealized_pnl=unrealized_pnl,
+                        entry_price=entry_price,
+                        amount=signed_amount,
+                        leverage=leverage,
+                    ),
+                )
+            else:
+                self._perpetual_trading.remove_position(pos_key)
+
+        if remove_stale:
+            # REST returns a snapshot of all positions, so stale local positions can be safely removed here.
+            current_position_keys = set(self._perpetual_trading.account_positions.keys())
+            stale_position_keys = current_position_keys - active_position_keys
+            for pos_key in stale_position_keys:
+                self.logger().debug(f"Removing stale position: {pos_key}")
                 self._perpetual_trading.remove_position(pos_key)
 
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
@@ -800,7 +943,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         # API returns: {"currency": "usdt", "funding": {"currency": "usdt", "balance": <num>}, "availableBalance": <num>, ...}
         funding = available_balance_info.get("funding", {})
         # Convert currency to uppercase as Hummingbot expects "USDT" not "usdt"
-        currency = funding.get("currency", "usdt").upper()
+        currency = str(funding.get("currency", available_balance_info.get("currency", "usdt"))).upper()
         # Total balance is in funding.balance
         balance = Decimal(str(funding.get("balance", 0)))
         # Available balance is at root level availableBalance
@@ -821,45 +964,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             is_auth_required=True)
 
         positions = positions_response.get("list", []) if isinstance(positions_response, dict) else positions_response
-
-        # Track all position keys from the exchange to clean up stale positions later
-        active_position_keys = set()
-
-        for position in positions:
-            instrument = position.get("instrument", "")
-            try:
-                hb_trading_pair = await self.trading_pair_associated_to_exchange_symbol(instrument)
-            except KeyError:
-                continue
-
-            position_side = PositionSide.LONG if position.get("side") == "BUY" else PositionSide.SHORT
-            unrealized_pnl = Decimal(str(position.get("unRealizedPnL", 0)))
-            entry_price = Decimal(str(position.get("avgPrice", 0)))
-            amount = Decimal(str(position.get("quantity", 0)))
-            leverage = Decimal(str(position.get("leverage", 1)))
-            pos_key = self._perpetual_trading.position_key(hb_trading_pair, position_side)
-
-            if amount != 0:
-                active_position_keys.add(pos_key)
-                _position = Position(
-                    trading_pair=hb_trading_pair,
-                    position_side=position_side,
-                    unrealized_pnl=unrealized_pnl,
-                    entry_price=entry_price,
-                    amount=amount,
-                    leverage=leverage
-                )
-                self._perpetual_trading.set_position(pos_key, _position)
-            else:
-                self._perpetual_trading.remove_position(pos_key)
-
-        # Remove positions for tracked trading pairs that no longer exist on the exchange
-        # This handles cases where positions were closed but the connector didn't receive the update
-        current_position_keys = set(self._perpetual_trading.account_positions.keys())
-        stale_position_keys = current_position_keys - active_position_keys
-        for pos_key in stale_position_keys:
-            self.logger().debug(f"Removing stale position: {pos_key}")
-            self._perpetual_trading.remove_position(pos_key)
+        await self._apply_position_updates(positions=positions, remove_stale=True)
 
     async def _update_order_fills_from_trades(self):
         last_tick = int(self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)

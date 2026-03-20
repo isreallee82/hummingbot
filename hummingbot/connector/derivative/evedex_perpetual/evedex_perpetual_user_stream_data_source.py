@@ -144,7 +144,6 @@ class EvedexPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         - futures-perp:position-{userExchangeId}: User positions
         - futures-perp:user-{userExchangeId}: User account updates
         - futures-perp:orderFilled-{userExchangeId}: Order fills
-        - futures-perp:funding-{userExchangeId}: Funding updates
 
         :param websocket_assistant: the websocket assistant used to connect to the exchange
         """
@@ -220,20 +219,6 @@ class EvedexPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             }
             subscribe_order_fills_request: WSJSONRequest = WSJSONRequest(payload=order_fills_payload)
             await websocket_assistant.send(subscribe_order_fills_request)
-
-            # Subscribe to funding channel: futures-perp:funding-{userExchangeId}
-            funding_payload = {
-                "subscribe": {
-                    "channel": f"futures-perp:funding-{user_exchange_id}",
-                    "data": {"accessToken": access_token},
-                    "recoverable": True,
-                    "flag": 1,
-                    "recover": True
-                },
-                "id": self._next_message_id()
-            }
-            subscribe_funding_request: WSJSONRequest = WSJSONRequest(payload=funding_payload)
-            await websocket_assistant.send(subscribe_funding_request)
 
             self.logger().info(f"Subscribed to private user stream channels for user {user_exchange_id}...")
         except asyncio.CancelledError:

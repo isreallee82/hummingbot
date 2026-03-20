@@ -20,7 +20,6 @@ class TestEvedexPerpetualUserStreamDataSource(unittest.IsolatedAsyncioTestCase):
     - position-{userExchangeId} - Position updates
     - user-{userExchangeId} - Account/balance updates
     - orderFills-{userExchangeId} - Order fill events
-    - funding-{userExchangeId} - Funding events
     """
 
     @classmethod
@@ -128,8 +127,7 @@ class TestEvedexPerpetualUserStreamDataSource(unittest.IsolatedAsyncioTestCase):
 
         await self.data_source._subscribe_channels(self.ws_assistant)
 
-        # Should have sent subscription messages
-        self.assertGreaterEqual(self.ws_assistant.send.call_count, 1)
+        self.assertEqual(self.ws_assistant.send.call_count, 5)
 
         # Check subscribe message was sent (Centrifugo format)
         subscribe_call = self.ws_assistant.send.call_args_list[0]
@@ -246,7 +244,7 @@ class TestEvedexPerpetualUserStreamWebSocketMessages(unittest.TestCase):
             }
         }
 
-    def _balance_ws_update(self):
+    def _user_ws_update(self):
         """Mock WebSocket message from futures-perp:user-{userExchangeId} channel (Centrifugo push format)."""
         return {
             "push": {
@@ -261,6 +259,21 @@ class TestEvedexPerpetualUserStreamWebSocketMessages(unittest.TestCase):
                         "availableBalance": 4000.0,
                         "position": [],
                         "openOrder": [],
+                        "updatedAt": "2024-01-01T00:00:00.000Z"
+                    }
+                }
+            }
+        }
+
+    def _funding_ws_update(self):
+        """Mock WebSocket message from futures-perp:funding-{userExchangeId} channel (Centrifugo push format)."""
+        return {
+            "push": {
+                "channel": f"futures-perp:funding-{self.user_exchange_id}",
+                "pub": {
+                    "data": {
+                        "coin": self.quote_asset.lower(),
+                        "quantity": "4000.0",
                         "updatedAt": "2024-01-01T00:00:00.000Z"
                     }
                 }
@@ -302,7 +315,7 @@ class TestEvedexPerpetualUserStreamWebSocketMessages(unittest.TestCase):
 
     def test_user_channel_naming(self):
         """Test user channel naming: futures-perp:user-{userExchangeId}."""
-        msg = self._balance_ws_update()
+        msg = self._user_ws_update()
         self.assertEqual(msg["push"]["channel"], f"futures-perp:user-{self.user_exchange_id}")
 
     def test_order_fills_channel_naming(self):
@@ -373,7 +386,6 @@ class TestEvedexPerpetualUserStreamChannels(unittest.TestCase):
             "position": f"futures-perp:position-{user_exchange_id}",
             "user": f"futures-perp:user-{user_exchange_id}",
             "orderFilled": f"futures-perp:orderFilled-{user_exchange_id}",
-            "funding": f"futures-perp:funding-{user_exchange_id}",
             "orderBook": f"futures-perp:orderBook-{instrument}-0.1",
             "trade": f"futures-perp:recent-trade-{instrument}"
         }
@@ -396,7 +408,7 @@ class TestEvedexPerpetualUserStreamChannels(unittest.TestCase):
             f"futures-perp:order-{user_exchange_id}",
             f"futures-perp:position-{user_exchange_id}",
             f"futures-perp:user-{user_exchange_id}",
-            f"futures-perp:orderFilled-{user_exchange_id}"
+            f"futures-perp:orderFilled-{user_exchange_id}",
         ]
 
         for channel in user_channels:
