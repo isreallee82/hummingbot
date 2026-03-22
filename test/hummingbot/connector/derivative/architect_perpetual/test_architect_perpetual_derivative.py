@@ -287,7 +287,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
         self.assertEqual(first=order.exchange_order_id, second=data_dict["oid"])
 
     def validate_order_status_request(self, order: InFlightOrder, request_call: RequestCall):
-        request_params = json.loads(request_call.kwargs["data"])
+        request_params = request_call.kwargs["params"]
         self.assertEqual(order.client_order_id, str(request_params["client_order_id"]))
 
     def validate_trades_request(self, order: InFlightOrder, request_call: RequestCall):
@@ -356,8 +356,9 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
         callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> List[str]:
         url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_STATUS_ENDPOINT, domain=self.domain)
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
-        mock_api.post(url, body=json.dumps(
+        mock_api.get(regex_url, body=json.dumps(
             self.order_status_request_completely_filled_mock_response(order=order)
         ), callback=callback)
 
@@ -380,7 +381,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
                 "state": "CANCELED",
             },
         }
-        mock_api.post(regex_url, body=json.dumps(response), callback=callback)
+        mock_api.get(regex_url, body=json.dumps(response), callback=callback)
 
         return url
 
@@ -401,7 +402,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
                 "state": "ACCEPTED",
             },
         }
-        mock_api.post(regex_url, body=json.dumps(response), callback=callback)
+        mock_api.get(regex_url, body=json.dumps(response), callback=callback)
 
         return url
 
@@ -414,7 +415,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
         url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_STATUS_ENDPOINT, domain=self.domain)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
-        mock_api.post(regex_url, status=404, callback=callback)
+        mock_api.get(regex_url, status=404, callback=callback)
 
         return url
 
@@ -435,7 +436,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
                 "state": "PARTIALLY_FILLED",
             },
         }
-        mock_api.post(regex_url, body=json.dumps(response), callback=callback)
+        mock_api.get(regex_url, body=json.dumps(response), callback=callback)
 
         return url
 
@@ -447,7 +448,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
     ) -> List[str]:
         url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_STATUS_ENDPOINT, domain=self.domain)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        mock_api.post(regex_url, body=json.dumps({"error": "no matching orders"}), callback=callback)
+        mock_api.get(regex_url, body=json.dumps({"error": "no matching orders"}), callback=callback)
         return url
 
     def configure_partial_fill_trade_response(
@@ -1163,21 +1164,17 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
 
         self.assertNotIn(order.client_order_id, self.exchange.in_flight_orders)
 
-        if self.is_order_fill_http_update_included_in_status_update:
-            trade_url = self.configure_full_fill_trade_response(
-                order=order,
-                mock_api=mock_api,
-                callback=lambda *args, **kwargs: request_sent_event.set())
-        else:
-            # If the fill events will not be requested with the order status, we need to manually set the event
-            # to allow the ClientOrderTracker to process the last status update
-            order.completely_filled_event.set()
-            request_sent_event.set()
+        trade_url = self.configure_full_fill_trade_response(
+            order=order,
+            mock_api=mock_api,
+            callback=lambda *args, **kwargs: request_sent_event.set(),
+        )
 
         self.configure_completely_filled_order_status_response(
             order=order,
             mock_api=mock_api,
-            callback=lambda *args, **kwargs: request_sent_event.set())
+            callback=lambda *args, **kwargs: request_sent_event.set(),
+        )
 
         await asyncio.wait_for(self.exchange._update_order_status(), timeout=1)
         # Execute one more synchronization to ensure the async task that processes the update is finished
@@ -1189,23 +1186,19 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
         self.assertTrue(order.is_done)
         self.assertTrue(order.is_failure)
 
-        if self.is_order_fill_http_update_included_in_status_update:
-            if trade_url:
-                trades_request = self._all_executed_requests(mock_api, trade_url)[0]
-                self.validate_auth_credentials_present(trades_request)
-                self.validate_trades_request(
-                    order=order,
-                    request_call=trades_request)
+        trades_request = self._all_executed_requests(mock_api, trade_url)[0]
+        self.validate_auth_credentials_present(trades_request)
+        self.validate_trades_request(order=order, request_call=trades_request)
 
-            fill_event: OrderFilledEvent = self.order_filled_logger.event_log[0]
-            self.assertEqual(self.exchange.current_timestamp, fill_event.timestamp)
-            self.assertEqual(order.client_order_id, fill_event.order_id)
-            self.assertEqual(order.trading_pair, fill_event.trading_pair)
-            self.assertEqual(order.trade_type, fill_event.trade_type)
-            self.assertEqual(order.order_type, fill_event.order_type)
-            self.assertEqual(order.price, fill_event.price)
-            self.assertEqual(order.amount, fill_event.amount)
-            self.assertEqual(self.expected_fill_fee, fill_event.trade_fee)
+        fill_event: OrderFilledEvent = self.order_filled_logger.event_log[0]
+        self.assertEqual(self.exchange.current_timestamp, fill_event.timestamp)
+        self.assertEqual(order.client_order_id, fill_event.order_id)
+        self.assertEqual(order.trading_pair, fill_event.trading_pair)
+        self.assertEqual(order.trade_type, fill_event.trade_type)
+        self.assertEqual(order.order_type, fill_event.order_type)
+        self.assertEqual(order.price, fill_event.price)
+        self.assertEqual(order.amount, fill_event.amount)
+        self.assertEqual(self.expected_fill_fee, fill_event.trade_fee)
 
         self.assertEqual(0, len(self.buy_order_completed_logger.event_log))
         self.assertIn(order.client_order_id, self.exchange._order_tracker.all_fillable_orders)
@@ -1222,7 +1215,8 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
         self.configure_full_fill_trade_response(
             order=order,
             mock_api=mock_api,
-            callback=lambda *args, **kwargs: request_sent_event.set())
+            callback=lambda *args, **kwargs: request_sent_event.set(),
+        )
 
         await asyncio.wait_for(self.exchange._update_lost_orders_status(), timeout=1)
         # Execute one more synchronization to ensure the async task that processes the update is finished
@@ -1358,7 +1352,7 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
 
         await (self.exchange._update_lost_orders_status())
         # Execute one more synchronization to ensure the async task that processes the update is finished
-        await (request_sent_event.wait())
+        await asyncio.wait_for(request_sent_event.wait(), timeout=1)
         await asyncio.sleep(0.1)
 
         self.assertTrue(order.is_done)
@@ -1926,7 +1920,8 @@ class ArchitectPerpetualDerivativeUnitTest(AbstractPerpetualDerivativeTests.Perp
         )
 
     @aioresponses()
-    async def test_update_order_status_when_filled_correctly_processed_even_when_trade_fill_update_fails(self, mock_api):
+    async def test_update_order_status_when_filled_correctly_processed_even_when_trade_fill_update_fails(self,
+                                                                                                         mock_api):
         self.setup_auth_token(mock_api=mock_api)
         self.exchange._set_current_timestamp(1640780000)
 
