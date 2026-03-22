@@ -50,10 +50,11 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         trading_pairs: Optional[List[str]] = None,
         trading_required: bool = True,
         domain: str = CONSTANTS.DEFAULT_DOMAIN,
+        use_auth_for_public_endpoints: bool = False,  # used for MarketDataProvider.update_rates_task
     ):
         self._api_key = api_key
         self._api_secret = api_secret
-        self._trading_pairs = trading_pairs
+        self._trading_pairs = trading_pairs or []
         self._trading_required = trading_required
         self._domain = domain
         self._client_order_id_nonce_provider = NonceCreator.for_microseconds()

@@ -17,8 +17,8 @@ CENTRALIZED = True
 EXAMPLE_PAIR = "EUR-USD"
 
 
-class ArchitectPerpetualConfigMap(BaseConnectorConfigMap):
-    connector: str = CONSTANTS.EXCHANGE_NAME
+class ArchitectPerpetualConfigMapBase(BaseConnectorConfigMap):
+    use_auth_for_public_endpoints: bool = True  # used for MarketDataProvider.update_rates_task
     api_key: SecretStr = Field(
         default=...,
         json_schema_extra={
@@ -37,6 +37,10 @@ class ArchitectPerpetualConfigMap(BaseConnectorConfigMap):
             "prompt_on_new": True
         }
     )
+
+
+class ArchitectPerpetualConfigMap(ArchitectPerpetualConfigMapBase):
+    connector: str = CONSTANTS.EXCHANGE_NAME
     model_config = ConfigDict(title=CONSTANTS.EXCHANGE_NAME)
 
 
@@ -48,26 +52,8 @@ OTHER_DOMAINS_EXAMPLE_PAIR = {CONSTANTS.SANDBOX_DOMAIN: EXAMPLE_PAIR}
 OTHER_DOMAINS_DEFAULT_FEES = {CONSTANTS.SANDBOX_DOMAIN: DEFAULT_FEES}
 
 
-class ArchitectTestnetConfigMap(BaseConnectorConfigMap):
+class ArchitectTestnetConfigMap(ArchitectPerpetualConfigMapBase):
     connector: str = CONSTANTS.SANDBOX_DOMAIN
-    api_key: SecretStr = Field(
-        default=...,
-        json_schema_extra={
-            "prompt": "Enter your Architect Sandbox API Key",
-            "is_secure": True,
-            "is_connect_key": True,
-            "prompt_on_new": True,
-        }
-    )
-    api_secret: SecretStr = Field(
-        default=...,
-        json_schema_extra={
-            "prompt": "Enter your Architect Sandbox API secret",
-            "is_secure": True,
-            "is_connect_key": True,
-            "prompt_on_new": True,
-        }
-    )
     model_config = ConfigDict(title=CONSTANTS.SANDBOX_DOMAIN)
 
 
