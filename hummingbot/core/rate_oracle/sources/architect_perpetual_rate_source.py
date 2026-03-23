@@ -33,7 +33,13 @@ class ArchitectPerpetualRateSource(RateSourceBase):
                 except KeyError:
                     # Ignore results for which their symbols is not tracked by the connector
                     continue
-                results[pair] = Decimal(record["p"])
+                if record["p"] is not None:
+                    results[pair] = Decimal(record["p"])
+                elif record["lsp"] is not None:
+                    self.logger().warning(f"No last price for {record['s']}. Using last settlement price.")
+                    results[pair] = Decimal(record["lsp"])
+                else:
+                    self.logger().warning(f"No last price nor settlement price for {record['s']}. Skipping.")
         except Exception:
             self.logger().exception(
                 msg="Unexpected error while retrieving rates from Architect Perpetual."
