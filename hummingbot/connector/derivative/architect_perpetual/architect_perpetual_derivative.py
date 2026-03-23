@@ -282,7 +282,7 @@ class ArchitectPerpetualDerivative(PerpetualDerivativePyBase):
         current_time_ns = int(self._time() * 1e9)
         params = {
             "symbol": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair),
-            "start_timestamp_ns": current_time_ns - int(25 * 60 * 60 * 1e9),
+            "start_timestamp_ns": current_time_ns - int(7 * 24 * 60 * 60 * 1e9),
             "end_timestamp_ns": current_time_ns,
         }
         response = await self._api_get(

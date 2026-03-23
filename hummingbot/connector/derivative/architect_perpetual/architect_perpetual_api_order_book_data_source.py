@@ -60,6 +60,8 @@ class ArchitectPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
 
     async def get_funding_info(self, trading_pair: str) -> FundingInfo:
         funding_rates = await self._connector._fetch_last_funding_info(trading_pair=trading_pair)
+        if len(funding_rates) == 0:
+            raise RuntimeError(f"No funding rates available for {trading_pair}.")
         funding_data = funding_rates[0]
         funding_info = FundingInfo(
             trading_pair=trading_pair,
