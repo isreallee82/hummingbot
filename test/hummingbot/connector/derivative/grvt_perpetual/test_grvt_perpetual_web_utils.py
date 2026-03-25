@@ -1,4 +1,5 @@
-import unittest
+from unittest import IsolatedAsyncioTestCase, TestCase
+from unittest.mock import AsyncMock, patch
 
 from hummingbot.connector.derivative.grvt_perpetual import (
     grvt_perpetual_constants as CONSTANTS,
@@ -6,73 +7,43 @@ from hummingbot.connector.derivative.grvt_perpetual import (
 )
 
 
-class GrvtPerpetualWebUtilsTests(unittest.TestCase):
-
-    def test_public_and_private_rest_url(self):
-        public_url = web_utils.public_rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL)
-        private_url = web_utils.private_rest_url(CONSTANTS.ORDER_PATH_URL)
-        auth_url = web_utils.auth_rest_url(CONSTANTS.LOGIN_PATH_URL)
-
+class GrvtPerpetualWebUtilsTests(TestCase):
+    def test_public_rest_url(self):
         self.assertEqual(
-            f"https://{CONSTANTS.REST_MARKET_DATA_SUBDOMAIN}.{CONSTANTS.BASE_DOMAIN}{CONSTANTS.REST_API_PREFIX}"
-            f"{CONSTANTS.EXCHANGE_INFO_PATH_URL}",
-            public_url,
-        )
-        self.assertEqual(
-            f"https://{CONSTANTS.REST_TRADING_SUBDOMAIN}.{CONSTANTS.BASE_DOMAIN}{CONSTANTS.REST_API_PREFIX}"
-            f"{CONSTANTS.ORDER_PATH_URL}",
-            private_url,
-        )
-        self.assertEqual(
-            f"https://{CONSTANTS.REST_AUTH_SUBDOMAIN}.{CONSTANTS.BASE_DOMAIN}{CONSTANTS.REST_AUTH_PREFIX}"
-            f"{CONSTANTS.LOGIN_PATH_URL}",
-            auth_url,
+            "https://market-data.grvt.io/full/v1/ticker",
+            web_utils.public_rest_url(CONSTANTS.TICKER_PATH_URL),
         )
 
-    def test_rest_and_ws_urls_for_testnet_domain(self):
-        domain = CONSTANTS.TESTNET_DOMAIN
-        testnet_host = f"{CONSTANTS.TESTNET_PREFIX}.{CONSTANTS.BASE_DOMAIN}"
-
+    def test_private_rest_url(self):
         self.assertEqual(
-            f"https://{CONSTANTS.REST_TRADING_SUBDOMAIN}.{testnet_host}{CONSTANTS.REST_API_PREFIX}"
-            f"{CONSTANTS.ORDER_PATH_URL}",
-            web_utils.private_rest_url(CONSTANTS.ORDER_PATH_URL, domain=domain),
-        )
-        self.assertEqual(
-            f"https://{CONSTANTS.REST_MARKET_DATA_SUBDOMAIN}.{testnet_host}{CONSTANTS.REST_API_PREFIX}"
-            f"{CONSTANTS.EXCHANGE_INFO_PATH_URL}",
-            web_utils.public_rest_url(CONSTANTS.EXCHANGE_INFO_PATH_URL, domain=domain),
-        )
-        self.assertEqual(
-            f"wss://{CONSTANTS.WSS_MARKET_DATA_SUBDOMAIN}.{testnet_host}{CONSTANTS.WS_API_PREFIX}",
-            web_utils.public_wss_url(domain=domain),
-        )
-        self.assertEqual(
-            f"wss://{CONSTANTS.WSS_TRADING_SUBDOMAIN}.{testnet_host}{CONSTANTS.WS_API_PREFIX}",
-            web_utils.private_wss_url(domain=domain),
+            "https://trades.testnet.grvt.io/full/v1/order",
+            web_utils.private_rest_url(CONSTANTS.ORDER_PATH_URL, domain=CONSTANTS.TESTNET_DOMAIN),
         )
 
-    def test_ws_urls(self):
+    def test_edge_rest_url(self):
         self.assertEqual(
-            f"wss://{CONSTANTS.WSS_MARKET_DATA_SUBDOMAIN}.{CONSTANTS.BASE_DOMAIN}{CONSTANTS.WS_API_PREFIX}",
-            web_utils.public_wss_url(),
-        )
-        self.assertEqual(
-            f"wss://{CONSTANTS.WSS_TRADING_SUBDOMAIN}.{CONSTANTS.BASE_DOMAIN}{CONSTANTS.WS_API_PREFIX}",
-            web_utils.private_wss_url(),
+            "https://edge.testnet.grvt.io/auth/api_key/login",
+            web_utils.edge_rest_url(CONSTANTS.AUTH_PATH_URL, domain=CONSTANTS.TESTNET_DOMAIN),
         )
 
-    def test_create_throttler_uses_rate_limits(self):
-        throttler = web_utils.create_throttler()
-        self.assertEqual(len(CONSTANTS.RATE_LIMITS), len(throttler._rate_limits))
+    def test_wss_urls(self):
+        self.assertEqual("wss://market-data.grvt.io/ws/full", web_utils.public_wss_url())
+        self.assertEqual("wss://trades.testnet.grvt.io/ws/full", web_utils.private_wss_url(CONSTANTS.TESTNET_DOMAIN))
 
 
-class GrvtPerpetualWebUtilsAsyncTests(unittest.IsolatedAsyncioTestCase):
+class GrvtPerpetualWebUtilsAsyncTests(IsolatedAsyncioTestCase):
+    async def test_get_current_server_time(self):
+        rest_assistant = AsyncMock()
+        rest_assistant.execute_request = AsyncMock(return_value={"server_time": 1772159636314})
+        api_factory = AsyncMock()
+        api_factory.get_rest_assistant = AsyncMock(return_value=rest_assistant)
 
-    async def test_get_current_server_time_accepts_expected_kwargs(self):
-        throttler = web_utils.create_throttler()
-        server_time = await web_utils.get_current_server_time(
-            throttler=throttler,
-            domain=CONSTANTS.DEFAULT_DOMAIN,
-        )
-        self.assertIsInstance(server_time, float)
+        with patch.object(
+            web_utils,
+            "build_api_factory_without_time_synchronizer_pre_processor",
+            return_value=api_factory,
+        ):
+            server_time = await web_utils.get_current_server_time()
+
+        self.assertEqual(1772159636314.0, server_time)
+        rest_assistant.execute_request.assert_awaited_once()

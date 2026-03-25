@@ -1,243 +1,229 @@
+import random
+import time
+from datetime import datetime
 from decimal import Decimal
+from http.cookies import SimpleCookie
 from typing import Any, Dict, Optional
 
+import aiohttp
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 
+from hummingbot.connector.derivative.grvt_perpetual import (
+    grvt_perpetual_constants as CONSTANTS,
+    grvt_perpetual_web_utils as web_utils,
+)
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.connections.data_types import RESTRequest, WSRequest
 
-PRICE_MULTIPLIER = Decimal("1000000000")
-
-CHAIN_IDS_BY_DOMAIN = {
-    "grvt_perpetual": 325,
-    "grvt_perpetual_testnet": 326,
-}
-
-TIME_IN_FORCE_TO_SIGN_VALUE = {
-    "GOOD_TILL_TIME": 1,
-    "ALL_OR_NONE": 2,
-    "IMMEDIATE_OR_CANCEL": 3,
-    "FILL_OR_KILL": 4,
-}
-
-EIP712_ORDER_MESSAGE_TYPE = {
-    "Order": [
-        {"name": "subAccountID", "type": "uint64"},
-        {"name": "isMarket", "type": "bool"},
-        {"name": "timeInForce", "type": "uint8"},
-        {"name": "postOnly", "type": "bool"},
-        {"name": "reduceOnly", "type": "bool"},
-        {"name": "legs", "type": "OrderLeg[]"},
-        {"name": "nonce", "type": "uint32"},
-        {"name": "expiration", "type": "int64"},
-    ],
-    "OrderLeg": [
-        {"name": "assetID", "type": "uint256"},
-        {"name": "contractSize", "type": "uint64"},
-        {"name": "limitPrice", "type": "uint64"},
-        {"name": "isBuyingContract", "type": "bool"},
-    ],
-}
-
 
 class GrvtPerpetualAuth(AuthBase):
-    """
-    GRVT auth wrapper.
+    _EIP712_ORDER_MESSAGE_TYPE = {
+        "Order": [
+            {"name": "subAccountID", "type": "uint64"},
+            {"name": "isMarket", "type": "bool"},
+            {"name": "timeInForce", "type": "uint8"},
+            {"name": "postOnly", "type": "bool"},
+            {"name": "reduceOnly", "type": "bool"},
+            {"name": "legs", "type": "OrderLeg[]"},
+            {"name": "nonce", "type": "uint32"},
+            {"name": "expiration", "type": "int64"},
+        ],
+        "OrderLeg": [
+            {"name": "assetID", "type": "uint256"},
+            {"name": "contractSize", "type": "uint64"},
+            {"name": "limitPrice", "type": "uint64"},
+            {"name": "isBuyingContract", "type": "bool"},
+        ],
+    }
+    _SIGN_TIME_IN_FORCE = {
+        CONSTANTS.TIME_IN_FORCE_GOOD_TILL_TIME: 1,
+        "ALL_OR_NONE": 2,
+        CONSTANTS.TIME_IN_FORCE_IMMEDIATE_OR_CANCEL: 3,
+        CONSTANTS.TIME_IN_FORCE_FILL_OR_KILL: 4,
+    }
+    _CHAIN_IDS = {
+        CONSTANTS.DEFAULT_DOMAIN: 325,
+        CONSTANTS.TESTNET_DOMAIN: 326,
+    }
 
-    Order signing uses GRVT EIP-712 payload for /v1/create_order.
-    """
-
-    def __init__(
-        self,
-        session_cookie: str = "",
-        account_id: str = "",
-        api_key: str = "",
-        sub_account_id: str = "",
-        evm_private_key: str = "",
-        domain: str = "grvt_perpetual",
-    ):
-        self._session_cookie = session_cookie.strip()
-        self._account_id = account_id.strip()
-        self._api_key = api_key.strip()
-        self._sub_account_id = sub_account_id.strip()
-        self._evm_private_key = evm_private_key.strip()
+    def __init__(self, api_key: str, private_key: str, trading_account_id: str, domain: str):
+        self._api_key = api_key
+        self._private_key = private_key
+        self._trading_account_id = trading_account_id
         self._domain = domain
-
-    @property
-    def account_id(self) -> str:
-        return self._account_id
-
-    @property
-    def api_key(self) -> str:
-        return self._api_key
-
-    @property
-    def sub_account_id(self) -> str:
-        return self._sub_account_id
-
-    @property
-    def has_session(self) -> bool:
-        return bool(self._session_cookie and self._account_id)
-
-    def set_session_context(self, session_cookie: str, account_id: str):
-        self._session_cookie = (session_cookie or "").strip()
-        self._account_id = (account_id or "").strip()
+        self._wallet = Account.from_key(private_key) if private_key else None
+        self._session_cookie: Optional[str] = None
+        self._session_expiry_ts: float = 0
+        self._grvt_account_id: Optional[str] = None
+        self._session_lock = None
 
     async def rest_authenticate(self, request: RESTRequest) -> RESTRequest:
-        if not self.has_session:
-            raise ValueError(
-                "GRVT authenticated request requires session context. "
-                "Use API key login first or provide `session_cookie` + `account_id`."
-            )
-        headers = dict(request.headers or {})
-        headers.update(self.auth_headers())
-        request.headers = headers
+        if request.is_auth_required:
+            headers = dict(request.headers or {})
+            headers.update(await self.get_rest_auth_headers())
+            request.headers = headers
         return request
 
     async def ws_authenticate(self, request: WSRequest) -> WSRequest:
         return request
 
-    def auth_headers(self) -> Dict[str, str]:
-        headers: Dict[str, str] = {}
-        if self._account_id:
-            headers["X-Grvt-Account-Id"] = self._account_id
-        if self._session_cookie:
-            headers["Cookie"] = self._session_cookie
+    async def get_rest_auth_headers(self) -> Dict[str, str]:
+        await self._ensure_authenticated()
+        return self._auth_headers()
+
+    async def get_ws_auth_headers(self) -> Dict[str, str]:
+        await self._ensure_authenticated()
+        return self._auth_headers()
+
+    async def _ensure_authenticated(self):
+        if self._session_lock is None:
+            import asyncio
+
+            self._session_lock = asyncio.Lock()
+        if not self._should_refresh_session():
+            return
+        async with self._session_lock:
+            if self._should_refresh_session():
+                await self._refresh_session()
+
+    def _should_refresh_session(self) -> bool:
+        return (
+            self._session_cookie is None
+            or self._session_expiry_ts - time.time() <= CONSTANTS.COOKIE_REFRESH_INTERVAL_BUFFER
+        )
+
+    def _auth_headers(self) -> Dict[str, str]:
+        headers = {
+            "Cookie": f"gravity={self._session_cookie}",
+            "Content-Type": "application/json",
+            "Accept-Encoding": "identity",
+        }
+        if self._grvt_account_id:
+            headers["X-Grvt-Account-Id"] = self._grvt_account_id
         return headers
 
-    def ws_headers(self) -> Dict[str, str]:
-        return self.auth_headers()
+    async def _refresh_session(self):
+        url = web_utils.edge_rest_url(CONSTANTS.AUTH_PATH_URL, domain=self._domain)
+        async with aiohttp.ClientSession(headers={"Content-Type": "application/json", "Accept-Encoding": "identity"}) as session:
+            async with session.post(url=url, json={"api_key": self._api_key}, timeout=5) as response:
+                if response.status >= 400:
+                    raise IOError(f"GRVT auth failed with status {response.status}")
+                cookie = SimpleCookie()
+                cookie.load(response.headers.get("Set-Cookie", ""))
+                gravity_cookie = cookie.get("gravity")
+                if gravity_cookie is None:
+                    raise IOError("GRVT auth response did not contain gravity cookie")
+                self._session_cookie = gravity_cookie.value
+                self._session_expiry_ts = datetime.strptime(
+                    gravity_cookie["expires"],
+                    "%a, %d %b %Y %H:%M:%S %Z",
+                ).timestamp()
+                self._grvt_account_id = response.headers.get("X-Grvt-Account-Id")
 
-    def _get_domain_data(self) -> Dict[str, Any]:
+    def get_order_payload(
+        self,
+        instrument: Dict[str, Any],
+        client_order_id: str,
+        exchange_symbol: str,
+        amount: Decimal,
+        price: Decimal,
+        trade_type: TradeType,
+        order_type: OrderType,
+        reduce_only: bool,
+        expiration_seconds: int = CONSTANTS.ORDER_SIGNATURE_EXPIRATION_SECS,
+    ) -> Dict[str, Any]:
+        time_in_force = self._time_in_force_for_order_type(order_type=order_type)
+        is_market = order_type == OrderType.MARKET
+        limit_price = Decimal("0") if is_market else price
+        nonce = random.randint(0, 2**32 - 1)
+        expiration = str(time.time_ns() + expiration_seconds * 1_000_000_000)
+        is_buy = trade_type == TradeType.BUY
+        message = self._signable_message(
+            instrument=instrument,
+            amount=amount,
+            limit_price=limit_price,
+            is_buy=is_buy,
+            is_market=is_market,
+            time_in_force=time_in_force,
+            reduce_only=reduce_only,
+            post_only=order_type == OrderType.LIMIT_MAKER,
+            nonce=nonce,
+            expiration=expiration,
+        )
+        signed = Account.sign_message(message, self._private_key)
+
         return {
+            "order": {
+                "sub_account_id": str(self._trading_account_id),
+                "is_market": is_market,
+                "time_in_force": time_in_force,
+                "post_only": order_type == OrderType.LIMIT_MAKER,
+                "reduce_only": reduce_only,
+                "legs": [
+                    {
+                        "instrument": exchange_symbol,
+                        "size": str(amount),
+                        "limit_price": str(limit_price),
+                        "is_buying_asset": is_buy,
+                    }
+                ],
+                "signature": {
+                    "r": f"0x{signed.r.to_bytes(32, byteorder='big').hex()}",
+                    "s": f"0x{signed.s.to_bytes(32, byteorder='big').hex()}",
+                    "v": signed.v,
+                    "expiration": expiration,
+                    "nonce": nonce,
+                    "signer": self._wallet.address,
+                },
+                "metadata": {
+                    "client_order_id": str(client_order_id),
+                    "broker": CONSTANTS.HBOT_BROKER_ID,
+                },
+            }
+        }
+
+    def _signable_message(
+        self,
+        instrument: Dict[str, Any],
+        amount: Decimal,
+        limit_price: Decimal,
+        is_buy: bool,
+        is_market: bool,
+        time_in_force: str,
+        reduce_only: bool,
+        post_only: bool,
+        nonce: int,
+        expiration: str,
+    ):
+        size_multiplier = 10 ** int(instrument["base_decimals"])
+        message_data = {
+            "subAccountID": int(self._trading_account_id),
+            "isMarket": is_market,
+            "timeInForce": self._SIGN_TIME_IN_FORCE[time_in_force],
+            "postOnly": post_only,
+            "reduceOnly": reduce_only,
+            "legs": [
+                {
+                    "assetID": instrument["instrument_hash"],
+                    "contractSize": int(amount * Decimal(size_multiplier)),
+                    "limitPrice": int(limit_price * Decimal(CONSTANTS.PRICE_SCALE)),
+                    "isBuyingContract": is_buy,
+                }
+            ],
+            "nonce": nonce,
+            "expiration": int(expiration),
+        }
+        domain_data = {
             "name": "GRVT Exchange",
             "version": "0",
-            "chainId": CHAIN_IDS_BY_DOMAIN.get(self._domain, CHAIN_IDS_BY_DOMAIN["grvt_perpetual"]),
+            "chainId": self._CHAIN_IDS[self._domain],
         }
+        return encode_typed_data(domain_data, self._EIP712_ORDER_MESSAGE_TYPE, message_data)
 
     @staticmethod
-    def _normalize_asset_id(instrument_data: Dict[str, Any]) -> int:
-        raw_asset_id = instrument_data.get("instrument_hash")
-        if raw_asset_id is None:
-            raise ValueError(
-                "Missing instrument hash in GRVT instrument metadata. "
-                "Expected `instrument_hash` (hex)."
-            )
-        asset_id_str = str(raw_asset_id).strip()
-        if asset_id_str.lower().startswith("0x"):
-            return int(asset_id_str, 16)
-        return int(asset_id_str)
-
-    @staticmethod
-    def _normalize_base_decimals(instrument_data: Dict[str, Any]) -> int:
-        base_decimals = instrument_data.get("base_decimals")
-        if base_decimals is None:
-            raise ValueError(
-                "Missing `base_decimals` in GRVT instrument metadata required for EIP-712 order signing."
-            )
-        return int(base_decimals)
-
-    def _build_signable_order_message_data(
-        self,
-        order: Dict[str, Any],
-        instrument_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        time_in_force = str(order.get("time_in_force", "GOOD_TILL_TIME")).upper()
-        if time_in_force not in TIME_IN_FORCE_TO_SIGN_VALUE:
-            raise ValueError(
-                f"Unsupported GRVT time_in_force '{time_in_force}'. "
-                f"Supported values: {list(TIME_IN_FORCE_TO_SIGN_VALUE.keys())}."
-            )
-
-        signature = order.get("signature") or {}
-        if "nonce" not in signature or "expiration" not in signature:
-            raise ValueError(
-                "GRVT order signature envelope requires `nonce` and `expiration` before signing."
-            )
-
-        legs = order.get("legs") or []
-        if len(legs) == 0:
-            raise ValueError("GRVT order must contain at least one leg.")
-        # Hummingbot currently uses single-leg perpetual orders.
-        leg = legs[0]
-
-        asset_id = self._normalize_asset_id(instrument_data)
-        base_decimals = self._normalize_base_decimals(instrument_data)
-        contract_size = int(Decimal(str(leg.get("size"))) * (Decimal(10) ** base_decimals))
-        limit_price = int(Decimal(str(leg.get("limit_price", "0"))) * PRICE_MULTIPLIER)
-
-        signable_legs = [{
-            "assetID": asset_id,
-            "contractSize": contract_size,
-            "limitPrice": limit_price,
-            "isBuyingContract": bool(leg.get("is_buying_asset")),
-        }]
-
-        return {
-            "subAccountID": int(order["sub_account_id"]),
-            "isMarket": bool(order.get("is_market", False)),
-            "timeInForce": TIME_IN_FORCE_TO_SIGN_VALUE[time_in_force],
-            "postOnly": bool(order.get("post_only", False)),
-            "reduceOnly": bool(order.get("reduce_only", False)),
-            "legs": signable_legs,
-            "nonce": int(signature["nonce"]),
-            "expiration": int(signature["expiration"]),
-        }
-
-    def sign_order_payload(
-        self,
-        order: Dict[str, Any],
-        instrument_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        if not self._evm_private_key:
-            raise ValueError(
-                "GRVT order signing requires secret/private key. "
-                "Set `grvt_perpetual_evm_private_key`."
-            )
-
-        message_data = self._build_signable_order_message_data(order=order, instrument_data=instrument_data)
-        signable_message = encode_typed_data(self._get_domain_data(), EIP712_ORDER_MESSAGE_TYPE, message_data)
-        signed = Account.sign_message(signable_message, self._evm_private_key)
-        signer = Account.from_key(self._evm_private_key).address
-        v_value = int(signed.v)
-        if v_value in (0, 1):
-            v_value += 27
-
-        return {
-            "signer": signer,
-            "r": f"0x{signed.r:064x}",
-            "s": f"0x{signed.s:064x}",
-            "v": v_value,
-            "expiration": str(message_data["expiration"]),
-            "nonce": int(message_data["nonce"]),
-        }
-
-    def build_create_order_payload(
-        self,
-        order: Dict[str, Any],
-        instrument_data: Dict[str, Any],
-        provided_signature: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        metadata = order.get("metadata") or {}
-        order_payload: Dict[str, Any] = {
-            "sub_account_id": order.get("sub_account_id"),
-            "is_market": order.get("is_market", False),
-            "time_in_force": order.get("time_in_force", "GOOD_TILL_TIME"),
-            "post_only": order.get("post_only", False),
-            "reduce_only": order.get("reduce_only", False),
-            "legs": list(order.get("legs") or []),
-            "signature": dict(order.get("signature") or {}),
-            "metadata": {
-                "client_order_id": metadata.get("client_order_id"),
-            },
-        }
-        if provided_signature is not None:
-            signature = provided_signature
-        else:
-            signature = self.sign_order_payload(order=order_payload, instrument_data=instrument_data)
-        order_payload["signature"] = signature
-
-        return {
-            "order": order_payload,
-        }
+    def _time_in_force_for_order_type(order_type: OrderType) -> str:
+        if order_type == OrderType.MARKET:
+            return CONSTANTS.TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
+        return CONSTANTS.TIME_IN_FORCE_GOOD_TILL_TIME

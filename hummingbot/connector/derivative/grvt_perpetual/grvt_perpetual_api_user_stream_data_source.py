@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from hummingbot.connector.derivative.grvt_perpetual import (
@@ -19,7 +18,6 @@ if TYPE_CHECKING:
 
 
 class GrvtPerpetualAPIUserStreamDataSource(UserStreamTrackerDataSource):
-
     _logger: Optional[HummingbotLogger] = None
 
     def __init__(
@@ -32,50 +30,57 @@ class GrvtPerpetualAPIUserStreamDataSource(UserStreamTrackerDataSource):
     ):
         super().__init__()
         self._auth: GrvtPerpetualAuth = auth
-        self._domain = domain
-        self._api_factory = api_factory
-        self._connector = connector
         self._trading_pairs = trading_pairs
+        self._connector = connector
+        self._api_factory = api_factory
+        self._domain = domain
+        self._ws_request_id = 0
 
     async def _connected_websocket_assistant(self) -> WSAssistant:
         ws = await self._api_factory.get_ws_assistant()
         await ws.connect(
             ws_url=web_utils.private_wss_url(domain=self._domain),
-            ws_headers=self._auth.ws_headers(),
+            ws_headers=await self._auth.get_ws_auth_headers(),
             ping_timeout=CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL,
         )
         return ws
 
     async def _subscribe_channels(self, websocket_assistant: WSAssistant):
         try:
-            streams = [
-                CONSTANTS.WS_PRIVATE_ORDERS_STREAM,
-                CONSTANTS.WS_PRIVATE_ORDER_STATE_STREAM,
-                CONSTANTS.WS_PRIVATE_FILLS_STREAM,
-                CONSTANTS.WS_PRIVATE_POSITIONS_STREAM,
-            ]
-            payload = {
-                "id": str(uuid.uuid4()),
-                "jsonrpc": "2.0",
-                "method": "subscribe",
-                "params": {
-                    "streams": streams,
-                    "selector": {stream: ["all"] for stream in streams},
-                },
-            }
-            await websocket_assistant.send(WSJSONRequest(payload=payload))
-            self.logger().info("Subscribed to GRVT private streams")
+            selector = str(self._connector.trading_account_id)
+            for stream in [
+                CONSTANTS.PRIVATE_WS_CHANNEL_ORDER,
+                CONSTANTS.PRIVATE_WS_CHANNEL_STATE,
+                CONSTANTS.PRIVATE_WS_CHANNEL_POSITION,
+                CONSTANTS.PRIVATE_WS_CHANNEL_FILL,
+            ]:
+                await websocket_assistant.send(self._subscription_request(stream=stream, selector=selector))
+            self.logger().info("Subscribed to GRVT private order, fill, and position channels...")
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger().exception("Unexpected error occurred subscribing to user streams")
+            self.logger().exception("Unexpected error occurred subscribing to GRVT user streams...")
             raise
 
     async def _process_event_message(self, event_message: Dict[str, Any], queue: asyncio.Queue):
-        if not isinstance(event_message, dict):
-            return
-        if event_message.get("method") == "subscription" and "params" in event_message:
+        if event_message.get("feed") is not None and event_message.get("stream") in {
+            CONSTANTS.PRIVATE_WS_CHANNEL_ORDER,
+            CONSTANTS.PRIVATE_WS_CHANNEL_STATE,
+            CONSTANTS.PRIVATE_WS_CHANNEL_POSITION,
+            CONSTANTS.PRIVATE_WS_CHANNEL_FILL,
+        }:
             queue.put_nowait(event_message)
 
-    async def _on_user_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
-        websocket_assistant and await websocket_assistant.disconnect()
+    def _subscription_request(self, stream: str, selector: str) -> WSJSONRequest:
+        self._ws_request_id += 1
+        return WSJSONRequest(
+            payload={
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": {
+                    "stream": stream,
+                    "selectors": [selector],
+                },
+                "id": self._ws_request_id,
+            }
+        )

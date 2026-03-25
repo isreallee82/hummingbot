@@ -17,21 +17,7 @@ DEFAULT_FEES = TradeFeeSchema(
 
 
 def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
-    return str(exchange_info.get("kind", "")).upper() == "PERPETUAL"
-
-
-def normalize_instrument(instrument: str) -> str:
-    raw = instrument.strip()
-    if "_" in raw:
-        parts = raw.split("_")
-        if len(parts) >= 2:
-            base = parts[0]
-            quote = parts[1]
-            return f"{base}-{quote}".lower()
-    symbol = raw.replace("_", "-").lower()
-    if symbol.endswith("-perp"):
-        symbol = symbol[:-5]
-    return symbol
+    return exchange_info.get("kind") == "PERPETUAL"
 
 
 class GrvtPerpetualConfigMap(BaseConnectorConfigMap):
@@ -39,32 +25,73 @@ class GrvtPerpetualConfigMap(BaseConnectorConfigMap):
     grvt_perpetual_api_key: SecretStr = Field(
         default=...,
         json_schema_extra={
-            "prompt": "Enter your GRVT API key",
-            "is_secure": True,
-            "is_connect_key": True,
-            "prompt_on_new": True,
-        }
-    )
-    grvt_perpetual_sub_account_id: SecretStr = Field(
-        default=...,
-        json_schema_extra={
-            "prompt": "Enter your GRVT sub account id",
-            "is_secure": True,
-            "is_connect_key": True,
-            "prompt_on_new": True,
-        }
-    )
-    grvt_perpetual_evm_private_key: SecretStr = Field(
-        default=...,
-        json_schema_extra={
-            "prompt": "Enter your GRVT private key (Order signing)",
+            "prompt": lambda cm: "Enter your GRVT API key",
             "is_secure": True,
             "is_connect_key": True,
             "prompt_on_new": True,
         },
     )
-
+    grvt_perpetual_private_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your GRVT private key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        },
+    )
+    grvt_perpetual_trading_account_id: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your GRVT trading account ID",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        },
+    )
     model_config = ConfigDict(title="grvt_perpetual")
 
 
 KEYS = GrvtPerpetualConfigMap.model_construct()
+
+OTHER_DOMAINS = ["grvt_perpetual_testnet"]
+OTHER_DOMAINS_PARAMETER = {"grvt_perpetual_testnet": "grvt_perpetual_testnet"}
+OTHER_DOMAINS_EXAMPLE_PAIR = {"grvt_perpetual_testnet": EXAMPLE_PAIR}
+OTHER_DOMAINS_DEFAULT_FEES = {"grvt_perpetual_testnet": DEFAULT_FEES}
+
+
+class GrvtPerpetualTestnetConfigMap(BaseConnectorConfigMap):
+    connector: str = "grvt_perpetual_testnet"
+    grvt_perpetual_testnet_api_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your GRVT Testnet API key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        },
+    )
+    grvt_perpetual_testnet_private_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your GRVT Testnet private key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        },
+    )
+    grvt_perpetual_testnet_trading_account_id: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your GRVT Testnet trading account ID",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        },
+    )
+    model_config = ConfigDict(title="grvt_perpetual_testnet")
+
+
+OTHER_DOMAINS_KEYS = {
+    "grvt_perpetual_testnet": GrvtPerpetualTestnetConfigMap.model_construct(),
+}

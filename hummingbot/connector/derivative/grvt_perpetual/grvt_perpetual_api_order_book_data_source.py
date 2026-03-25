@@ -1,6 +1,4 @@
 import asyncio
-import time
-import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -22,7 +20,6 @@ if TYPE_CHECKING:
 
 
 class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
-
     _logger: Optional[HummingbotLogger] = None
 
     def __init__(
@@ -34,65 +31,46 @@ class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
     ):
         super().__init__(trading_pairs)
         self._connector = connector
-        self._trade_messages_queue_key = CONSTANTS.WS_PUBLIC_TRADES_STREAM
-        self._diff_messages_queue_key = CONSTANTS.WS_PUBLIC_ORDERBOOK_DIFF_STREAM
-        self._snapshot_messages_queue_key = CONSTANTS.WS_PUBLIC_ORDERBOOK_SNAPSHOT_STREAM
-        self._funding_info_messages_queue_key = CONSTANTS.WS_PUBLIC_TICKERS_STREAM
-        self._domain = domain
         self._api_factory = api_factory
+        self._domain = domain
+        self._ws_request_id = 0
 
-    async def get_last_traded_prices(
-        self,
-        trading_pairs: List[str],
-        domain: Optional[str] = None,
-    ) -> Dict[str, float]:
+    async def get_last_traded_prices(self, trading_pairs: List[str], domain: Optional[str] = None) -> Dict[str, float]:
         return await self._connector.get_last_traded_prices(trading_pairs=trading_pairs)
 
     async def get_funding_info(self, trading_pair: str) -> FundingInfo:
-        params = {"instrument": await self._connector.exchange_symbol_associated_to_pair(trading_pair)}
-        data = await self._connector._api_get(
+        exchange_symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
+        response = await self._connector._api_post(
             path_url=CONSTANTS.TICKER_PATH_URL,
-            params=params,
-            throttler_limit_id=CONSTANTS.TICKER_PATH_URL,
+            data={"instrument": exchange_symbol},
         )
-        payload = data["result"]
-
+        result = response["result"]
         return FundingInfo(
             trading_pair=trading_pair,
-            index_price=Decimal(str(payload.get("index_price", "0"))),
-            mark_price=Decimal(str(payload.get("mark_price", "0"))),
-            next_funding_utc_timestamp=0.0,
-            rate=Decimal(str(payload.get("funding_rate_8h_curr", "0"))),
+            index_price=Decimal(str(result["index_price"])),
+            mark_price=Decimal(str(result["mark_price"])),
+            next_funding_utc_timestamp=self._next_funding_time(result),
+            rate=Decimal(str(result["funding_rate_8h_curr"])),
         )
 
     async def _request_order_book_snapshot(self, trading_pair: str) -> Dict[str, Any]:
-        instrument = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
-        last_error: Optional[Exception] = None
+        exchange_symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
+        response = await self._connector._api_post(
+            path_url=CONSTANTS.ORDER_BOOK_PATH_URL,
+            data={"instrument": exchange_symbol, "depth": 50, "aggregate": 1},
+        )
+        return response["result"]
 
-        for depth in CONSTANTS.ORDER_BOOK_SNAPSHOT_DEPTHS:
-            params = {"instrument": instrument, "depth": depth}
-            try:
-                return await self._connector._api_get(
-                    path_url=CONSTANTS.SNAPSHOT_PATH_URL,
-                    params=params,
-                    limit_id=CONSTANTS.SNAPSHOT_PATH_URL,
-                )
-            except IOError as request_error:
-                last_error = request_error
-                error_text = str(request_error).lower()
-                is_depth_error = "depth is invalid" in error_text or '"code":3031' in error_text
-                if not is_depth_error:
-                    raise
-                self.logger().warning(
-                    f"GRVT order book snapshot rejected depth={depth} for {trading_pair}. Trying next depth."
-                )
-
-        if last_error is not None:
-            raise last_error
-        raise IOError(f"Failed to fetch GRVT order book snapshot for {trading_pair}: no depth candidates available.")
+    async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
+        snapshot = await self._request_order_book_snapshot(trading_pair)
+        return GrvtPerpetualOrderBook.snapshot_message_from_exchange(
+            snapshot,
+            int(snapshot["event_time"]) * 1e-9,
+            metadata={"trading_pair": trading_pair},
+        )
 
     async def _connected_websocket_assistant(self) -> WSAssistant:
-        ws: WSAssistant = await self._api_factory.get_ws_assistant()
+        ws = await self._api_factory.get_ws_assistant()
         await ws.connect(
             ws_url=web_utils.public_wss_url(domain=self._domain),
             ping_timeout=CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL,
@@ -103,138 +81,108 @@ class GrvtPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         try:
             for trading_pair in self._trading_pairs:
                 await self.subscribe_to_trading_pair(trading_pair)
-            self.logger().info("Subscribed to GRVT perpetual public channels")
+                exchange_symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
+                await ws.send(self._subscription_request(stream=CONSTANTS.PUBLIC_WS_CHANNEL_TICKER, selector=f"{exchange_symbol}@1000"))
+            self.logger().info("Subscribed to GRVT public order book, trades, and ticker channels...")
         except asyncio.CancelledError:
             raise
         except Exception:
-            self.logger().error("Unexpected error while subscribing to public channels", exc_info=True)
+            self.logger().error("Unexpected error occurred subscribing to GRVT order book streams.", exc_info=True)
             raise
+
+    def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
+        stream = event_message.get("stream", "")
+        if stream == CONSTANTS.PUBLIC_WS_CHANNEL_BOOK_DIFF:
+            return self._diff_messages_queue_key
+        if stream == CONSTANTS.PUBLIC_WS_CHANNEL_TRADE:
+            return self._trade_messages_queue_key
+        if stream == CONSTANTS.PUBLIC_WS_CHANNEL_TICKER:
+            return self._funding_info_messages_queue_key
+        return ""
+
+    async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        feed = raw_message["feed"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(feed["instrument"])
+        message_queue.put_nowait(
+            GrvtPerpetualOrderBook.diff_message_from_exchange(raw_message, metadata={"trading_pair": trading_pair})
+        )
+
+    async def _parse_order_book_snapshot_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        feed = raw_message["feed"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(feed["instrument"])
+        message_queue.put_nowait(
+            GrvtPerpetualOrderBook.snapshot_message_from_ws(raw_message, metadata={"trading_pair": trading_pair})
+        )
+
+    async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        feed = raw_message["feed"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(feed["instrument"])
+        message_queue.put_nowait(
+            GrvtPerpetualOrderBook.trade_message_from_exchange(raw_message, metadata={"trading_pair": trading_pair})
+        )
+
+    async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        feed = raw_message["feed"]
+        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(feed["instrument"])
+        message_queue.put_nowait(
+            FundingInfoUpdate(
+                trading_pair=trading_pair,
+                index_price=Decimal(str(feed["index_price"])),
+                mark_price=Decimal(str(feed["mark_price"])),
+                next_funding_utc_timestamp=self._next_funding_time(feed),
+                rate=Decimal(str(feed["funding_rate_8h_curr"])),
+            )
+        )
+
+    def _subscription_request(self, stream: str, selector: str) -> WSJSONRequest:
+        self._ws_request_id += 1
+        return WSJSONRequest(
+            payload={
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": {
+                    "stream": stream,
+                    "selectors": [selector],
+                },
+                "id": self._ws_request_id,
+            }
+        )
 
     async def subscribe_to_trading_pair(self, trading_pair: str) -> bool:
         if self._ws_assistant is None:
             return False
-
-        instrument = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
-        streams = [
-            CONSTANTS.WS_PUBLIC_ORDERBOOK_SNAPSHOT_STREAM,
-            CONSTANTS.WS_PUBLIC_ORDERBOOK_DIFF_STREAM,
-            CONSTANTS.WS_PUBLIC_TRADES_STREAM,
-            CONSTANTS.WS_PUBLIC_TICKERS_STREAM,
-        ]
-
-        for stream in streams:
-            payload = {
-                "id": str(uuid.uuid4()),
-                "jsonrpc": "2.0",
-                "method": "subscribe",
-                "params": {
-                    "streams": [stream],
-                    "selector": {
-                        stream: [instrument],
-                    },
-                },
-            }
-            await self._ws_assistant.send(WSJSONRequest(payload=payload))
-
+        exchange_symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
+        await self._ws_assistant.send(
+            self._subscription_request(stream=CONSTANTS.PUBLIC_WS_CHANNEL_BOOK_DIFF, selector=f"{exchange_symbol}@100")
+        )
+        await self._ws_assistant.send(
+            self._subscription_request(stream=CONSTANTS.PUBLIC_WS_CHANNEL_TRADE, selector=f"{exchange_symbol}@50")
+        )
+        self.add_trading_pair(trading_pair)
         return True
 
     async def unsubscribe_from_trading_pair(self, trading_pair: str) -> bool:
         if self._ws_assistant is None:
             return False
-
-        instrument = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
-        streams = [
-            CONSTANTS.WS_PUBLIC_ORDERBOOK_SNAPSHOT_STREAM,
-            CONSTANTS.WS_PUBLIC_ORDERBOOK_DIFF_STREAM,
-            CONSTANTS.WS_PUBLIC_TRADES_STREAM,
-            CONSTANTS.WS_PUBLIC_TICKERS_STREAM,
-        ]
-
-        for stream in streams:
-            payload = {
-                "id": str(uuid.uuid4()),
-                "jsonrpc": "2.0",
-                "method": "unsubscribe",
-                "params": {
-                    "streams": [stream],
-                    "selector": {
-                        stream: [instrument],
-                    },
-                },
-            }
-            await self._ws_assistant.send(WSJSONRequest(payload=payload))
-
+        exchange_symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair)
+        for stream, selector in [
+            (CONSTANTS.PUBLIC_WS_CHANNEL_BOOK_DIFF, f"{exchange_symbol}@100"),
+            (CONSTANTS.PUBLIC_WS_CHANNEL_TRADE, f"{exchange_symbol}@50"),
+        ]:
+            self._ws_request_id += 1
+            await self._ws_assistant.send(
+                WSJSONRequest(
+                    payload={
+                        "jsonrpc": "2.0",
+                        "method": "unsubscribe",
+                        "params": {"stream": stream, "selectors": [selector]},
+                        "id": self._ws_request_id,
+                    }
+                )
+            )
+        self.remove_trading_pair(trading_pair)
         return True
 
-    def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
-        stream = event_message.get("params", {}).get("stream", "")
-
-        if stream == CONSTANTS.WS_PUBLIC_ORDERBOOK_DIFF_STREAM:
-            return self._diff_messages_queue_key
-        if stream == CONSTANTS.WS_PUBLIC_ORDERBOOK_SNAPSHOT_STREAM:
-            return self._snapshot_messages_queue_key
-        if stream == CONSTANTS.WS_PUBLIC_TRADES_STREAM:
-            return self._trade_messages_queue_key
-        if stream in {CONSTANTS.WS_PUBLIC_TICKERS_STREAM, CONSTANTS.WS_PUBLIC_FUNDING_STREAM}:
-            return self._funding_info_messages_queue_key
-        return ""
-
-    async def _order_book_snapshot(self, trading_pair: str) -> OrderBookMessage:
-        snapshot = await self._request_order_book_snapshot(trading_pair)
-        snapshot_timestamp = time.time()
-        return GrvtPerpetualOrderBook.snapshot_message_from_exchange(
-            snapshot,
-            snapshot_timestamp,
-            metadata={"trading_pair": trading_pair},
-        )
-
-    async def _parse_order_book_snapshot_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        instrument = raw_message["params"]["data"]["feed"]["instrument"]
-        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
-        message_queue.put_nowait(
-            GrvtPerpetualOrderBook.snapshot_message_from_ws(
-                raw_message,
-                metadata={"trading_pair": trading_pair},
-            )
-        )
-
-    async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        instrument = raw_message["params"]["data"]["feed"]["instrument"]
-        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
-        message_queue.put_nowait(
-            GrvtPerpetualOrderBook.diff_message_from_exchange(
-                raw_message,
-                metadata={"trading_pair": trading_pair},
-            )
-        )
-
-    async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        instrument = raw_message["params"]["data"]["feed"]["instrument"]
-        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
-        message_queue.put_nowait(
-            GrvtPerpetualOrderBook.trade_message_from_exchange(
-                raw_message,
-                metadata={"trading_pair": trading_pair},
-            )
-        )
-
-    async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
-        stream_data: Dict[str, Any] = raw_message.get("params", {}).get("data", {})
-        if not isinstance(stream_data, dict):
-            return
-        data: Dict[str, Any] = stream_data.get("feed", {})
-        if not isinstance(data, dict):
-            return
-        instrument = data.get("instrument")
-        if instrument is None:
-            return
-
-        trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(instrument)
-        funding_update = FundingInfoUpdate(
-            trading_pair=trading_pair,
-            index_price=Decimal(str(data.get("index_price", "0"))),
-            mark_price=Decimal(str(data.get("mark_price", "0"))),
-            next_funding_utc_timestamp=0,
-            rate=Decimal(str(data.get("funding_rate_8h_curr", "0"))),
-        )
-        message_queue.put_nowait(funding_update)
+    @staticmethod
+    def _next_funding_time(feed: Dict[str, Any]) -> int:
+        return int(int(feed["next_funding_time"]) * 1e-9)

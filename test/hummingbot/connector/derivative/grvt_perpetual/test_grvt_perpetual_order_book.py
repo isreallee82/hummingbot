@@ -5,67 +5,76 @@ from hummingbot.core.data_type.order_book_message import OrderBookMessageType
 
 
 class GrvtPerpetualOrderBookTests(TestCase):
-
-    def test_snapshot_message_from_exchange_parses_object_price_levels(self):
+    def test_snapshot_message_from_exchange(self):
         snapshot_message = GrvtPerpetualOrderBook.snapshot_message_from_exchange(
             msg={
-                "result": {
-                    "event_time": "1710000000000000000",
-                    "instrument": "BTC_USDT_Perp",
-                    "bids": [
-                        {"price": "60000.0", "size": "1.25", "num_orders": 2},
-                        {"price": "60000.5", "size": "0.5", "num_orders": 1},
-                    ],
-                    "asks": [
-                        {"price": "60001.0", "size": "0.75", "num_orders": 2},
-                        {"price": "60001.5", "size": "0.40", "num_orders": 1},
-                    ],
-                }
+                "event_time": "1700000000000000000",
+                "bids": [{"price": "62000", "size": "1.2"}],
+                "asks": [{"price": "62010", "size": "1.5"}],
             },
-            timestamp=1710000000.0,
+            timestamp=1700000000.0,
             metadata={"trading_pair": "BTC-USDT"},
         )
 
-        self.assertEqual(OrderBookMessageType.SNAPSHOT, snapshot_message.type)
         self.assertEqual("BTC-USDT", snapshot_message.trading_pair)
-        self.assertEqual(1710000000000000000, snapshot_message.update_id)
-        self.assertEqual(2, len(snapshot_message.bids))
-        self.assertEqual(60000.0, snapshot_message.bids[0].price)
-        self.assertEqual(1.25, snapshot_message.bids[0].amount)
-        self.assertEqual(60000.5, snapshot_message.bids[1].price)
-        self.assertEqual(0.5, snapshot_message.bids[1].amount)
-        self.assertEqual(2, len(snapshot_message.asks))
-        self.assertEqual(60001.0, snapshot_message.asks[0].price)
-        self.assertEqual(0.75, snapshot_message.asks[0].amount)
-        self.assertEqual(60001.5, snapshot_message.asks[1].price)
-        self.assertEqual(0.4, snapshot_message.asks[1].amount)
+        self.assertEqual(OrderBookMessageType.SNAPSHOT, snapshot_message.type)
+        self.assertEqual(1700000000.0, snapshot_message.timestamp)
+        self.assertEqual([["62000", "1.2"]], snapshot_message.content["bids"])
+        self.assertEqual([["62010", "1.5"]], snapshot_message.content["asks"])
 
-    def test_diff_message_from_exchange_parses_feed_price_levels(self):
+    def test_snapshot_message_from_ws(self):
+        snapshot_message = GrvtPerpetualOrderBook.snapshot_message_from_ws(
+            msg={
+                "stream": "v1.book.s",
+                "feed": {
+                    "event_time": "1700000000000000000",
+                    "instrument": "BTC_USDT_Perp",
+                    "bids": [{"price": "62000", "size": "1.2"}],
+                    "asks": [{"price": "62010", "size": "1.5"}],
+                },
+            },
+            metadata={"trading_pair": "BTC-USDT"},
+        )
+
+        self.assertEqual("BTC-USDT", snapshot_message.trading_pair)
+        self.assertEqual(OrderBookMessageType.SNAPSHOT, snapshot_message.type)
+        self.assertEqual(1700000000.0, snapshot_message.timestamp)
+
+    def test_diff_message_from_exchange(self):
         diff_message = GrvtPerpetualOrderBook.diff_message_from_exchange(
             msg={
-                "params": {
-                    "data": {
-                        "sequence_number": "123457",
-                        "prev_sequence_number": "123456",
-                        "feed": {
-                            "event_time": "1710000000100000000",
-                            "instrument": "BTC_USDT_Perp",
-                            "bids": [{"price": "60000.0", "size": "0.80", "num_orders": 1}],
-                            "asks": [{"price": "60000.5", "size": "0", "num_orders": 1}],
-                        },
-                    }
-                }
+                "stream": "v1.book.d",
+                "feed": {
+                    "event_time": "1700000000000000000",
+                    "instrument": "BTC_USDT_Perp",
+                    "bids": [{"price": "62000", "size": "1.2"}],
+                    "asks": [{"price": "62010", "size": "1.5"}],
+                },
             },
             metadata={"trading_pair": "BTC-USDT"},
         )
 
-        self.assertEqual(OrderBookMessageType.DIFF, diff_message.type)
         self.assertEqual("BTC-USDT", diff_message.trading_pair)
-        self.assertEqual(123457, diff_message.update_id)
-        self.assertEqual(123456, diff_message.first_update_id)
-        self.assertEqual(1, len(diff_message.bids))
-        self.assertEqual(60000.0, diff_message.bids[0].price)
-        self.assertEqual(0.8, diff_message.bids[0].amount)
-        self.assertEqual(1, len(diff_message.asks))
-        self.assertEqual(60000.5, diff_message.asks[0].price)
-        self.assertEqual(0.0, diff_message.asks[0].amount)
+        self.assertEqual(OrderBookMessageType.DIFF, diff_message.type)
+        self.assertEqual([["62000", "1.2"]], diff_message.content["bids"])
+
+    def test_trade_message_from_exchange(self):
+        trade_message = GrvtPerpetualOrderBook.trade_message_from_exchange(
+            msg={
+                "stream": "v1.trade",
+                "feed": {
+                    "event_time": "1700000000000000000",
+                    "instrument": "BTC_USDT_Perp",
+                    "is_taker_buyer": True,
+                    "trade_id": "t-1",
+                    "price": "62000",
+                    "size": "0.5",
+                },
+            },
+            metadata={"trading_pair": "BTC-USDT"},
+        )
+
+        self.assertEqual("BTC-USDT", trade_message.trading_pair)
+        self.assertEqual(OrderBookMessageType.TRADE, trade_message.type)
+        self.assertEqual("t-1", trade_message.trade_id)
+        self.assertEqual(1700000000.0, trade_message.timestamp)

@@ -2,156 +2,122 @@ from hummingbot.core.api_throttler.data_types import LinkedLimitWeightPair, Rate
 from hummingbot.core.data_type.in_flight_order import OrderState
 
 DEFAULT_DOMAIN = "grvt_perpetual"
+
 TESTNET_DOMAIN = "grvt_perpetual_testnet"
 
-HBOT_ORDER_ID_PREFIX = "HBOT"
-MAX_ORDER_ID_LEN = 32
-
-BASE_DOMAIN = "grvt.io"
-TESTNET_PREFIX = "testnet"
-
-REST_TRADING_SUBDOMAIN = "trades"
-REST_MARKET_DATA_SUBDOMAIN = "market-data"
-REST_AUTH_SUBDOMAIN = "edge"
-WSS_TRADING_SUBDOMAIN = "trades"
-WSS_MARKET_DATA_SUBDOMAIN = "market-data"
-
-REST_API_PREFIX = "/full"
-REST_AUTH_PREFIX = "/auth"
-WS_API_PREFIX = "/ws/full"
-
-WS_HEARTBEAT_TIME_INTERVAL = 30
-
-# Public market data endpoints
-TIME_PATH_URL = "/time"
-EXCHANGE_INFO_PATH_URL = "/v1/instruments"
-TRADING_RULES_PATH_URL = "/v1/instruments"
-TICKER_PATH_URL = "/v1/ticker"
-SNAPSHOT_PATH_URL = "/v1/book"
-ORDER_BOOK_SNAPSHOT_DEPTHS = (50, 10, 100, 500)
-
-# Auth endpoint
-LOGIN_PATH_URL = "/login"
-API_KEY_LOGIN_PATH_URL = "/api_key/login"
-
-# Private trading endpoints
-CREATE_ORDER_PATH_URL = "/v1/create_order"
-CANCEL_ORDER_PATH_URL = "/v1/cancel_order"
-ORDER_PATH_URL = "/v1/order"
-FILL_HISTORY_PATH_URL = "/v1/fill_history"
-FUNDING_PAYMENT_HISTORY_PATH_URL = "/v1/funding_payment_history"
-POSITIONS_PATH_URL = "/v1/positions"
-SET_INITIAL_LEVERAGE_PATH_URL = "/v1/set_initial_leverage"
-ACCOUNT_SUMMARY_PATH_URL = "/v1/account_summary"
-
-# WS streams
-WS_PUBLIC_TICKERS_STREAM = "v1.tickers"
-WS_PUBLIC_ORDERBOOK_SNAPSHOT_STREAM = "v1.orderbook_levels"
-WS_PUBLIC_ORDERBOOK_DIFF_STREAM = "v1.orderbook_levels_deltas"
-WS_PUBLIC_TRADES_STREAM = "v1.trades"
-WS_PUBLIC_FUNDING_STREAM = "v1.funding_rates"
-
-WS_PRIVATE_ORDERS_STREAM = "v1.orders"
-WS_PRIVATE_ORDER_STATE_STREAM = "v1.order_state"
-WS_PRIVATE_FILLS_STREAM = "v1.fills"
-WS_PRIVATE_POSITIONS_STREAM = "v1.positions"
-
-ORDER_STATE = {
-    "pending": OrderState.PENDING_CREATE,
-    "pending_open": OrderState.PENDING_CREATE,
-    "open": OrderState.OPEN,
-    "partially_filled": OrderState.PARTIALLY_FILLED,
-    "filled": OrderState.FILLED,
-    "cancelled": OrderState.CANCELED,
-    "rejected": OrderState.FAILED,
-    "expired": OrderState.FAILED,
+DOMAIN_TO_ENV = {
+    DEFAULT_DOMAIN: "prod",
+    TESTNET_DOMAIN: "testnet",
 }
 
-ORDER_NOT_EXIST_MESSAGE = "not found"
-UNKNOWN_ORDER_MESSAGE = "not found"
+DOMAIN_TO_BASE_URLS = {
+    DEFAULT_DOMAIN: {
+        "edge": "https://edge.grvt.io",
+        "trade": "https://trades.grvt.io",
+        "market": "https://market-data.grvt.io",
+        "trade_ws": "wss://trades.grvt.io/ws/full",
+        "market_ws": "wss://market-data.grvt.io/ws/full",
+    },
+    TESTNET_DOMAIN: {
+        "edge": "https://edge.testnet.grvt.io",
+        "trade": "https://trades.testnet.grvt.io",
+        "market": "https://market-data.testnet.grvt.io",
+        "trade_ws": "wss://trades.testnet.grvt.io/ws/full",
+        "market_ws": "wss://market-data.testnet.grvt.io/ws/full",
+    },
+}
 
-GLOBAL_PUBLIC_LIMIT_ID = "GLOBAL_PUBLIC"
-GLOBAL_PRIVATE_LIMIT_ID = "GLOBAL_PRIVATE"
-AUTH_LIMIT_ID = "AUTH"
-WS_CONNECTION_LIMIT_ID = "WS_CONNECTIONS"
-WS_REQUEST_LIMIT_ID = "WS_REQUESTS"
+HBOT_BROKER_ID = "HBOT"
+MAX_ORDER_ID_LEN = 20  # uint64 decimal string
+CLIENT_ORDER_ID_HIGH_BIT = 1 << 63
+PRICE_SCALE = 1_000_000_000
+WS_HEARTBEAT_TIME_INTERVAL = 30
+FUNDING_RATE_UPDATE_INTERVAL = 8 * 60 * 60
+COOKIE_REFRESH_INTERVAL_BUFFER = 5
+ORDER_SIGNATURE_EXPIRATION_SECS = 24 * 60 * 60
 
+AUTH_PATH_URL = "auth/api_key/login"
+
+CREATE_ORDER_PATH_URL = "full/v1/create_order"
+CANCEL_ORDER_PATH_URL = "full/v1/cancel_order"
+OPEN_ORDERS_PATH_URL = "full/v1/open_orders"
+ORDER_PATH_URL = "full/v1/order"
+ORDER_HISTORY_PATH_URL = "full/v1/order_history"
+FILL_HISTORY_PATH_URL = "full/v1/fill_history"
+POSITIONS_PATH_URL = "full/v1/positions"
+ACCOUNT_SUMMARY_PATH_URL = "full/v1/account_summary"
+FUNDING_PAYMENT_HISTORY_PATH_URL = "full/v1/funding_payment_history"
+GET_ALL_INITIAL_LEVERAGE_PATH_URL = "full/v1/get_all_initial_leverage"
+SET_INITIAL_LEVERAGE_PATH_URL = "full/v1/set_initial_leverage"
+
+INSTRUMENTS_PATH_URL = "full/v1/instruments"
+ALL_INSTRUMENTS_PATH_URL = "full/v1/all_instruments"
+INSTRUMENT_PATH_URL = "full/v1/instrument"
+TICKER_PATH_URL = "full/v1/ticker"
+MINI_TICKER_PATH_URL = "full/v1/mini"
+ORDER_BOOK_PATH_URL = "full/v1/book"
+TRADES_PATH_URL = "full/v1/trade"
+TRADE_HISTORY_PATH_URL = "full/v1/trade_history"
+FUNDING_PATH_URL = "full/v1/funding"
+TIME_PATH_URL = "time"
+
+PUBLIC_WS_CHANNEL_TRADE = "v1.trade"
+PUBLIC_WS_CHANNEL_BOOK_SNAPSHOT = "v1.book.s"
+PUBLIC_WS_CHANNEL_BOOK_DIFF = "v1.book.d"
+PUBLIC_WS_CHANNEL_TICKER = "v1.ticker.s"
+PRIVATE_WS_CHANNEL_ORDER = "v1.order"
+PRIVATE_WS_CHANNEL_STATE = "v1.state"
+PRIVATE_WS_CHANNEL_POSITION = "v1.position"
+PRIVATE_WS_CHANNEL_FILL = "v1.fill"
+
+ORDER_STATE = {
+    "PENDING": OrderState.PENDING_CREATE,
+    "OPEN": OrderState.OPEN,
+    "FILLED": OrderState.FILLED,
+    "REJECTED": OrderState.FAILED,
+    "CANCELLED": OrderState.CANCELED,
+}
+
+ORDER_NOT_FOUND_MESSAGE = "RESOURCE_NOT_FOUND"
+
+TIME_IN_FORCE_GOOD_TILL_TIME = "GOOD_TILL_TIME"
+TIME_IN_FORCE_IMMEDIATE_OR_CANCEL = "IMMEDIATE_OR_CANCEL"
+TIME_IN_FORCE_FILL_OR_KILL = "FILL_OR_KILL"
+
+GLOBAL_RATE_LIMIT_ID = "grvtGlobalRateLimit"
 RATE_LIMITS = [
-    RateLimit(limit_id=GLOBAL_PUBLIC_LIMIT_ID, limit=500, time_interval=1),
-    RateLimit(limit_id=GLOBAL_PRIVATE_LIMIT_ID, limit=200, time_interval=1),
-    RateLimit(limit_id=AUTH_LIMIT_ID, limit=20, time_interval=1),
-    RateLimit(limit_id=WS_CONNECTION_LIMIT_ID, limit=120, time_interval=60),
-    RateLimit(limit_id=WS_REQUEST_LIMIT_ID, limit=500, time_interval=1),
-    RateLimit(
-        limit_id=API_KEY_LOGIN_PATH_URL,
-        limit=20,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(AUTH_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=EXCHANGE_INFO_PATH_URL,
-        limit=100,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PUBLIC_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=SNAPSHOT_PATH_URL,
-        limit=20,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PUBLIC_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=TICKER_PATH_URL,
-        limit=50,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PUBLIC_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=CREATE_ORDER_PATH_URL,
-        limit=100,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=CANCEL_ORDER_PATH_URL,
-        limit=100,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=ORDER_PATH_URL,
-        limit=50,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=FILL_HISTORY_PATH_URL,
-        limit=20,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=FUNDING_PAYMENT_HISTORY_PATH_URL,
-        limit=20,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=POSITIONS_PATH_URL,
-        limit=20,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=SET_INITIAL_LEVERAGE_PATH_URL,
-        limit=20,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
-    RateLimit(
-        limit_id=ACCOUNT_SUMMARY_PATH_URL,
-        limit=20,
-        time_interval=1,
-        linked_limits=[LinkedLimitWeightPair(GLOBAL_PRIVATE_LIMIT_ID)],
-    ),
+    RateLimit(limit_id=GLOBAL_RATE_LIMIT_ID, limit=1200, time_interval=60),
 ]
+
+for limit_id in [
+    AUTH_PATH_URL,
+    CREATE_ORDER_PATH_URL,
+    CANCEL_ORDER_PATH_URL,
+    OPEN_ORDERS_PATH_URL,
+    ORDER_PATH_URL,
+    ORDER_HISTORY_PATH_URL,
+    FILL_HISTORY_PATH_URL,
+    POSITIONS_PATH_URL,
+    ACCOUNT_SUMMARY_PATH_URL,
+    FUNDING_PAYMENT_HISTORY_PATH_URL,
+    GET_ALL_INITIAL_LEVERAGE_PATH_URL,
+    SET_INITIAL_LEVERAGE_PATH_URL,
+    INSTRUMENTS_PATH_URL,
+    ALL_INSTRUMENTS_PATH_URL,
+    INSTRUMENT_PATH_URL,
+    TICKER_PATH_URL,
+    MINI_TICKER_PATH_URL,
+    ORDER_BOOK_PATH_URL,
+    TRADES_PATH_URL,
+    TRADE_HISTORY_PATH_URL,
+    FUNDING_PATH_URL,
+    TIME_PATH_URL,
+]:
+    RATE_LIMITS.append(
+        RateLimit(
+            limit_id=limit_id,
+            limit=1200,
+            time_interval=60,
+            linked_limits=[LinkedLimitWeightPair(limit_id=GLOBAL_RATE_LIMIT_ID)],
+        )
+    )
