@@ -184,15 +184,23 @@ class TradeFeeBase(ABC):
     ) -> Decimal:
         from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 
-        if (exchange is not None and hasattr(exchange, "order_books") and exchange.order_books is not None and
-                trading_pair in exchange.order_books):
-            rate = exchange.get_price_by_type(trading_pair, PriceType.MidPrice)
-        else:
-            local_rate_source: Optional[RateOracle] = rate_source or RateOracle.get_instance()
-            rate: Decimal = local_rate_source.get_pair_rate(trading_pair)
-            if rate is None:
-                raise ValueError(f"Could not find the exchange rate for {trading_pair} using the rate source "
-                                 f"{local_rate_source} (please verify it has been correctly configured)")
+        if exchange is not None and hasattr(exchange, "order_books") and exchange.order_books is not None:
+            if trading_pair in exchange.order_books:
+                rate = exchange.get_price_by_type(trading_pair, PriceType.MidPrice)
+                return rate
+            # Check the reverse pair (e.g. "USDT-SIREN" → try "SIREN-USDT")
+            base, quote = split_hb_trading_pair(trading_pair)
+            reverse_pair = combine_to_hb_trading_pair(base=quote, quote=base)
+            if reverse_pair in exchange.order_books:
+                reverse_rate = exchange.get_price_by_type(reverse_pair, PriceType.MidPrice)
+                if reverse_rate and reverse_rate > Decimal("0"):
+                    return Decimal("1") / reverse_rate
+
+        local_rate_source: Optional[RateOracle] = rate_source or RateOracle.get_instance()
+        rate: Decimal = local_rate_source.get_pair_rate(trading_pair)
+        if rate is None:
+            raise ValueError(f"Could not find the exchange rate for {trading_pair} using the rate source "
+                             f"{local_rate_source} (please verify it has been correctly configured)")
         return rate
 
     def fee_amount_in_token(
