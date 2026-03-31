@@ -527,9 +527,8 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         """
         Process user stream events from Centrifugo.
 
-        Handles both push format and direct format:
+        Handles both push format:
         - Push: {"push": {"channel": "futures-perp:order:123", "pub": {"data": {...}}}}
-        - Direct: {"channel": "futures-perp:order:123", "data": {...}}
         """
         # Handle Centrifugo push message format
         if isinstance(event_message, dict):
