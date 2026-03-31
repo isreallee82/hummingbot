@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import re
 from datetime import datetime, timezone
 from test.hummingbot.data_feed.candles_feed.test_candles_base import TestCandlesBase
@@ -305,13 +304,16 @@ class TestEvedexPerpetualCandles(TestCandlesBase):
         self.assertIn("market-data:last-candlestick-XRPUSD-15m", channels)
         self.assertEqual(2, len(channels))
 
-    def test_get_ws_access_token_from_env_and_cache(self):
+    def test_ws_access_token_from_constructor(self):
         self.data_feed._ws_access_token = None
-        with patch.dict(os.environ, {"EVEDEX_WS_ACCESS_TOKEN": "token"}):
-            token = self.data_feed._get_ws_access_token()
-            self.assertEqual("token", token)
+        self.assertIsNone(self.data_feed._ws_access_token)
 
-        self.assertEqual("token", self.data_feed._get_ws_access_token())
+        tokenized_data_feed = EvedexPerpetualCandles(
+            trading_pair=self.trading_pair,
+            interval=self.interval,
+            ws_access_token="token",
+        )
+        self.assertEqual("token", tokenized_data_feed._ws_access_token)
 
     def test_ws_subscription_payload_includes_access_token(self):
         self.data_feed._ws_access_token = "token"
@@ -320,8 +322,8 @@ class TestEvedexPerpetualCandles(TestCandlesBase):
 
     async def test_subscribe_channels_success_sends_requests(self):
         ws = AsyncMock()
-        with patch.object(self.data_feed, "_subscription_channels", return_value=["chan1", "chan2"]), \
-                patch.object(self.data_feed, "_get_ws_access_token", return_value="token"):
+        self.data_feed._ws_access_token = "token"
+        with patch.object(self.data_feed, "_subscription_channels", return_value=["chan1", "chan2"]):
             await self.data_feed._subscribe_channels(ws)
 
         self.assertEqual(2, ws.send.await_count)

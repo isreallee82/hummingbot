@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -21,12 +20,18 @@ class EvedexPerpetualCandles(CandlesBase):
             cls._logger = logging.getLogger(__name__)
         return cls._logger
 
-    def __init__(self, trading_pair: str, interval: str = "1m", max_records: int = 150):
+    def __init__(
+        self,
+        trading_pair: str,
+        interval: str = "1m",
+        max_records: int = 150,
+        ws_access_token: Optional[str] = None,
+    ):
         self._message_id = 0
         self._ping_task: Optional[asyncio.Task] = None
         self._ws_assistant: Optional[WSAssistant] = None
         self._instrument_resolved = False
-        self._ws_access_token: Optional[str] = None
+        self._ws_access_token: Optional[str] = ws_access_token
         super().__init__(trading_pair, interval, max_records)
 
     @property
@@ -227,14 +232,6 @@ class EvedexPerpetualCandles(CandlesBase):
             channels.append(f"market-data:last-candlestick-{self._ex_trading_pair.replace('-', '')}-{interval}")
         return list(dict.fromkeys(channels))
 
-    def _get_ws_access_token(self) -> Optional[str]:
-        if self._ws_access_token:
-            return self._ws_access_token
-        token = os.getenv("EVEDEX_WS_ACCESS_TOKEN") or os.getenv("EVEDEX_PERPETUAL_WS_ACCESS_TOKEN")
-        if token:
-            self._ws_access_token = token
-        return self._ws_access_token
-
     def ws_subscription_payload(self):
         interval = CONSTANTS.INTERVALS[self.interval]
         channel = f"market-data:last-candlestick-{self._ex_trading_pair}-{interval}"
@@ -246,14 +243,14 @@ class EvedexPerpetualCandles(CandlesBase):
             },
             "id": self._next_message_id(),
         }
-        access_token = self._get_ws_access_token()
+        access_token = self._ws_access_token
         if access_token:
             payload["subscribe"]["data"] = {"accessToken": access_token}
         return payload
 
     async def _subscribe_channels(self, ws: WSAssistant):
         try:
-            access_token = self._get_ws_access_token()
+            access_token = self._ws_access_token
             for channel in self._subscription_channels():
                 subscribe_payload = {
                     "subscribe": {
