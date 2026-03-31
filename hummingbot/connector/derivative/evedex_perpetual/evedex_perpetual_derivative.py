@@ -750,6 +750,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     fill_quote_amount=new_fill_amount * fill_price,
                     fee=self._trade_fee_for_update(tracked_order, order_data.get("fee", [])),
                 )
+
                 self._order_tracker.process_trade_update(trade_update)
                 should_refresh_balance = True
 
