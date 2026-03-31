@@ -576,6 +576,8 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             if raw_timestamp is None:
                 continue
             try:
+                if isinstance(raw_timestamp, (int, float, Decimal)):
+                    return float(raw_timestamp)
                 return datetime.datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00")).timestamp()
             except Exception:
                 continue

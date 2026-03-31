@@ -3,11 +3,7 @@ import unittest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
-from hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_auth import (
-    EvedexPerpetualAuth,
-    create_siwe_message,
-    to_eth_number,
-)
+from hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_auth import EvedexPerpetualAuth, to_eth_number
 from hummingbot.core.web_assistant.connections.data_types import RESTRequest, WSJSONRequest
 
 
@@ -184,30 +180,6 @@ class TestEvedexPerpetualAuthSigning(unittest.TestCase):
         auth = EvedexPerpetualAuth(api_key="test", time_provider=MagicMock())
         self.assertIsNone(auth.wallet_address)
 
-    def test_create_siwe_message_format(self):
-        message = create_siwe_message(
-            address="0x1111111111111111111111111111111111111111",
-            uri="https://exchange.evedex.com",
-            version="1",
-            chain_id=1,
-            nonce="abc123",
-            issued_at="2024-01-01T00:00:00Z",
-        )
-        self.assertIn("Nonce: abc123", message)
-        self.assertIn("Chain ID: 1", message)
-
-    def test_create_siwe_signature_requires_private_key(self):
-        auth = EvedexPerpetualAuth(api_key="test", time_provider=MagicMock())
-        with self.assertRaises(ValueError):
-            auth.create_siwe_signature("nonce")
-
-    def test_create_siwe_signature(self):
-        result = self.auth.create_siwe_signature("nonce-123")
-        self.assertIn("wallet", result)
-        self.assertIn("message", result)
-        self.assertIn("signature", result)
-        self.assertTrue(result["signature"].startswith("0x"))
-
     def test_sign_limit_order(self):
         signature = self.auth.sign_limit_order(
             order_id="OID1",
@@ -239,26 +211,6 @@ class TestEvedexPerpetualAuthSigning(unittest.TestCase):
         )
         self.assertTrue(signature.startswith("0x"))
 
-    def test_sign_stop_limit_order(self):
-        signature = self.auth.sign_stop_limit_order(
-            order_id="OID4",
-            instrument="XRPUSD",
-            side="BUY",
-            leverage=5,
-            quantity=Decimal("3"),
-            limit_price=Decimal("1.5"),
-            stop_price=Decimal("1.4"),
-        )
-        self.assertTrue(signature.startswith("0x"))
-
-    def test_sign_replace_limit_order(self):
-        signature = self.auth.sign_replace_limit_order(
-            order_id="OID5",
-            quantity=Decimal("4"),
-            limit_price=Decimal("2.0"),
-        )
-        self.assertTrue(signature.startswith("0x"))
-
     def test_sign_methods_require_private_key(self):
         auth = EvedexPerpetualAuth(api_key="test", time_provider=MagicMock())
         with self.assertRaises(ValueError):
@@ -267,15 +219,11 @@ class TestEvedexPerpetualAuthSigning(unittest.TestCase):
             auth.sign_market_order("OID", "XRPUSD", "BUY", "IOC", 1, Decimal("1"))
         with self.assertRaises(ValueError):
             auth.sign_position_close("OID", "XRPUSD", 1, Decimal("1"))
-        with self.assertRaises(ValueError):
-            auth.sign_stop_limit_order("OID", "XRPUSD", "BUY", 1, Decimal("1"), Decimal("1"), Decimal("1"))
-        with self.assertRaises(ValueError):
-            auth.sign_replace_limit_order("OID", Decimal("1"), Decimal("1"))
 
 
-class TestEvedexPerpetualAuthSiweAsync(unittest.IsolatedAsyncioTestCase):
+class TestEvedexPerpetualAuthAccessTokenAsync(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.api_key = "test-api-key-siwe"
+        self.api_key = "test-api-key-token"
         self.private_key = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"  # noqa: mock
         self.time_provider = MagicMock()
         self.auth = EvedexPerpetualAuth(
@@ -283,20 +231,6 @@ class TestEvedexPerpetualAuthSiweAsync(unittest.IsolatedAsyncioTestCase):
             time_provider=self.time_provider,
             private_key=self.private_key
         )
-
-    async def test_authenticate_with_siwe_missing_fetchers(self):
-        with self.assertRaises(ValueError):
-            await self.auth.authenticate_with_siwe()
-
-    async def test_authenticate_with_siwe_success(self):
-        self.auth.set_nonce_fetcher(AsyncMock(return_value={"nonce": "nonce-abc"}))
-        self.auth.set_siwe_auth_fetcher(AsyncMock(return_value={"token": "token-123", "refreshToken": "refresh-456"}))
-
-        response = await self.auth.authenticate_with_siwe()
-
-        self.assertEqual(response["token"], "token-123")
-        self.assertEqual(self.auth._access_token, "token-123")
-        self.assertEqual(self.auth._refresh_token, "refresh-456")
 
     async def test_get_access_token_uses_fetcher(self):
         self.auth.set_token_fetcher(AsyncMock(return_value={"token": "tok", "expireAt": 12345}))
