@@ -327,7 +327,14 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             }
         elif order_type == OrderType.MARKET:
             path_url = CONSTANTS.MARKET_ORDER_PATH_URL
-            cash_quantity = amount * price if price != s_decimal_NaN else amount
+            market_price = price
+            if market_price.is_nan():
+                market_price = await self.get_order_price(
+                    trading_pair=trading_pair,
+                    is_buy=trade_type is TradeType.BUY,
+                    amount=amount,
+                )
+            cash_quantity = amount if market_price.is_nan() else amount * market_price
             api_params = {
                 **base_params,
                 "side": side,
@@ -381,7 +388,11 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 limit_id=limit_id)
 
             exchange_order_id = str(order_result.get("id", evedex_order_id))
-            transact_time = order_result.get("createdAt", time.time())
+            transact_time = self._parse_exchange_timestamp(
+                order_result.get("createdAt"),
+                order_result.get("updatedAt"),
+                order_result.get("completedAt"),
+            )
 
         except IOError as e:
             error_description = str(e)
@@ -428,25 +439,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 if str(order_data.get("id", "")) != exchange_order_id:
                     continue
 
-                position_action = PositionAction.OPEN if order.trade_type is TradeType.BUY else PositionAction.CLOSE
-
-                fee_list = order_data.get("fee", [])
-                flat_fees = []
-                for fee_item in fee_list:
-                    coin = str(fee_item.get("coin", "USDT")).upper()
-                    if coin == "TOTAL":
-                        continue
-                    amount = Decimal(str(fee_item.get("quantity", 0)))
-                    if amount == 0:
-                        continue
-                    flat_fees.append(TokenAmount(amount=amount, token=coin))
-
-                fee = TradeFeeBase.new_perpetual_fee(
-                    fee_schema=self.trade_fee_schema(),
-                    position_action=position_action,
-                    percent_token="USDT",
-                    flat_fees=flat_fees
-                )
+                fee = self._trade_fee_for_update(order, order_data.get("fee", []))
 
                 total_quantity = Decimal(str(order_data.get("quantity", 0)))
                 unfilled_quantity = Decimal(str(order_data.get("unFilledQuantity", 0)))
@@ -1018,24 +1011,8 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                         order_id = str(fill.get("order"))
                         if order_id in order_map:
                             tracked_order: InFlightOrder = order_map.get(order_id)
-                            position_action = PositionAction.OPEN if tracked_order.trade_type is TradeType.BUY else PositionAction.CLOSE
-
-                            created_at = fill.get("createdAt")
-                            fill_timestamp = time.time()
-                            if created_at:
-                                try:
-                                    fill_timestamp = datetime.datetime.fromisoformat(
-                                        created_at.replace("Z", "+00:00")
-                                    ).timestamp()
-                                except Exception:
-                                    pass
-
-                            fee = TradeFeeBase.new_perpetual_fee(
-                                fee_schema=self.trade_fee_schema(),
-                                position_action=position_action,
-                                percent_token="USDT",
-                                flat_fees=[]
-                            )
+                            fill_timestamp = self._parse_exchange_timestamp(fill.get("createdAt"))
+                            fee = self._trade_fee_for_update(tracked_order, fill.get("fee", []))
 
                             trade_update: TradeUpdate = TradeUpdate(
                                 trade_id=str(fill.get("id")),
