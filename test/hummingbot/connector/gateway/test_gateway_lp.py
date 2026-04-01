@@ -12,7 +12,7 @@ from hummingbot.connector.gateway.gateway_lp import (
 from hummingbot.core.data_type.common import TradeType
 
 
-class GatewayLpTest(unittest.TestCase):
+class GatewayLpTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.client_config_map = MagicMock()
         self.connector = GatewayLp(
@@ -22,12 +22,17 @@ class GatewayLpTest(unittest.TestCase):
             address="0xwallet123",
             trading_pairs=["ETH-USDC"]
         )
-        self.connector._gateway_instance = MagicMock()
+        # Create a consistent mock gateway instance
+        self.mock_gateway = MagicMock()
+        self.connector._get_gateway_instance = MagicMock(return_value=self.mock_gateway)
 
     @patch('hummingbot.connector.gateway.gateway_lp.get_connector_type')
     async def test_get_pool_info_amm(self, mock_connector_type):
         """Test getting AMM pool info"""
         mock_connector_type.return_value = ConnectorType.AMM
+
+        # Mock get_pool to return pool address
+        self.mock_gateway.get_pool = AsyncMock(return_value={"address": "0xpool123"})
 
         mock_response = {
             "address": "0xpool123",
@@ -39,7 +44,7 @@ class GatewayLpTest(unittest.TestCase):
             "quoteTokenAmount": 1500000.0
         }
 
-        self.connector._get_gateway_instance().pool_info = AsyncMock(return_value=mock_response)
+        self.mock_gateway.pool_info = AsyncMock(return_value=mock_response)
 
         pool_info = await self.connector.get_pool_info("ETH-USDC")
 
@@ -53,6 +58,9 @@ class GatewayLpTest(unittest.TestCase):
         """Test getting CLMM pool info"""
         mock_connector_type.return_value = ConnectorType.CLMM
 
+        # Mock get_pool to return pool address
+        self.mock_gateway.get_pool = AsyncMock(return_value={"address": "0xpool123"})
+
         mock_response = {
             "address": "0xpool123",
             "baseTokenAddress": "0xeth",
@@ -65,7 +73,7 @@ class GatewayLpTest(unittest.TestCase):
             "activeBinId": 1000
         }
 
-        self.connector._get_gateway_instance().pool_info = AsyncMock(return_value=mock_response)
+        self.mock_gateway.pool_info = AsyncMock(return_value=mock_response)
 
         pool_info = await self.connector.get_pool_info("ETH-USDC")
 
@@ -99,8 +107,14 @@ class GatewayLpTest(unittest.TestCase):
             "price": 1500.0
         }
 
-        self.connector._get_gateway_instance().pool_info = AsyncMock(return_value=pool_response)
-        self.connector._get_gateway_instance().amm_position_info = AsyncMock(return_value=position_response)
+        self.mock_gateway.pool_info = AsyncMock(return_value=pool_response)
+        self.mock_gateway.amm_position_info = AsyncMock(return_value=position_response)
+
+        # Mock get_token_by_address to return token symbols
+        self.connector.get_token_by_address = MagicMock(side_effect=lambda addr: {
+            "0xeth": {"symbol": "ETH"},
+            "0xusdc": {"symbol": "USDC"}
+        }.get(addr))
 
         positions = await self.connector.get_user_positions(pool_address="0xpool1")
 
@@ -135,11 +149,13 @@ class GatewayLpTest(unittest.TestCase):
             ]
         }
 
-        self.connector._get_gateway_instance().clmm_positions_owned = AsyncMock(return_value=mock_response)
-        self.connector.get_token_info = MagicMock(side_effect=[
-            {"symbol": "ETH"},
-            {"symbol": "USDC"}
-        ])
+        self.mock_gateway.clmm_positions_owned = AsyncMock(return_value=mock_response)
+
+        # Mock get_token_by_address to return token symbols
+        self.connector.get_token_by_address = MagicMock(side_effect=lambda addr: {
+            "0xeth": {"symbol": "ETH"},
+            "0xusdc": {"symbol": "USDC"}
+        }.get(addr))
 
         positions = await self.connector.get_user_positions()
 
@@ -234,7 +250,7 @@ class GatewayLpTest(unittest.TestCase):
             "price": 1500.0
         }
 
-        self.connector._get_gateway_instance().clmm_position_info = AsyncMock(return_value=mock_response)
+        self.mock_gateway.clmm_position_info = AsyncMock(return_value=mock_response)
 
         position_info = await self.connector.get_position_info("ETH-USDC", "0xpos123")
 
@@ -248,10 +264,13 @@ class GatewayLpTest(unittest.TestCase):
 
         mock_response = {
             "signature": "0xtx123",
-            "fee": 0.001
+            "fee": 0.001,
+            "data": {}
         }
 
-        self.connector._get_gateway_instance().clmm_open_position = AsyncMock(return_value=mock_response)
+        # Mock get_pool for pool address lookup
+        self.mock_gateway.get_pool = AsyncMock(return_value={"address": "0xpool123"})
+        self.mock_gateway.clmm_open_position = AsyncMock(return_value=mock_response)
         self.connector.start_tracking_order = MagicMock()
         self.connector.update_order_from_hash = MagicMock()
 
@@ -271,9 +290,12 @@ class GatewayLpTest(unittest.TestCase):
             "test-order-123", "ETH-USDC", "0xtx123", mock_response
         )
 
-    async def test_get_user_positions_error_handling(self):
+    @patch('hummingbot.connector.gateway.gateway_lp.get_connector_type')
+    async def test_get_user_positions_error_handling(self, mock_connector_type):
         """Test error handling in get_user_positions"""
-        self.connector._get_gateway_instance().clmm_positions_owned = AsyncMock(
+        mock_connector_type.return_value = ConnectorType.CLMM
+
+        self.mock_gateway.clmm_positions_owned = AsyncMock(
             side_effect=Exception("API Error")
         )
 

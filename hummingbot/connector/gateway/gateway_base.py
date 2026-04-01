@@ -5,7 +5,8 @@ import logging
 import re
 import time
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Set, Union, cast
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union, cast
 
 from hummingbot.client.config.client_config_map import GatewayConfigMap
 from hummingbot.connector.budget_checker import BudgetChecker
@@ -14,7 +15,7 @@ from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.gateway.common_types import TransactionStatus
 from hummingbot.connector.gateway.gateway_in_flight_order import GatewayInFlightOrder
 from hummingbot.core.data_type.cancellation_result import CancellationResult
-from hummingbot.core.data_type.common import OrderType, TradeType
+from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState, OrderUpdate, TradeFeeBase, TradeUpdate
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
@@ -27,6 +28,37 @@ from hummingbot.logger import HummingbotLogger
 
 s_logger = None
 s_decimal_0 = Decimal("0")
+
+T = TypeVar('T')
+
+
+class RetryAction(Enum):
+    """Action returned by retry logic to guide caller behavior."""
+    RETRY = "RETRY"           # Timeout error, retry operation (increment counter)
+    STOP = "STOP"             # Max retries reached, stop
+    FAIL_IMMEDIATE = "FAIL"   # Non-retryable error, stop immediately
+
+
+# Gateway error codes that are NOT retryable
+NON_RETRYABLE_ERROR_CODES = {
+    "SIMULATION_FAILED",      # Transaction would fail on-chain
+    "INSUFFICIENT_BALANCE",   # Not enough funds
+    "SLIPPAGE_EXCEEDED",      # Price moved beyond tolerance
+    "INVALID_PARAMS",         # Bad request parameters
+    "NO_ROUTE_FOUND",         # No swap route available (can retry with flipped direction)
+}
+
+# The only retryable error code
+RETRYABLE_ERROR_CODE = "TRANSACTION_TIMEOUT"
+
+
+def extract_error_code(error_str: str) -> Optional[str]:
+    """Extract Gateway error code from error string.
+
+    Gateway formats errors as: "Gateway error: ... [code: ERROR_CODE]"
+    """
+    match = re.search(r'\[code:\s*(\w+)\]', error_str)
+    return match.group(1) if match else None
 
 
 class GatewayBase(ConnectorBase):
@@ -309,6 +341,21 @@ class GatewayBase(ConnectorBase):
         base, quote = trading_pair.split("-")
         return max(self._amount_quantum_dict[base], self._amount_quantum_dict[quote])
 
+    def get_price_by_type(self, trading_pair: str, price_type: PriceType) -> Decimal:
+        """
+        Gets price by type for gateway connectors.
+
+        For AMM connectors without order books, returns NaN.
+        Callers should handle NaN by fetching price from gateway or using fallback.
+
+        :param trading_pair: The market trading pair
+        :param price_type: The price type (MidPrice, BestBid, BestAsk, etc.)
+        :returns: The price or NaN if not available
+        """
+        # Gateway AMM connectors don't maintain order books
+        # Return NaN to signal that price should be fetched from gateway
+        return Decimal("nan")
+
     def get_token_info(self, token_symbol: str) -> Optional[Dict[str, Any]]:
         """Get token information for a given symbol."""
         return self._token_data.get(token_symbol)
@@ -469,6 +516,13 @@ class GatewayBase(ConnectorBase):
         """
         await self.update_balances()
 
+    async def _update_order_status(self):
+        """
+        Update status for all in-flight orders.
+        This is the parameterless wrapper matching exchange connector interface.
+        """
+        await self.update_order_status(self.gateway_orders)
+
     async def _initialize_trading_pair_symbol_map(self):
         """
         Initialize chain/network info for gateway connectors.
@@ -517,6 +571,134 @@ class GatewayBase(ConnectorBase):
         """
         gateway_instance = GatewayHttpClient.get_instance(self._gateway_config)
         return gateway_instance
+
+    async def _execute_with_retry(
+        self,
+        operation: Callable[[], T],
+        operation_name: str,
+        max_retries: int = 10,
+    ) -> T:
+        """
+        Execute a gateway operation with retry logic for timeout errors.
+
+        Retries on:
+        - TRANSACTION_TIMEOUT errors (exception from Gateway)
+        - Pending/unconfirmed transactions (status != 1 in response)
+
+        Does NOT retry on: SIMULATION_FAILED, INSUFFICIENT_BALANCE, etc.
+
+        :param operation: Async callable that performs the gateway operation
+        :param operation_name: Description for logging (e.g., "execute swap")
+        :param max_retries: Maximum number of retry attempts for timeout errors
+        :return: Result from the operation
+        :raises: Original exception if non-retryable or max retries exceeded
+        """
+        current_retries = 0
+
+        while True:
+            try:
+                result = await operation()
+
+                # Check if result is a dict with status field (transaction response)
+                # status: 1 = CONFIRMED, 0 = PENDING, -1 = NOT_CONFIRMED
+                if isinstance(result, dict) and "status" in result:
+                    status = result.get("status")
+                    signature = result.get("signature", "unknown")
+
+                    if status == 1:
+                        # Transaction confirmed - success
+                        return result
+                    elif status == -1:
+                        # Transaction not confirmed (failed on-chain) - don't retry
+                        self.logger().error(
+                            f"{operation_name} FAILED: Transaction {signature} not confirmed on-chain."
+                        )
+                        raise Exception(f"Transaction {signature} not confirmed on-chain")
+                    elif status == 0:
+                        # Transaction pending - retry (may still confirm)
+                        current_retries += 1
+                        if current_retries >= max_retries:
+                            self.logger().error(
+                                f"{operation_name} FAILED after {max_retries} retries. "
+                                f"Transaction {signature} still pending. Manual intervention required."
+                            )
+                            raise Exception(f"Transaction {signature} pending after {max_retries} retries [code: TRANSACTION_TIMEOUT]")
+
+                        self.logger().warning(
+                            f"{operation_name} transaction pending (retry {current_retries}/{max_retries}). "
+                            f"Signature: {signature}. Retrying..."
+                        )
+                        continue  # Retry
+                    else:
+                        # Unknown status, return as-is
+                        return result
+                else:
+                    # No status field - return result as-is
+                    return result
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                action = self._classify_error(e, operation_name, current_retries, max_retries)
+
+                if action == RetryAction.FAIL_IMMEDIATE:
+                    raise
+                elif action == RetryAction.STOP:
+                    raise
+                elif action == RetryAction.RETRY:
+                    current_retries += 1
+                    self.logger().warning(
+                        f"{operation_name} timeout (retry {current_retries}/{max_retries}). "
+                        "Chain may be congested. Retrying..."
+                    )
+                    # Continue to next iteration
+
+    def _classify_error(
+        self,
+        error: Exception,
+        operation_name: str,
+        current_retries: int,
+        max_retries: int,
+    ) -> RetryAction:
+        """
+        Classify an error and determine the appropriate retry action.
+
+        :param error: The exception that occurred
+        :param operation_name: Description of the operation for logging
+        :param current_retries: Current retry count
+        :param max_retries: Maximum retries allowed
+        :return: RetryAction indicating what to do
+        """
+        error_str = str(error)
+        error_code = extract_error_code(error_str)
+
+        # Check for non-retryable errors
+        if error_code and error_code in NON_RETRYABLE_ERROR_CODES:
+            self.logger().error(
+                f"{operation_name} FAILED: {error}. "
+                f"Error code {error_code} is not retryable."
+            )
+            return RetryAction.FAIL_IMMEDIATE
+
+        # Check for timeout (retryable)
+        is_timeout = error_code == RETRYABLE_ERROR_CODE or "TRANSACTION_TIMEOUT" in error_str
+
+        if not is_timeout:
+            # No error code and not a timeout - fail immediately
+            self.logger().error(
+                f"{operation_name} FAILED: {error}. Error is not retryable."
+            )
+            return RetryAction.FAIL_IMMEDIATE
+
+        # Timeout error - check if we can retry
+        if current_retries >= max_retries:
+            self.logger().error(
+                f"{operation_name} FAILED after {max_retries} timeout retries. "
+                f"Manual intervention required. Error: {error}"
+            )
+            return RetryAction.STOP
+
+        return RetryAction.RETRY
 
     def start_tracking_order(self,
                              order_id: str,
@@ -660,10 +842,15 @@ class GatewayBase(ConnectorBase):
                 )
 
     def process_transaction_confirmation_update(self, tracked_order: GatewayInFlightOrder, fee: Decimal):
-        fee_asset = tracked_order.fee_asset if tracked_order.fee_asset else self._native_currency
+        # Handle both GatewayInFlightOrder (has fee_asset) and base InFlightOrder (doesn't)
+        fee_asset = getattr(tracked_order, 'fee_asset', None) or self._native_currency
         trade_fee: TradeFeeBase = AddedToCostTradeFee(
             flat_fees=[TokenAmount(fee_asset, fee)]
         )
+
+        # Handle None values for price/amount
+        fill_price = tracked_order.price or Decimal("0")
+        fill_amount = tracked_order.amount or Decimal("0")
 
         trade_update: TradeUpdate = TradeUpdate(
             trade_id=tracked_order.exchange_order_id,
@@ -671,9 +858,9 @@ class GatewayBase(ConnectorBase):
             exchange_order_id=tracked_order.exchange_order_id,
             trading_pair=tracked_order.trading_pair,
             fill_timestamp=self.current_timestamp,
-            fill_price=tracked_order.price,
-            fill_base_amount=tracked_order.amount,
-            fill_quote_amount=tracked_order.amount * tracked_order.price,
+            fill_price=fill_price,
+            fill_base_amount=fill_amount,
+            fill_quote_amount=fill_amount * fill_price,
             fee=trade_fee
         )
 

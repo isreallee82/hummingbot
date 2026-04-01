@@ -248,8 +248,8 @@ class GatewayLp(GatewaySwap):
         quote_amount: Decimal = Decimal("0"),
         mid_price: Decimal = Decimal("0"),
         position_rent: Decimal = Decimal("0"),
-    ):
-        """Trigger RangePositionLiquidityAddedEvent"""
+    ) -> RangePositionLiquidityAddedEvent:
+        """Trigger RangePositionLiquidityAddedEvent and return the event."""
         event = RangePositionLiquidityAddedEvent(
             timestamp=self.current_timestamp,
             order_id=order_id,
@@ -271,6 +271,7 @@ class GatewayLp(GatewaySwap):
         )
         self.trigger_event(MarketEvent.RangePositionLiquidityAdded, event)
         self.logger().info(f"Triggered RangePositionLiquidityAddedEvent for order {order_id}")
+        return event
 
     def _trigger_remove_liquidity_event(
         self,
@@ -289,8 +290,8 @@ class GatewayLp(GatewaySwap):
         base_fee: Decimal = Decimal("0"),
         quote_fee: Decimal = Decimal("0"),
         position_rent_refunded: Decimal = Decimal("0"),
-    ):
-        """Trigger RangePositionLiquidityRemovedEvent"""
+    ) -> RangePositionLiquidityRemovedEvent:
+        """Trigger RangePositionLiquidityRemovedEvent and return the event."""
         event = RangePositionLiquidityRemovedEvent(
             timestamp=self.current_timestamp,
             order_id=order_id,
@@ -312,6 +313,7 @@ class GatewayLp(GatewaySwap):
         )
         self.trigger_event(MarketEvent.RangePositionLiquidityRemoved, event)
         self.logger().info(f"Triggered RangePositionLiquidityRemovedEvent for order {order_id}")
+        return event
 
     @async_ttl_cache(ttl=300, maxsize=10)
     async def get_pool_address(self, trading_pair: str) -> Optional[str]:
@@ -500,6 +502,7 @@ class GatewayLp(GatewaySwap):
         slippage_pct: Optional[float] = None,
         pool_address: Optional[str] = None,
         extra_params: Optional[Dict[str, Any]] = None,
+        max_retries: int = 10,
     ):
         """
         Opens a concentrated liquidity position with explicit price range or calculated from percentages.
@@ -517,6 +520,7 @@ class GatewayLp(GatewaySwap):
         :param slippage_pct: Maximum allowed slippage percentage
         :param pool_address: Explicit pool address (optional, will lookup by trading_pair if not provided)
         :param extra_params: Optional connector-specific parameters (e.g., {"strategyType": 0} for Meteora)
+        :param max_retries: Maximum number of retry attempts for timeout errors
         :return: Response from the gateway API
         """
         # Check connector type is CLMM
@@ -535,13 +539,18 @@ class GatewayLp(GatewaySwap):
         quote_amount_in_base = (quote_token_amount or 0.0) / price if price > 0 else 0.0
         total_amount_in_base = base_amount + quote_amount_in_base
 
-        # Start tracking order with calculated amount
-        self.start_tracking_order(order_id=order_id,
-                                  trading_pair=trading_pair,
-                                  trade_type=trade_type,
-                                  price=Decimal(str(price)),
-                                  amount=Decimal(str(total_amount_in_base)),
-                                  order_type=OrderType.AMM_ADD)
+        # Check if order is already being tracked (prevents duplicate tracking on retry)
+        existing_order = self._order_tracker.fetch_order(order_id)
+        if existing_order is not None:
+            self.logger().debug(f"Order {order_id} already tracked, skipping start_tracking_order")
+        else:
+            # Start tracking order with calculated amount
+            self.start_tracking_order(order_id=order_id,
+                                      trading_pair=trading_pair,
+                                      trade_type=trade_type,
+                                      price=Decimal(str(price)),
+                                      amount=Decimal(str(total_amount_in_base)),
+                                      order_type=OrderType.AMM_ADD)
 
         # Determine position price range
         # Priority: explicit prices > width percentages
@@ -572,9 +581,9 @@ class GatewayLp(GatewaySwap):
             "fee_tier": pool_address,  # Use pool address as fee tier identifier
         }
 
-        # Open position
-        try:
-            transaction_result = await self._get_gateway_instance().clmm_open_position(
+        # Define the gateway operation for retry wrapper
+        async def execute_open_position() -> Dict[str, Any]:
+            return await self._get_gateway_instance().clmm_open_position(
                 connector=self.connector_name,
                 network=self.network,
                 wallet_address=self.address,
@@ -585,6 +594,14 @@ class GatewayLp(GatewaySwap):
                 quote_token_amount=quote_token_amount,
                 slippage_pct=slippage_pct,
                 extra_params=extra_params
+            )
+
+        # Open position with retry logic
+        try:
+            transaction_result = await self._execute_with_retry(
+                operation=execute_open_position,
+                operation_name=f"CLMM open position on {trading_pair}",
+                max_retries=max_retries,
             )
             transaction_hash: Optional[str] = transaction_result.get("signature")
             if transaction_hash is not None and transaction_hash != "":
@@ -608,7 +625,7 @@ class GatewayLp(GatewaySwap):
             raise
         except Exception as e:
             self._handle_operation_failure(order_id, trading_pair, "opening CLMM position", e)
-            raise  # Re-raise so executor can catch and retry if needed
+            raise  # Re-raise so executor can handle failure state
 
     async def _amm_add_liquidity(
         self,
@@ -727,6 +744,7 @@ class GatewayLp(GatewaySwap):
         trading_pair: str,
         position_address: str,
         fail_silently: bool = False,
+        max_retries: int = 10,
     ):
         """
         Closes a concentrated liquidity position for the given position address.
@@ -736,16 +754,22 @@ class GatewayLp(GatewaySwap):
         :param trading_pair: The trading pair for the position
         :param position_address: The address of the position to close
         :param fail_silently: Whether to fail silently on error
+        :param max_retries: Maximum number of retry attempts for timeout errors
         """
         # Check connector type is CLMM
         if get_connector_type(self.connector_name) != ConnectorType.CLMM:
             raise ValueError(f"Connector {self.connector_name} is not of type CLMM.")
 
-        # Start tracking order
-        self.start_tracking_order(order_id=order_id,
-                                  trading_pair=trading_pair,
-                                  trade_type=trade_type,
-                                  order_type=OrderType.AMM_REMOVE)
+        # Check if order is already being tracked (prevents duplicate tracking on retry)
+        existing_order = self._order_tracker.fetch_order(order_id)
+        if existing_order is not None:
+            self.logger().debug(f"Order {order_id} already tracked, skipping start_tracking_order")
+        else:
+            # Start tracking order
+            self.start_tracking_order(order_id=order_id,
+                                      trading_pair=trading_pair,
+                                      trade_type=trade_type,
+                                      order_type=OrderType.AMM_REMOVE)
 
         # Store metadata for event triggering (will be enriched with response data)
         self._lp_orders_metadata[order_id] = {
@@ -753,13 +777,21 @@ class GatewayLp(GatewaySwap):
             "position_address": position_address,
         }
 
-        try:
-            transaction_result = await self._get_gateway_instance().clmm_close_position(
+        # Define the gateway operation for retry wrapper
+        async def execute_close_position() -> Dict[str, Any]:
+            return await self._get_gateway_instance().clmm_close_position(
                 connector=self.connector_name,
                 network=self.network,
                 wallet_address=self.address,
                 position_address=position_address,
                 fail_silently=fail_silently
+            )
+
+        try:
+            transaction_result = await self._execute_with_retry(
+                operation=execute_close_position,
+                operation_name=f"CLMM close position {position_address}",
+                max_retries=max_retries,
             )
             transaction_hash: Optional[str] = transaction_result.get("signature")
             if transaction_hash is not None and transaction_hash != "":
@@ -784,7 +816,7 @@ class GatewayLp(GatewaySwap):
             raise
         except Exception as e:
             self._handle_operation_failure(order_id, trading_pair, "closing CLMM position", e)
-            raise  # Re-raise so executor can catch and retry if needed
+            raise  # Re-raise so executor can handle failure state
 
     async def _clmm_remove_liquidity(
         self,
@@ -809,11 +841,16 @@ class GatewayLp(GatewaySwap):
         if get_connector_type(self.connector_name) != ConnectorType.CLMM:
             raise ValueError(f"Connector {self.connector_name} is not of type CLMM.")
 
-        # Start tracking order
-        self.start_tracking_order(order_id=order_id,
-                                  trading_pair=trading_pair,
-                                  trade_type=trade_type,
-                                  order_type=OrderType.AMM_REMOVE)
+        # Check if order is already being tracked (prevents duplicate tracking on retry)
+        existing_order = self._order_tracker.fetch_order(order_id)
+        if existing_order is not None:
+            self.logger().debug(f"Order {order_id} already tracked, skipping start_tracking_order")
+        else:
+            # Start tracking order
+            self.start_tracking_order(order_id=order_id,
+                                      trading_pair=trading_pair,
+                                      trade_type=trade_type,
+                                      order_type=OrderType.AMM_REMOVE)
 
         # Store metadata for event triggering (will be enriched with response data)
         self._lp_orders_metadata[order_id] = {
