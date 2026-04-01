@@ -19,6 +19,7 @@ class LPExecutorStates(Enum):
     OUT_OF_RANGE = "OUT_OF_RANGE"          # Position active, price outside bounds
     CLOSING = "CLOSING"                    # remove_liquidity submitted, waiting
     COMPLETE = "COMPLETE"                  # Position closed permanently
+    FAILED = "FAILED"                      # Max retries reached, manual intervention required
 
 
 class LPExecutorConfig(ExecutorConfigBase):
@@ -27,15 +28,22 @@ class LPExecutorConfig(ExecutorConfigBase):
 
     - Creates position based on config bounds and amounts
     - Monitors position state (IN_RANGE, OUT_OF_RANGE)
-    - Auto-closes after auto_close_above/below_range_seconds if configured
+    - Closes when price exceeds upper_limit_price or lower_limit_price
     - Closes position when executor stops (unless keep_position=True)
     """
     type: Literal["lp_executor"] = "lp_executor"
 
-    # Market and pool identification (aligned with other executors)
+    # Market and pool identification
     connector_name: str
-    trading_pair: str
     pool_address: str
+
+    # Optional - resolved from pool_address if not provided
+    trading_pair: Optional[str] = None
+
+    # Network specification (e.g., "solana-mainnet-beta", "ethereum-base")
+    # Format: "{chain}-{network}" - same convention as swap_executor
+    # Optional - uses default network from gateway config if not provided
+    network: Optional[str] = None
 
     # Position price bounds
     lower_price: Decimal
@@ -48,22 +56,18 @@ class LPExecutorConfig(ExecutorConfigBase):
     # Position side: 0=BOTH, 1=BUY (quote only), 2=SELL (base only)
     side: int = 0
 
-    # Offset from current price to ensure single-sided positions start out-of-range
-    # Used when shifting bounds after price moves (e.g., 0.01 = 0.01%)
-    position_offset_pct: Decimal = Decimal("0.01")
-
-    # Auto-close: close position after being out of range for this many seconds
-    # None = no auto-close - position stays open indefinitely until manually closed or executor stopped
-    # above_range: closes when price >= upper_price for this duration
-    # below_range: closes when price <= lower_price for this duration
-    auto_close_above_range_seconds: Optional[int] = None
-    auto_close_below_range_seconds: Optional[int] = None
+    # Limit prices: close position when price exceeds these limits
+    # Works like grid executor - closes when price goes beyond the limit
+    # upper_limit_price: close when price >= this value (None = no upper limit)
+    # lower_limit_price: close when price <= this value (None = no lower limit)
+    upper_limit_price: Optional[Decimal] = None
+    lower_limit_price: Optional[Decimal] = None
 
     # Connector-specific params
     extra_params: Optional[Dict] = None  # e.g., {"strategyType": 0} for Meteora
 
-    # Early stop behavior
-    keep_position: bool = False  # If True, don't close position on executor stop
+    # Position tracking behavior
+    keep_position: bool = True  # If True, store net token change as spot position when closed
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -90,6 +94,10 @@ class LPExecutorState(BaseModel):
     position_rent: Decimal = Decimal("0")  # SOL rent paid to create position (ADD only)
     position_rent_refunded: Decimal = Decimal("0")  # SOL rent refunded on close (REMOVE only)
     tx_fee: Decimal = Decimal("0")  # Transaction fee paid (both ADD and REMOVE)
+
+    # Transaction hashes for tracking
+    open_tx_hash: Optional[str] = None  # Transaction hash for ADD
+    close_tx_hash: Optional[str] = None  # Transaction hash for REMOVE
 
     # Order tracking
     active_open_order: Optional[TrackedOrder] = None
@@ -123,9 +131,9 @@ class LPExecutorState(BaseModel):
             current_price: Current market price
             current_time: Current timestamp (for tracking _out_of_range_since)
         """
-        # If already complete, closing, or opening (waiting for retry), preserve state
+        # If already complete, closing, failed, or opening (waiting for retry), preserve state
         # These states are managed explicitly by the executor, don't overwrite them
-        if self.state in (LPExecutorStates.COMPLETE, LPExecutorStates.CLOSING):
+        if self.state in (LPExecutorStates.COMPLETE, LPExecutorStates.CLOSING, LPExecutorStates.FAILED):
             return
 
         # Preserve OPENING state when no position exists (handles max_retries case)

@@ -16,6 +16,7 @@ class TestLPExecutorStates(TestCase):
         self.assertEqual(LPExecutorStates.OUT_OF_RANGE.value, "OUT_OF_RANGE")
         self.assertEqual(LPExecutorStates.CLOSING.value, "CLOSING")
         self.assertEqual(LPExecutorStates.COMPLETE.value, "COMPLETE")
+        self.assertEqual(LPExecutorStates.FAILED.value, "FAILED")
 
     def test_states_enum_names(self):
         """Verify all state enum names"""
@@ -25,6 +26,7 @@ class TestLPExecutorStates(TestCase):
         self.assertEqual(LPExecutorStates.OUT_OF_RANGE.name, "OUT_OF_RANGE")
         self.assertEqual(LPExecutorStates.CLOSING.name, "CLOSING")
         self.assertEqual(LPExecutorStates.COMPLETE.name, "COMPLETE")
+        self.assertEqual(LPExecutorStates.FAILED.name, "FAILED")
 
 
 class TestLPExecutorConfig(TestCase):
@@ -50,10 +52,10 @@ class TestLPExecutorConfig(TestCase):
         self.assertEqual(config.base_amount, Decimal("0"))
         self.assertEqual(config.quote_amount, Decimal("0"))
         self.assertEqual(config.side, 0)
-        self.assertIsNone(config.auto_close_above_range_seconds)
-        self.assertIsNone(config.auto_close_below_range_seconds)
+        self.assertIsNone(config.upper_limit_price)
+        self.assertIsNone(config.lower_limit_price)
         self.assertIsNone(config.extra_params)
-        self.assertFalse(config.keep_position)
+        self.assertTrue(config.keep_position)
 
     def test_config_creation_full(self):
         """Test creating config with all fields"""
@@ -68,16 +70,16 @@ class TestLPExecutorConfig(TestCase):
             base_amount=Decimal("1.5"),
             quote_amount=Decimal("150"),
             side=1,
-            auto_close_above_range_seconds=300,
-            auto_close_below_range_seconds=600,
+            upper_limit_price=Decimal("120"),
+            lower_limit_price=Decimal("80"),
             extra_params={"strategyType": 0},
             keep_position=True,
         )
         self.assertEqual(config.base_amount, Decimal("1.5"))
         self.assertEqual(config.quote_amount, Decimal("150"))
         self.assertEqual(config.side, 1)
-        self.assertEqual(config.auto_close_above_range_seconds, 300)
-        self.assertEqual(config.auto_close_below_range_seconds, 600)
+        self.assertEqual(config.upper_limit_price, Decimal("120"))
+        self.assertEqual(config.lower_limit_price, Decimal("80"))
         self.assertEqual(config.extra_params, {"strategyType": 0})
         self.assertTrue(config.keep_position)
 
@@ -163,6 +165,12 @@ class TestLPExecutorState(TestCase):
         state = LPExecutorState(state=LPExecutorStates.CLOSING)
         state.update_state(Decimal("100"), 1000.0)
         self.assertEqual(state.state, LPExecutorStates.CLOSING)
+
+    def test_update_state_failed_preserved(self):
+        """Test that FAILED state is preserved"""
+        state = LPExecutorState(state=LPExecutorStates.FAILED)
+        state.update_state(Decimal("100"), 1000.0)
+        self.assertEqual(state.state, LPExecutorStates.FAILED)
 
     def test_update_state_with_close_order(self):
         """Test state becomes CLOSING when close order active"""

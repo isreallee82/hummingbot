@@ -1,16 +1,18 @@
-import asyncio
 import logging
+from dataclasses import asdict
 from decimal import Decimal
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from hummingbot.connector.gateway.gateway_lp import AMMPoolInfo, CLMMPoolInfo
 from hummingbot.connector.utils import split_hb_trading_pair
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
+from hummingbot.core.event.events import RangePositionLiquidityAddedEvent, RangePositionLiquidityRemovedEvent
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
+from hummingbot.strategy_v2.executors.gateway_utils import validate_and_normalize_connector
 from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig, LPExecutorState, LPExecutorStates
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
@@ -50,17 +52,64 @@ class LPExecutor(ExecutorBase):
         connectors = [config.connector_name]
         super().__init__(strategy, connectors, config, update_interval)
         self.config: LPExecutorConfig = config
+        self._max_retries = max_retries
         self.lp_position_state = LPExecutorState()
         self._pool_info: Optional[Union[CLMMPoolInfo, AMMPoolInfo]] = None
         self._current_price: Optional[Decimal] = None  # Updated from pool_info or position_info
-        self._max_retries = max_retries
-        self._current_retries = 0
-        self._max_retries_reached = False  # True when max retries reached, requires intervention
-        self._last_attempted_signature: Optional[str] = None  # Track for retry logging
+        # Position tracking - store LP position for position aggregation when keep_position=True
+        self._held_position_orders: List[Dict] = []
+
+    def _validate_and_normalize_connector(self, connector_name: str) -> Optional[str]:
+        """
+        Validate and normalize connector name for LP executor.
+
+        - If connector already has /clmm suffix, validates it exists
+        - If connector is base name only (e.g., "meteora"), auto-appends /clmm
+        - Uses GATEWAY_CONNECTORS list populated at gateway startup
+
+        Args:
+            connector_name: Connector name from config
+
+        Returns:
+            Normalized connector name, or None if validation failed (executor stopped)
+        """
+        normalized, success = validate_and_normalize_connector(
+            connector_name, "clmm", self.logger().error
+        )
+        if not success:
+            self.close_type = CloseType.FAILED
+            self.stop()
+            return None
+        return normalized
 
     async def on_start(self):
         """Start executor - will create position in first control_task"""
         await super().on_start()
+
+        # Validate and normalize connector name (auto-append /clmm if needed)
+        normalized_connector = self._validate_and_normalize_connector(self.config.connector_name)
+        if normalized_connector is None:
+            # Validation failed - executor already stopped
+            return
+
+        if normalized_connector != self.config.connector_name:
+            self.logger().info(f"Normalized connector: {self.config.connector_name} -> {normalized_connector}")
+            object.__setattr__(self.config, 'connector_name', normalized_connector)
+
+        # Resolve trading_pair from pool_address if not provided
+        if not self.config.trading_pair:
+            connector = self.connectors.get(self.config.connector_name)
+            if connector:
+                result = await connector.resolve_trading_pair_from_pool(self.config.pool_address)
+                if result and result.get("trading_pair"):
+                    # Update config with resolved trading pair
+                    object.__setattr__(self.config, 'trading_pair', result["trading_pair"])
+                    self.logger().info(f"Resolved trading pair from pool: {self.config.trading_pair}")
+                else:
+                    self.logger().error(f"Failed to resolve trading pair from pool {self.config.pool_address}")
+                    self.close_type = CloseType.FAILED
+                    self.stop()
+                    return
 
     async def control_task(self):
         """Main control loop - simple state machine with direct await operations"""
@@ -84,16 +133,21 @@ class LPExecutor(ExecutorBase):
                 await self._create_position()
 
             case LPExecutorStates.OPENING:
-                # Position creation in progress or retrying after failure
-                if not self._max_retries_reached:
-                    await self._create_position()
-                # If max retries reached, stay in OPENING state waiting for intervention
+                # Position creation in progress - connector handles retry
+                # If we're still in OPENING state, the previous attempt failed
+                # and we should retry (connector will handle max retries)
+                await self._create_position()
 
             case LPExecutorStates.CLOSING:
-                # Position close in progress or retrying after failure
-                if not self._max_retries_reached:
-                    await self._close_position()
-                # If max retries reached, stay in CLOSING state waiting for intervention
+                # Position close in progress - connector handles retry
+                # If we're still in CLOSING state, the previous attempt failed
+                # and we should retry (connector will handle max retries)
+                await self._close_position()
+
+            case LPExecutorStates.FAILED:
+                # Max retries reached - stop executor with failure
+                self.close_type = CloseType.FAILED
+                self.stop()
 
             case LPExecutorStates.IN_RANGE:
                 # Position active and in range - just monitor
@@ -101,24 +155,27 @@ class LPExecutor(ExecutorBase):
 
             case LPExecutorStates.OUT_OF_RANGE:
                 # Position active but out of range
-                # Auto-close if configured and duration exceeded (directional)
+                # Close if price exceeds limit prices (like grid executor)
                 if self._current_price is not None:
-                    out_of_range_seconds = self.lp_position_state.get_out_of_range_seconds(current_time)
-                    auto_close_seconds = None
+                    should_close = False
+                    direction = ""
 
-                    # Check if price is above range (>= upper_price)
-                    if self._current_price >= self.lp_position_state.upper_price:
-                        auto_close_seconds = self.config.auto_close_above_range_seconds
-                    # Check if price is below range (<= lower_price)
-                    elif self._current_price <= self.lp_position_state.lower_price:
-                        auto_close_seconds = self.config.auto_close_below_range_seconds
+                    # Check if price exceeded upper limit
+                    if self.config.upper_limit_price is not None and self._current_price >= self.config.upper_limit_price:
+                        should_close = True
+                        direction = "above upper limit"
+                    # Check if price exceeded lower limit
+                    elif self.config.lower_limit_price is not None and self._current_price <= self.config.lower_limit_price:
+                        should_close = True
+                        direction = "below lower limit"
 
-                    if auto_close_seconds is not None and out_of_range_seconds and out_of_range_seconds >= auto_close_seconds:
-                        direction = "above" if self._current_price >= self.lp_position_state.upper_price else "below"
+                    if should_close:
                         self.logger().info(
-                            f"Position {direction} range for {out_of_range_seconds}s >= {auto_close_seconds}s, closing"
+                            f"Price {self._current_price} {direction} "
+                            f"(upper_limit={self.config.upper_limit_price}, lower_limit={self.config.lower_limit_price}), closing"
                         )
-                        self.close_type = CloseType.EARLY_STOP
+                        # Respect keep_position config - use POSITION_HOLD to track net position, EARLY_STOP otherwise
+                        self.close_type = CloseType.POSITION_HOLD if self.config.keep_position else CloseType.EARLY_STOP
                         self.lp_position_state.state = LPExecutorStates.CLOSING
 
             case LPExecutorStates.COMPLETE:
@@ -199,7 +256,7 @@ class LPExecutor(ExecutorBase):
         self.lp_position_state.active_open_order = TrackedOrder(order_id=order_id)
 
         try:
-            # Directly await the async operation instead of fire-and-forget
+            # Directly await the async operation - connector handles retry for timeouts
             self.logger().info(f"Calling gateway to open position with order_id={order_id}")
             signature = await connector._clmm_add_liquidity(
                 trade_type=TradeType.RANGE,
@@ -212,9 +269,10 @@ class LPExecutor(ExecutorBase):
                 quote_token_amount=float(self.config.quote_amount),
                 pool_address=self.config.pool_address,
                 extra_params=self.config.extra_params,
+                max_retries=self._max_retries,
             )
-            # Note: If operation fails, connector now re-raises the exception
-            # so it will be caught by the except block below with the actual error
+            # Note: If operation fails after all retries, connector re-raises the exception
+            # so it will be caught by the except block below
 
             self.logger().info(f"Gateway returned signature={signature}")
 
@@ -225,17 +283,17 @@ class LPExecutor(ExecutorBase):
 
             if not position_address:
                 self.logger().error(f"No position_address in metadata: {metadata}")
-                await self._handle_create_failure(ValueError("Position creation failed - no position address in response"))
+                self._handle_create_failure(ValueError("Position creation failed - no position address in response"))
                 return
 
-            # Store position address, rent, and tx_fee from transaction response
+            # Store position address, rent, tx_fee, and transaction hash from response
             self.lp_position_state.position_address = position_address
             self.lp_position_state.position_rent = metadata.get("position_rent", Decimal("0"))
             self.lp_position_state.tx_fee = metadata.get("tx_fee", Decimal("0"))
+            self.lp_position_state.open_tx_hash = signature
 
-            # Position is created - clear open order and reset retries
+            # Position is created - clear open order
             self.lp_position_state.active_open_order = None
-            self._current_retries = 0
 
             # Clean up connector metadata
             if order_id in connector._lp_orders_metadata:
@@ -290,7 +348,7 @@ class LPExecutor(ExecutorBase):
                 trade_type=TradeType.RANGE,
                 flat_fees=[TokenAmount(amount=self.lp_position_state.tx_fee, token=native_currency)]
             )
-            connector._trigger_add_liquidity_event(
+            event = connector._trigger_add_liquidity_event(
                 order_id=order_id,
                 exchange_order_id=signature,
                 trading_pair=self.config.trading_pair,
@@ -307,112 +365,21 @@ class LPExecutor(ExecutorBase):
                 position_rent=self.lp_position_state.position_rent,
             )
 
+            # Store ADD event for position tracking (like spot grid stores orders)
+            if self.config.keep_position:
+                self._store_lp_event_from_add(event)
+
             # Update state immediately (don't wait for next tick)
             self.lp_position_state.update_state(current_price, self._strategy.current_timestamp)
 
         except Exception as e:
-            # Try to get signature from connector metadata (gateway may have stored it before timeout)
-            sig = None
-            if connector:
-                metadata = connector._lp_orders_metadata.get(order_id, {})
-                sig = metadata.get("signature")
-            await self._handle_create_failure(e, signature=sig)
+            self._handle_create_failure(e)
 
-    async def _handle_create_failure(self, error: Exception, signature: Optional[str] = None):
-        """Handle position creation failure with retry logic."""
-        error_str = str(error)
-        sig_info = f" [sig: {signature}]" if signature else ""
-
-        # Check if this is a "price moved" error - position bounds need shifting
-        is_price_moved = "Price has moved" in error_str or "Position would require" in error_str
-
-        if is_price_moved and self.config.side != 0:
-            # Fetch current pool price and shift bounds
-            await self._shift_bounds_for_price_move()
-            # Don't count as retry - this is a recoverable adjustment
-            self.lp_position_state.active_open_order = None
-            return
-
-        self._current_retries += 1
-        max_retries = self._max_retries
-
-        # Check if this is a timeout error (retryable)
-        is_timeout = "TRANSACTION_TIMEOUT" in error_str
-
-        if self._current_retries >= max_retries:
-            msg = (
-                f"LP OPEN FAILED after {max_retries} retries for {self.config.trading_pair}.{sig_info} "
-                f"Manual intervention required. Error: {error}"
-            )
-            self.logger().error(msg)
-            self._strategy.notify_hb_app_with_timestamp(msg)
-            self._max_retries_reached = True
-            # Keep state as OPENING - don't shut down, wait for user intervention
-            self.lp_position_state.active_open_order = None
-            return
-
-        if is_timeout:
-            self.logger().warning(
-                f"LP open timeout (retry {self._current_retries}/{max_retries}).{sig_info} "
-                "Chain may be congested. Retrying..."
-            )
-        else:
-            self.logger().warning(
-                f"LP open failed (retry {self._current_retries}/{max_retries}): {error}"
-            )
-
-        # Clear open order to allow retry - state stays OPENING
+    def _handle_create_failure(self, error: Exception):
+        """Handle position creation failure - transition to FAILED state."""
+        self.logger().error(f"Position creation failed: {error}")
         self.lp_position_state.active_open_order = None
-
-    async def _shift_bounds_for_price_move(self):
-        """
-        Shift position bounds when price moved into range during creation.
-        Keeps the same width, shifts by actual price difference to get out of range.
-        """
-        # Fetch current pool price with retry (may fail due to rate limits)
-        for attempt in range(self._max_retries):
-            await self.update_pool_info()
-            if self._current_price:
-                break
-            if attempt < self._max_retries - 1:
-                self.logger().warning(f"Pool price fetch failed, retry {attempt + 1}/{self._max_retries}...")
-                await asyncio.sleep(1)
-
-        if not self._current_price:
-            self.logger().warning("Cannot shift bounds - pool price unavailable after retries")
-            return
-
-        current_price = self._current_price
-        old_lower = self.config.lower_price
-        old_upper = self.config.upper_price
-
-        # Use same offset as controller for recovery shift
-        offset = self.config.position_offset_pct / Decimal("100")
-
-        # Calculate width_pct from existing bounds (multiplicative, matching controller)
-        if self.config.side == 1:  # BUY
-            # Controller: lower = upper * (1 - width), so width = 1 - (lower/upper)
-            width_pct = Decimal("1") - (old_lower / old_upper) if old_upper > 0 else Decimal("0.005")
-            # Same as controller: upper = current * (1 - offset), lower = upper * (1 - width)
-            new_upper = current_price * (Decimal("1") - offset)
-            new_lower = new_upper * (Decimal("1") - width_pct)
-        elif self.config.side == 2:  # SELL
-            # Controller: upper = lower * (1 + width), so width = (upper/lower) - 1
-            width_pct = (old_upper / old_lower) - Decimal("1") if old_lower > 0 else Decimal("0.005")
-            # Same as controller: lower = current * (1 + offset), upper = lower * (1 + width)
-            new_lower = current_price * (Decimal("1") + offset)
-            new_upper = new_lower * (Decimal("1") + width_pct)
-        else:
-            return  # Side 0 (BOTH) doesn't need shifting
-
-        # Update config bounds (Pydantic models are mutable)
-        self.config.lower_price = new_lower
-        self.config.upper_price = new_upper
-
-        self.logger().info(
-            f"Price moved - shifting bounds: [{old_lower:.4f}-{old_upper:.4f}] -> "
-            f"[{new_lower:.4f}-{new_upper:.4f}] (price: {current_price:.4f}, offset: {offset:.4f})"
-        )
+        self.lp_position_state.state = LPExecutorStates.FAILED
 
     async def _close_position(self):
         """
@@ -462,15 +429,16 @@ class LPExecutor(ExecutorBase):
         self.lp_position_state.active_close_order = TrackedOrder(order_id=order_id)
 
         try:
-            # Directly await the async operation
+            # Directly await the async operation - connector handles retry for timeouts
             signature = await connector._clmm_close_position(
                 trade_type=TradeType.RANGE,
                 order_id=order_id,
                 trading_pair=self.config.trading_pair,
                 position_address=self.lp_position_state.position_address,
+                max_retries=self._max_retries,
             )
-            # Note: If operation fails, connector now re-raises the exception
-            # so it will be caught by the except block below with the actual error
+            # Note: If operation fails after all retries, connector re-raises the exception
+            # so it will be caught by the except block below
 
             self.logger().info(f"Position close confirmed, signature={signature}")
 
@@ -484,6 +452,7 @@ class LPExecutor(ExecutorBase):
             # Add close tx_fee to cumulative total (open tx_fee + close tx_fee)
             close_tx_fee = metadata.get("tx_fee", Decimal("0"))
             self.lp_position_state.tx_fee += close_tx_fee
+            self.lp_position_state.close_tx_hash = signature
 
             # Clean up connector metadata
             if order_id in connector._lp_orders_metadata:
@@ -506,7 +475,7 @@ class LPExecutor(ExecutorBase):
                 trade_type=TradeType.RANGE,
                 flat_fees=[TokenAmount(amount=close_tx_fee, token=native_currency)]
             )
-            connector._trigger_remove_liquidity_event(
+            event = connector._trigger_remove_liquidity_event(
                 order_id=order_id,
                 exchange_order_id=signature,
                 trading_pair=self.config.trading_pair,
@@ -524,55 +493,27 @@ class LPExecutor(ExecutorBase):
                 position_rent_refunded=self.lp_position_state.position_rent_refunded,
             )
 
+            # Store REMOVE event for position tracking (like spot grid stores orders)
+            if self.config.keep_position or self.close_type == CloseType.POSITION_HOLD:
+                self._store_lp_event_from_remove(event)
+
             self.lp_position_state.active_close_order = None
             self.lp_position_state.position_address = None
             self.lp_position_state.state = LPExecutorStates.COMPLETE
-            self._current_retries = 0
 
         except Exception as e:
-            # Try to get signature from connector metadata (gateway may have stored it before timeout)
-            sig = None
-            if connector:
-                metadata = connector._lp_orders_metadata.get(order_id, {})
-                sig = metadata.get("signature")
-            self._handle_close_failure(e, signature=sig)
+            self._handle_close_failure(e)
 
-    def _handle_close_failure(self, error: Exception, signature: Optional[str] = None):
-        """Handle position close failure with retry logic."""
-        self._current_retries += 1
-        max_retries = self._max_retries
+    def _handle_close_failure(self, error: Exception):
+        """Handle position close failure.
 
-        # Check if this is a timeout error (retryable)
-        error_str = str(error)
-        is_timeout = "TRANSACTION_TIMEOUT" in error_str
-
-        # Format signature for logging
-        sig_info = f" [sig: {signature}]" if signature else ""
-
-        if self._current_retries >= max_retries:
-            msg = (
-                f"LP CLOSE FAILED after {max_retries} retries for {self.config.trading_pair}.{sig_info} "
-                f"Position {self.lp_position_state.position_address} may need manual close. Error: {error}"
-            )
-            self.logger().error(msg)
-            self._strategy.notify_hb_app_with_timestamp(msg)
-            self._max_retries_reached = True
-            # Keep state as CLOSING - don't shut down, wait for user intervention
-            self.lp_position_state.active_close_order = None
-            return
-
-        if is_timeout:
-            self.logger().warning(
-                f"LP close timeout (retry {self._current_retries}/{max_retries}).{sig_info} "
-                "Chain may be congested. Retrying..."
-            )
-        else:
-            self.logger().warning(
-                f"LP close failed (retry {self._current_retries}/{max_retries}): {error}"
-            )
-
-        # Clear active order - state stays CLOSING for retry in next control_task
+        Retry logic is handled by the connector. This method handles
+        final failures after connector exhausted retries.
+        """
+        # Connector exhausted retries or non-retryable error - transition to FAILED
+        self.logger().error(f"Position close failed: {error}")
         self.lp_position_state.active_close_order = None
+        self.lp_position_state.state = LPExecutorStates.FAILED
 
     def _emit_already_closed_event(self):
         """
@@ -621,18 +562,102 @@ class LPExecutor(ExecutorBase):
             position_rent_refunded=self.lp_position_state.position_rent,
         )
 
-    def early_stop(self, keep_position: bool = False):
-        """Stop executor - transitions to CLOSING state, control_task handles the close"""
-        self._status = RunnableStatus.SHUTTING_DOWN
-        self.close_type = CloseType.POSITION_HOLD if keep_position or self.config.keep_position else CloseType.EARLY_STOP
+    def _store_lp_event_from_add(self, event: RangePositionLiquidityAddedEvent):
+        """Store ADD event for position tracking using event object (like grid uses order.to_json()).
 
-        # Transition to CLOSING state if we have a position and not keeping it
-        if not keep_position and not self.config.keep_position:
-            if self.lp_position_state.state in [LPExecutorStates.IN_RANGE, LPExecutorStates.OUT_OF_RANGE]:
-                self.lp_position_state.state = LPExecutorStates.CLOSING
-            elif self.lp_position_state.state == LPExecutorStates.NOT_ACTIVE:
-                # No position was created, just complete
-                self.lp_position_state.state = LPExecutorStates.COMPLETE
+        ADD events are SELL (tokens leaving wallet into pool).
+        Uses asdict() on the event and appends position tracking fields.
+        """
+        # Convert event to dict (like InFlightOrder.to_json())
+        event_dict = asdict(event)
+
+        # Calculate effective amounts and price for position tracking
+        effective_base = event.base_amount
+        effective_quote = event.quote_amount
+        price = float(effective_quote / effective_base) if effective_base > 0 else float(event.mid_price)
+
+        # TX fee in quote currency
+        native_to_quote = self._get_native_to_quote_rate()
+        tx_fee_quote = float(event.position_rent * native_to_quote)  # position_rent is the tx fee for ADD
+
+        # Append position tracking fields to event dict
+        event_dict.update({
+            # Standard fields for PositionHold aggregation (matches InFlightOrder.to_json format)
+            "client_order_id": event.exchange_order_id,  # tx_hash for deduplication
+            "trade_type": "SELL",  # ADD = tokens leaving wallet
+            "price": str(price),
+            "amount": str(effective_base),
+            "executed_amount_base": str(effective_base),
+            "executed_amount_quote": str(effective_quote),
+            "cumulative_fee_paid_quote": tx_fee_quote,
+            # LP-specific metadata
+            "lp_source": True,
+            "order_action": "ADD",
+        })
+
+        self._held_position_orders.append(event_dict)
+
+    def _store_lp_event_from_remove(self, event: RangePositionLiquidityRemovedEvent):
+        """Store REMOVE event for position tracking using event object (like grid uses order.to_json()).
+
+        REMOVE events are BUY (tokens + fees returning to wallet).
+        Uses asdict() on the event and appends position tracking fields.
+        """
+        # Convert event to dict (like InFlightOrder.to_json())
+        event_dict = asdict(event)
+
+        # Calculate effective amounts (include fees) and price for position tracking
+        effective_base = event.base_amount + event.base_fee
+        effective_quote = event.quote_amount + event.quote_fee
+        price = float(effective_quote / effective_base) if effective_base > 0 else float(event.mid_price)
+
+        # TX fee in quote currency (from trade_fee flat_fees)
+        native_to_quote = self._get_native_to_quote_rate()
+        tx_fee = sum(fee.amount for fee in event.trade_fee.flat_fees) if event.trade_fee.flat_fees else Decimal("0")
+        tx_fee_quote = float(tx_fee * native_to_quote)
+
+        # Append position tracking fields to event dict
+        event_dict.update({
+            # Standard fields for PositionHold aggregation (matches InFlightOrder.to_json format)
+            "client_order_id": event.exchange_order_id,  # tx_hash for deduplication
+            "trade_type": "BUY",  # REMOVE = tokens returning to wallet
+            "price": str(price),
+            "amount": str(effective_base),
+            "executed_amount_base": str(effective_base),
+            "executed_amount_quote": str(effective_quote),
+            "cumulative_fee_paid_quote": tx_fee_quote,
+            # LP-specific metadata
+            "lp_source": True,
+            "order_action": "REMOVE",
+        })
+
+        self._held_position_orders.append(event_dict)
+
+    def early_stop(self, keep_position: bool = True):
+        """Stop executor - transitions to CLOSING state.
+
+        Args:
+            keep_position: If True (default), after closing the LP position on-chain,
+                          the net token change will be tracked as a spot position.
+                          This matches spot grid executor behavior where keep_position
+                          means "track the net position" not "keep orders open".
+        """
+        self._status = RunnableStatus.SHUTTING_DOWN
+        # Use parameter directly like grid/position executors (controller decides keep_position)
+        self.close_type = CloseType.POSITION_HOLD if keep_position else CloseType.EARLY_STOP
+
+        # ALWAYS close the LP position on-chain
+        # If keep_position=True, we'll capture the difference after closing
+        if self.lp_position_state.state in [LPExecutorStates.IN_RANGE, LPExecutorStates.OUT_OF_RANGE]:
+            self.lp_position_state.state = LPExecutorStates.CLOSING
+        elif self.lp_position_state.state == LPExecutorStates.OPENING:
+            # Position creation in progress - mark as failed to stop retries
+            # The executor will complete without creating a position
+            self.lp_position_state.state = LPExecutorStates.FAILED
+            self.close_type = CloseType.EARLY_STOP
+        elif self.lp_position_state.state == LPExecutorStates.NOT_ACTIVE:
+            # No position was created, just complete
+            self.lp_position_state.state = LPExecutorStates.COMPLETE
 
     def _get_quote_to_global_rate(self) -> Decimal:
         """
@@ -680,6 +705,14 @@ class LPExecutor(ExecutorBase):
         return Decimal("1")  # Fallback to no conversion
 
     @property
+    def filled_amount_base(self) -> Decimal:
+        """Returns current base token amount in the LP position.
+
+        Used for position tracking aggregation.
+        """
+        return self.lp_position_state.base_amount
+
+    @property
     def filled_amount_quote(self) -> Decimal:
         """Returns initial investment value in global token (USD).
 
@@ -688,7 +721,12 @@ class LPExecutor(ExecutorBase):
         reports reflects actual trading activity, not price fluctuations.
 
         Uses stored initial amounts valued at deposit time price.
+        Returns 0 if position was never created (FAILED state).
         """
+        # If position was never created, nothing was filled
+        if self.lp_position_state.initial_base_amount == 0 and self.lp_position_state.initial_quote_amount == 0:
+            return Decimal("0")
+
         # Use stored add_mid_price, fall back to current price if not set
         add_price = self.lp_position_state.add_mid_price
         if add_price <= 0:
@@ -697,13 +735,9 @@ class LPExecutor(ExecutorBase):
         if add_price == 0:
             return Decimal("0")
 
-        # Use stored initial amounts (actual deposited), fall back to config if not set
-        initial_base = (self.lp_position_state.initial_base_amount
-                        if self.lp_position_state.initial_base_amount > 0
-                        else self.config.base_amount)
-        initial_quote = (self.lp_position_state.initial_quote_amount
-                         if self.lp_position_state.initial_quote_amount > 0
-                         else self.config.quote_amount)
+        # Use stored initial amounts (actual deposited)
+        initial_base = self.lp_position_state.initial_base_amount
+        initial_quote = self.lp_position_state.initial_quote_amount
 
         # Initial investment value in pool quote currency
         initial_value = initial_base * add_price + initial_quote
@@ -746,14 +780,21 @@ class LPExecutor(ExecutorBase):
             "position_rent_refunded": float(self.lp_position_state.position_rent_refunded),
             "tx_fee": float(self.lp_position_state.tx_fee),
             "out_of_range_seconds": self.lp_position_state.get_out_of_range_seconds(current_time),
-            "max_retries_reached": self._max_retries_reached,
-            # Initial amounts (actual deposited) for inventory tracking; fall back to config if not set
-            "initial_base_amount": float(self.lp_position_state.initial_base_amount
-                                         if self.lp_position_state.initial_base_amount > 0
-                                         else self.config.base_amount),
-            "initial_quote_amount": float(self.lp_position_state.initial_quote_amount
-                                          if self.lp_position_state.initial_quote_amount > 0
-                                          else self.config.quote_amount),
+            # Initial amounts (actual deposited) for inventory tracking, fallback to config
+            "initial_base_amount": float(
+                self.lp_position_state.initial_base_amount
+                if self.lp_position_state.initial_base_amount > 0 or self.lp_position_state.initial_quote_amount > 0
+                else self.config.base_amount
+            ),
+            "initial_quote_amount": float(
+                self.lp_position_state.initial_quote_amount
+                if self.lp_position_state.initial_base_amount > 0 or self.lp_position_state.initial_quote_amount > 0
+                else self.config.quote_amount
+            ),
+            # Position tracking fields (consistent with grid/position/swap executors)
+            "filled_amount_base": float(self.lp_position_state.base_amount),
+            "filled_amount_quote": float(self.lp_position_state.quote_amount),
+            "held_position_orders": self._held_position_orders,
         }
 
     # Required abstract methods from ExecutorBase
@@ -772,21 +813,26 @@ class LPExecutor(ExecutorBase):
         for consistent reporting across different pools. Uses stored initial
         amounts and add_mid_price for accurate calculation matching lphistory.
         Works for both open positions and closed positions (using final returned amounts).
+        Falls back to config values if initial amounts not yet set.
         """
         if self._current_price is None or self._current_price == 0:
             return Decimal("0")
         current_price = self._current_price
 
+        # If executor failed before creating a position, P&L is 0
+        if (self.lp_position_state.state == LPExecutorStates.FAILED and
+                not self.lp_position_state.position_address):
+            return Decimal("0")
+
         # Use stored add_mid_price for initial value, fall back to current price if not set
         add_price = self.lp_position_state.add_mid_price if self.lp_position_state.add_mid_price > 0 else current_price
 
-        # Use stored initial amounts (actual deposited), fall back to config if not set
-        initial_base = (self.lp_position_state.initial_base_amount
-                        if self.lp_position_state.initial_base_amount > 0
-                        else self.config.base_amount)
-        initial_quote = (self.lp_position_state.initial_quote_amount
-                         if self.lp_position_state.initial_quote_amount > 0
-                         else self.config.quote_amount)
+        # Use stored initial amounts, fall back to config if not set (position not yet created)
+        initial_base = self.lp_position_state.initial_base_amount
+        initial_quote = self.lp_position_state.initial_quote_amount
+        if initial_base == 0 and initial_quote == 0:
+            initial_base = self.config.base_amount
+            initial_quote = self.config.quote_amount
 
         # Initial value (actual deposited amounts, valued at ADD time price)
         initial_value = initial_base * add_price + initial_quote
@@ -818,6 +864,7 @@ class LPExecutor(ExecutorBase):
 
         Both P&L and initial value are converted to global token (USD) for
         consistent percentage calculation across different pools.
+        Falls back to config values if initial amounts not yet set.
         """
         pnl_global = self.get_net_pnl_quote()  # Already in global token (USD)
         if pnl_global == Decimal("0"):
@@ -830,13 +877,12 @@ class LPExecutor(ExecutorBase):
         # Use stored add_mid_price for initial value to match get_net_pnl_quote()
         add_price = self.lp_position_state.add_mid_price if self.lp_position_state.add_mid_price > 0 else current_price
 
-        # Use stored initial amounts (actual deposited), fall back to config if not set
-        initial_base = (self.lp_position_state.initial_base_amount
-                        if self.lp_position_state.initial_base_amount > 0
-                        else self.config.base_amount)
-        initial_quote = (self.lp_position_state.initial_quote_amount
-                         if self.lp_position_state.initial_quote_amount > 0
-                         else self.config.quote_amount)
+        # Use stored initial amounts, fall back to config if not set
+        initial_base = self.lp_position_state.initial_base_amount
+        initial_quote = self.lp_position_state.initial_quote_amount
+        if initial_base == 0 and initial_quote == 0:
+            initial_base = self.config.base_amount
+            initial_quote = self.config.quote_amount
 
         # Initial value in pool quote currency
         initial_value_quote = initial_base * add_price + initial_quote

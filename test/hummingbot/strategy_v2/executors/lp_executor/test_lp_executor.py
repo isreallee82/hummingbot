@@ -3,11 +3,88 @@ from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCa
 from test.logger_mixin_for_test import LoggerMixinForTest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
+from hummingbot.core.event.events import RangePositionLiquidityAddedEvent, RangePositionLiquidityRemovedEvent
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
 from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig, LPExecutorStates
 from hummingbot.strategy_v2.executors.lp_executor.lp_executor import LPExecutor
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType
+
+
+def create_mock_remove_event(
+    exchange_order_id: str = "sig789",
+    trading_pair: str = "SOL-USDC",
+    position_address: str = "pos123",
+    base_amount: Decimal = Decimal("1.0"),
+    quote_amount: Decimal = Decimal("100.0"),
+    base_fee: Decimal = Decimal("0.01"),
+    quote_fee: Decimal = Decimal("1.0"),
+    mid_price: Decimal = Decimal("100"),
+    lower_price: Decimal = Decimal("95"),
+    upper_price: Decimal = Decimal("105"),
+    tx_fee: Decimal = Decimal("0.0001"),
+) -> RangePositionLiquidityRemovedEvent:
+    """Create a mock RangePositionLiquidityRemovedEvent for testing."""
+    trade_fee = TradeFeeBase.new_spot_fee(
+        fee_schema={'percent_fee_token': 'SOL'},
+        trade_type=None,
+        flat_fees=[TokenAmount(amount=tx_fee, token='SOL')]
+    )
+    return RangePositionLiquidityRemovedEvent(
+        timestamp=1234567890,
+        order_id="order-123",
+        exchange_order_id=exchange_order_id,
+        trading_pair=trading_pair,
+        token_id="0",
+        trade_fee=trade_fee,
+        creation_timestamp=1234567890,
+        position_address=position_address,
+        lower_price=lower_price,
+        upper_price=upper_price,
+        mid_price=mid_price,
+        base_amount=base_amount,
+        quote_amount=quote_amount,
+        base_fee=base_fee,
+        quote_fee=quote_fee,
+        position_rent_refunded=Decimal("0.002"),
+    )
+
+
+def create_mock_add_event(
+    exchange_order_id: str = "sig123",
+    trading_pair: str = "SOL-USDC",
+    position_address: str = "pos123",
+    base_amount: Decimal = Decimal("5.0"),
+    quote_amount: Decimal = Decimal("500.0"),
+    mid_price: Decimal = Decimal("100"),
+    lower_price: Decimal = Decimal("95"),
+    upper_price: Decimal = Decimal("105"),
+    position_rent: Decimal = Decimal("0.002"),
+) -> RangePositionLiquidityAddedEvent:
+    """Create a mock RangePositionLiquidityAddedEvent for testing."""
+    trade_fee = TradeFeeBase.new_spot_fee(
+        fee_schema={'percent_fee_token': 'SOL'},
+        trade_type=None,
+        flat_fees=[TokenAmount(amount=position_rent, token='SOL')]
+    )
+    return RangePositionLiquidityAddedEvent(
+        timestamp=1234567890,
+        order_id="order-123",
+        exchange_order_id=exchange_order_id,
+        trading_pair=trading_pair,
+        lower_price=lower_price,
+        upper_price=upper_price,
+        amount=base_amount + quote_amount / mid_price,
+        fee_tier="pool123",
+        creation_timestamp=1234567890,
+        trade_fee=trade_fee,
+        position_address=position_address,
+        mid_price=mid_price,
+        base_amount=base_amount,
+        quote_amount=quote_amount,
+        position_rent=position_rent,
+    )
 
 
 class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
@@ -64,15 +141,6 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         self.assertEqual(executor.config.trading_pair, "SOL-USDC")
         self.assertEqual(executor.lp_position_state.state, LPExecutorStates.NOT_ACTIVE)
         self.assertIsNone(executor._pool_info)
-        self.assertEqual(executor._max_retries, 10)
-        self.assertEqual(executor._current_retries, 0)
-        self.assertFalse(executor._max_retries_reached)
-
-    def test_executor_custom_max_retries(self):
-        """Test executor with custom max_retries"""
-        config = self.get_default_config()
-        executor = LPExecutor(self.strategy, config, self.update_interval, max_retries=5)
-        self.assertEqual(executor._max_retries, 5)
 
     def test_logger(self):
         """Test logger returns properly"""
@@ -103,7 +171,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         self.assertEqual(executor.lp_position_state.state, LPExecutorStates.CLOSING)
 
     def test_early_stop_with_keep_position_true(self):
-        """Test early_stop with keep_position=True doesn't close position"""
+        """Test early_stop with keep_position=True transitions to CLOSING (always closes on-chain)"""
         executor = self.get_executor()
         executor.lp_position_state.state = LPExecutorStates.IN_RANGE
 
@@ -111,8 +179,9 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         self.assertEqual(executor._status, RunnableStatus.SHUTTING_DOWN)
         self.assertEqual(executor.close_type, CloseType.POSITION_HOLD)
-        # State should not change to CLOSING
-        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.IN_RANGE)
+        # With new behavior, position is always closed on-chain
+        # The spot position is captured after close completes
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.CLOSING)
 
     def test_early_stop_with_config_keep_position(self):
         """Test early_stop respects config.keep_position"""
@@ -143,6 +212,99 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor.early_stop()
 
         self.assertEqual(executor.lp_position_state.state, LPExecutorStates.COMPLETE)
+
+    def test_store_lp_event_from_remove(self):
+        """Test _store_lp_event_from_remove stores REMOVE event as BUY (tokens returning)"""
+        executor = self.get_executor()
+        executor.lp_position_state.position_address = "pos123"
+        executor.lp_position_state.lower_price = Decimal("95")
+        executor.lp_position_state.upper_price = Decimal("105")
+
+        # Create a mock REMOVE event
+        event = create_mock_remove_event(
+            exchange_order_id="tx_close_123",
+            position_address="pos123",
+            base_amount=Decimal("0.7"),
+            quote_amount=Decimal("35"),
+            base_fee=Decimal("0.01"),
+            quote_fee=Decimal("0.5"),
+            mid_price=Decimal("110"),
+            tx_fee=Decimal("0.001"),
+        )
+
+        executor._store_lp_event_from_remove(event)
+
+        self.assertEqual(len(executor._held_position_orders), 1)
+        snapshot = executor._held_position_orders[0]
+
+        # Verify deduplication key uses tx_hash
+        self.assertEqual(snapshot["client_order_id"], "tx_close_123")
+        self.assertEqual(snapshot["position_address"], "pos123")
+
+        # REMOVE events are BUY (tokens returning to wallet)
+        # effective_base = 0.7 + 0.01 = 0.71
+        # effective_quote = 35 + 0.5 = 35.5
+        self.assertEqual(snapshot["trade_type"], "BUY")
+        self.assertAlmostEqual(float(snapshot["executed_amount_base"]), 0.71, places=5)
+        self.assertAlmostEqual(float(snapshot["executed_amount_quote"]), 35.5, places=5)
+
+        # LP-specific metadata
+        self.assertTrue(snapshot["lp_source"])
+        self.assertEqual(snapshot["order_action"], "REMOVE")
+
+    def test_pnl_zero_for_failed_executor_no_position(self):
+        """Test P&L returns 0 when executor failed before creating a position.
+
+        Failed executors that never created a position should report 0 P&L,
+        not -100% (which would incorrectly suggest total loss of config amounts).
+        """
+        executor = self.get_executor()
+        executor._current_price = Decimal("100")
+
+        # Simulate failed state - no position was ever created
+        executor.lp_position_state.state = LPExecutorStates.FAILED
+        executor.lp_position_state.position_address = None
+
+        # P&L should be 0, not -100%
+        self.assertEqual(executor.get_net_pnl_quote(), Decimal("0"))
+        self.assertEqual(executor.get_net_pnl_pct(), Decimal("0"))
+
+    def test_store_lp_event_from_add(self):
+        """Test _store_lp_event_from_add stores ADD event as SELL (tokens leaving)"""
+        executor = self.get_executor()
+        executor.lp_position_state.position_address = "pos123"
+        executor.lp_position_state.lower_price = Decimal("95")
+        executor.lp_position_state.upper_price = Decimal("105")
+
+        # Create a mock ADD event
+        event = create_mock_add_event(
+            exchange_order_id="tx_add_123",
+            position_address="pos123",
+            base_amount=Decimal("5.0"),
+            quote_amount=Decimal("500"),
+            mid_price=Decimal("100"),
+            position_rent=Decimal("0.002"),
+        )
+
+        executor._store_lp_event_from_add(event)
+
+        self.assertEqual(len(executor._held_position_orders), 1)
+        snapshot = executor._held_position_orders[0]
+
+        # Verify deduplication key uses tx_hash
+        self.assertEqual(snapshot["client_order_id"], "tx_add_123")
+        self.assertEqual(snapshot["position_address"], "pos123")
+
+        # ADD events are SELL (tokens leaving wallet into pool)
+        # effective_base = 5.0 (no fees for ADD)
+        # effective_quote = 500
+        self.assertEqual(snapshot["trade_type"], "SELL")
+        self.assertAlmostEqual(float(snapshot["executed_amount_base"]), 5.0, places=5)
+        self.assertAlmostEqual(float(snapshot["executed_amount_quote"]), 500.0, places=5)
+
+        # LP-specific metadata
+        self.assertTrue(snapshot["lp_source"])
+        self.assertEqual(snapshot["order_action"], "ADD")
 
     def test_filled_amount_quote_no_pool_info(self):
         """Test filled_amount_quote returns 0 when no pool info"""
@@ -255,7 +417,6 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         self.assertIsNone(info["current_price"])
         self.assertEqual(info["lower_price"], 0.0)
         self.assertEqual(info["upper_price"], 0.0)
-        self.assertFalse(info["max_retries_reached"])
 
     def test_get_custom_info_with_position(self):
         """Test get_custom_info with position"""
@@ -319,51 +480,27 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         self.assertIsNone(executor._pool_info)
 
-    async def test_handle_create_failure_increment_retries(self):
-        """Test _handle_create_failure increments retry counter"""
+    def test_handle_create_failure_transitions_to_failed(self):
+        """Test _handle_create_failure transitions to FAILED state (retry at connector level)"""
         executor = self.get_executor()
-        executor._current_retries = 0
+        executor.lp_position_state.state = LPExecutorStates.OPENING
+        executor.lp_position_state.active_open_order = MagicMock()
 
-        await executor._handle_create_failure(Exception("Test error"))
+        executor._handle_create_failure(Exception("Test error"))
 
-        self.assertEqual(executor._current_retries, 1)
-        self.assertFalse(executor._max_retries_reached)
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+        self.assertIsNone(executor.lp_position_state.active_open_order)
 
-    async def test_handle_create_failure_max_retries(self):
-        """Test _handle_create_failure sets max_retries_reached"""
+    def test_handle_close_failure_transitions_to_failed(self):
+        """Test _handle_close_failure transitions to FAILED state (retry at connector level)"""
         executor = self.get_executor()
-        executor._current_retries = 9  # Will become 10
-
-        await executor._handle_create_failure(Exception("Test error"))
-
-        self.assertEqual(executor._current_retries, 10)
-        self.assertTrue(executor._max_retries_reached)
-
-    async def test_handle_create_failure_timeout_message(self):
-        """Test _handle_create_failure logs timeout appropriately"""
-        executor = self.get_executor()
-        await executor._handle_create_failure(Exception("TRANSACTION_TIMEOUT: tx not confirmed"))
-        self.assertEqual(executor._current_retries, 1)
-
-    def test_handle_close_failure_increment_retries(self):
-        """Test _handle_close_failure increments retry counter"""
-        executor = self.get_executor()
-        executor._current_retries = 0
+        executor.lp_position_state.state = LPExecutorStates.CLOSING
+        executor.lp_position_state.active_close_order = MagicMock()
 
         executor._handle_close_failure(Exception("Test error"))
 
-        self.assertEqual(executor._current_retries, 1)
-        self.assertFalse(executor._max_retries_reached)
-
-    def test_handle_close_failure_max_retries(self):
-        """Test _handle_close_failure sets max_retries_reached"""
-        executor = self.get_executor()
-        executor._current_retries = 9
-        executor.lp_position_state.position_address = "pos123"
-
-        executor._handle_close_failure(Exception("Test error"))
-
-        self.assertTrue(executor._max_retries_reached)
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+        self.assertIsNone(executor.lp_position_state.active_close_order)
 
     async def test_control_task_not_active_starts_opening(self):
         """Test control_task transitions from NOT_ACTIVE to OPENING"""
@@ -396,17 +533,19 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             await executor.control_task()
             mock_stop.assert_called_once()
 
-    async def test_control_task_out_of_range_auto_close(self):
-        """Test control_task auto-closes when out of range too long (above range)"""
+    async def test_control_task_out_of_range_upper_limit(self):
+        """Test control_task closes when price exceeds upper_limit_price.
+
+        When keep_position=True (default), close_type should be POSITION_HOLD.
+        """
         config = self.get_default_config()
-        config.auto_close_above_range_seconds = 60  # Auto-close when price above upper_price
+        config.upper_limit_price = Decimal("115")  # Close when price >= 115
         executor = self.get_executor(config)
         executor._status = RunnableStatus.RUNNING
         executor.lp_position_state.state = LPExecutorStates.OUT_OF_RANGE
         executor.lp_position_state.position_address = "pos123"
-        executor.lp_position_state._out_of_range_since = 1234567800.0  # 90 seconds ago
 
-        # Mock position info with price above upper_price (105)
+        # Mock position info with price above upper_limit_price
         mock_position = MagicMock()
         mock_position.base_token_amount = 1.0
         mock_position.quote_token_amount = 100.0
@@ -414,7 +553,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.quote_fee_amount = 0.0
         mock_position.lower_price = 95.0
         mock_position.upper_price = 105.0
-        mock_position.price = 110.0  # Out of range (above upper_price)
+        mock_position.price = 120.0  # Above upper_limit_price (115)
 
         connector = self.strategy.connectors["meteora/clmm"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
@@ -422,7 +561,66 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         await executor.control_task()
 
         self.assertEqual(executor.lp_position_state.state, LPExecutorStates.CLOSING)
-        self.assertEqual(executor.close_type, CloseType.EARLY_STOP)
+        # When keep_position=True (default), limit hit uses POSITION_HOLD
+        self.assertEqual(executor.close_type, CloseType.POSITION_HOLD)
+
+    async def test_control_task_out_of_range_lower_limit(self):
+        """Test control_task closes when price falls below lower_limit_price.
+
+        When keep_position=True (default), close_type should be POSITION_HOLD.
+        """
+        config = self.get_default_config()
+        config.lower_limit_price = Decimal("90")  # Close when price <= 90
+        executor = self.get_executor(config)
+        executor._status = RunnableStatus.RUNNING
+        executor.lp_position_state.state = LPExecutorStates.OUT_OF_RANGE
+        executor.lp_position_state.position_address = "pos123"
+
+        # Mock position info with price below lower_limit_price
+        mock_position = MagicMock()
+        mock_position.base_token_amount = 1.0
+        mock_position.quote_token_amount = 100.0
+        mock_position.base_fee_amount = 0.0
+        mock_position.quote_fee_amount = 0.0
+        mock_position.lower_price = 95.0
+        mock_position.upper_price = 105.0
+        mock_position.price = 85.0  # Below lower_limit_price (90)
+
+        connector = self.strategy.connectors["meteora/clmm"]
+        connector.get_position_info = AsyncMock(return_value=mock_position)
+
+        await executor.control_task()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.CLOSING)
+        # When keep_position=True (default), limit hit uses POSITION_HOLD
+        self.assertEqual(executor.close_type, CloseType.POSITION_HOLD)
+
+    async def test_control_task_out_of_range_no_limit_no_close(self):
+        """Test control_task does not close when out of range but no limit prices set"""
+        config = self.get_default_config()
+        # No upper_limit_price or lower_limit_price set
+        executor = self.get_executor(config)
+        executor._status = RunnableStatus.RUNNING
+        executor.lp_position_state.state = LPExecutorStates.OUT_OF_RANGE
+        executor.lp_position_state.position_address = "pos123"
+
+        # Mock position info with price out of range
+        mock_position = MagicMock()
+        mock_position.base_token_amount = 1.0
+        mock_position.quote_token_amount = 100.0
+        mock_position.base_fee_amount = 0.0
+        mock_position.quote_fee_amount = 0.0
+        mock_position.lower_price = 95.0
+        mock_position.upper_price = 105.0
+        mock_position.price = 120.0  # Out of range but no limit set
+
+        connector = self.strategy.connectors["meteora/clmm"]
+        connector.get_position_info = AsyncMock(return_value=mock_position)
+
+        await executor.control_task()
+
+        # Should still be OUT_OF_RANGE, not CLOSING
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.OUT_OF_RANGE)
 
     async def test_update_position_info_success(self):
         """Test _update_position_info updates state from position data"""
@@ -537,11 +735,10 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         self.assertEqual(executor._current_price, Decimal("99.5"))
 
     async def test_control_task_opening_state_retries(self):
-        """Test control_task calls _create_position when OPENING"""
+        """Test control_task calls _create_position when OPENING (connector handles retry)"""
         executor = self.get_executor()
         executor._status = RunnableStatus.RUNNING
         executor.lp_position_state.state = LPExecutorStates.OPENING
-        executor._max_retries_reached = False
 
         mock_pool_info = MagicMock()
         mock_pool_info.price = 100.0
@@ -552,29 +749,12 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             await executor.control_task()
             mock_create.assert_called_once()
 
-    async def test_control_task_opening_state_max_retries_reached(self):
-        """Test control_task skips _create_position when max retries reached"""
-        executor = self.get_executor()
-        executor._status = RunnableStatus.RUNNING
-        executor.lp_position_state.state = LPExecutorStates.OPENING
-        executor._max_retries_reached = True
-
-        mock_pool_info = MagicMock()
-        mock_pool_info.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
-        connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
-
-        with patch.object(executor, '_create_position', new_callable=AsyncMock) as mock_create:
-            await executor.control_task()
-            mock_create.assert_not_called()
-
     async def test_control_task_closing_state_retries(self):
-        """Test control_task calls _close_position when CLOSING"""
+        """Test control_task calls _close_position when CLOSING (connector handles retry)"""
         executor = self.get_executor()
         executor._status = RunnableStatus.RUNNING
         executor.lp_position_state.state = LPExecutorStates.CLOSING
         executor.lp_position_state.position_address = "pos123"
-        executor._max_retries_reached = False
 
         mock_position = MagicMock()
         mock_position.price = 100.0
@@ -584,23 +764,6 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         with patch.object(executor, '_close_position', new_callable=AsyncMock) as mock_close:
             await executor.control_task()
             mock_close.assert_called_once()
-
-    async def test_control_task_closing_state_max_retries_reached(self):
-        """Test control_task skips _close_position when max retries reached"""
-        executor = self.get_executor()
-        executor._status = RunnableStatus.RUNNING
-        executor.lp_position_state.state = LPExecutorStates.CLOSING
-        executor.lp_position_state.position_address = "pos123"
-        executor._max_retries_reached = True
-
-        mock_position = MagicMock()
-        mock_position.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
-        connector.get_position_info = AsyncMock(return_value=mock_position)
-
-        with patch.object(executor, '_close_position', new_callable=AsyncMock) as mock_close:
-            await executor.control_task()
-            mock_close.assert_not_called()
 
     async def test_control_task_in_range_state(self):
         """Test control_task does nothing when IN_RANGE"""
@@ -662,7 +825,6 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         self.assertEqual(executor.lp_position_state.position_rent, Decimal("0.002"))
         self.assertEqual(executor.lp_position_state.tx_fee, Decimal("0.0001"))
         self.assertIsNone(executor.lp_position_state.active_open_order)
-        self.assertEqual(executor._current_retries, 0)
         connector._trigger_add_liquidity_event.assert_called_once()
 
     async def test_create_position_no_position_address(self):
@@ -676,11 +838,12 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         await executor._create_position()
 
-        self.assertEqual(executor._current_retries, 1)
+        # Should transition to FAILED state since no position address returned
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
         self.assertIsNone(executor.lp_position_state.position_address)
 
     async def test_create_position_exception(self):
-        """Test _create_position handles exception"""
+        """Test _create_position handles exception (connector handles retry internally)"""
         executor = self.get_executor()
         executor.lp_position_state.state = LPExecutorStates.OPENING
 
@@ -690,7 +853,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         await executor._create_position()
 
-        self.assertEqual(executor._current_retries, 1)
+        # Should transition to FAILED state when connector raises exception
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
 
     async def test_create_position_with_signature_in_metadata(self):
         """Test _create_position handles exception with signature in metadata"""
@@ -703,7 +867,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         await executor._create_position()
 
-        self.assertEqual(executor._current_retries, 1)
+        # Connector handles retry internally; when it raises, executor transitions to FAILED
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
 
     async def test_create_position_fetches_position_info(self):
         """Test _create_position fetches position info and stores initial amounts"""
@@ -724,7 +889,9 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.upper_price = 105.5
         mock_position.price = 100.0
         connector.get_position_info = AsyncMock(return_value=mock_position)
-        connector._trigger_add_liquidity_event = MagicMock()
+        connector._trigger_add_liquidity_event = MagicMock(return_value=create_mock_add_event(
+            base_amount=Decimal("0.95"), quote_amount=Decimal("105.0")
+        ))
 
         await executor._create_position()
 
@@ -744,7 +911,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             "order-123": {"position_address": "pos456", "position_rent": Decimal("0.002")}
         }
         connector.get_position_info = AsyncMock(return_value=None)
-        connector._trigger_add_liquidity_event = MagicMock()
+        connector._trigger_add_liquidity_event = MagicMock(return_value=create_mock_add_event())
 
         await executor._create_position()
 
@@ -819,7 +986,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
                 "tx_fee": Decimal("0.0001")
             }
         }
-        connector._trigger_remove_liquidity_event = MagicMock()
+        connector._trigger_remove_liquidity_event = MagicMock(return_value=create_mock_remove_event())
 
         await executor._close_position()
 
@@ -847,7 +1014,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
                 "tx_fee": Decimal("0.0001")
             }
         }
-        connector._trigger_remove_liquidity_event = MagicMock()
+        connector._trigger_remove_liquidity_event = MagicMock(return_value=create_mock_remove_event())
 
         await executor._close_position()
 
@@ -860,8 +1027,9 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         connector._trigger_remove_liquidity_event.assert_called_once()
 
     async def test_close_position_exception(self):
-        """Test _close_position handles exception during close"""
+        """Test _close_position handles exception during close (connector handles retry)"""
         executor = self.get_executor()
+        executor.lp_position_state.state = LPExecutorStates.CLOSING
         executor.lp_position_state.position_address = "pos123"
 
         mock_position = MagicMock()
@@ -873,11 +1041,13 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         await executor._close_position()
 
-        self.assertEqual(executor._current_retries, 1)
+        # Connector handles retry internally; when it raises, executor transitions to FAILED
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
 
     async def test_close_position_exception_with_signature(self):
         """Test _close_position handles exception with signature in metadata"""
         executor = self.get_executor()
+        executor.lp_position_state.state = LPExecutorStates.CLOSING
         executor.lp_position_state.position_address = "pos123"
 
         mock_position = MagicMock()
@@ -889,32 +1059,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         await executor._close_position()
 
-        self.assertEqual(executor._current_retries, 1)
-
-    def test_handle_close_failure_timeout_message(self):
-        """Test _handle_close_failure logs timeout appropriately"""
-        executor = self.get_executor()
-        executor._handle_close_failure(Exception("TRANSACTION_TIMEOUT: tx not confirmed"))
-        self.assertEqual(executor._current_retries, 1)
-
-    def test_handle_close_failure_with_signature(self):
-        """Test _handle_close_failure includes signature in message"""
-        executor = self.get_executor()
-        executor._current_retries = 9
-        executor.lp_position_state.position_address = "pos123"
-
-        executor._handle_close_failure(Exception("Error"), signature="sig123")
-
-        self.assertTrue(executor._max_retries_reached)
-
-    async def test_handle_create_failure_with_signature(self):
-        """Test _handle_create_failure includes signature in message"""
-        executor = self.get_executor()
-        executor._current_retries = 9
-
-        await executor._handle_create_failure(Exception("Error"), signature="sig123")
-
-        self.assertTrue(executor._max_retries_reached)
+        # Connector handles retry internally; when it raises, executor transitions to FAILED
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
 
     def test_emit_already_closed_event(self):
         """Test _emit_already_closed_event emits synthetic event"""
@@ -1108,3 +1254,197 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             await executor.control_task()
 
         connector.get_pool_info_by_address.assert_called_once()
+
+    async def test_control_task_failed_state(self):
+        """Test control_task handles FAILED state"""
+        executor = self.get_executor()
+        executor._status = RunnableStatus.RUNNING
+        executor.lp_position_state.state = LPExecutorStates.FAILED
+
+        mock_pool_info = MagicMock()
+        mock_pool_info.price = 100.0
+        connector = self.strategy.connectors["meteora/clmm"]
+        connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
+
+        with patch.object(executor, 'stop') as mock_stop:
+            await executor.control_task()
+            self.assertEqual(executor.close_type, CloseType.FAILED)
+            mock_stop.assert_called_once()
+
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
+    def test_validate_connector_wrong_type(self):
+        """Test connector validation fails for non-CLMM type"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="meteora/amm",  # Wrong type
+            trading_pair="SOL-USDC",
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+        executor.stop = MagicMock()
+
+        result = executor._validate_and_normalize_connector("meteora/amm")
+
+        self.assertIsNone(result)
+        self.assertEqual(executor.close_type, CloseType.FAILED)
+        executor.stop.assert_called_once()
+
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
+    def test_validate_connector_not_found(self):
+        """Test connector validation fails for unknown connector"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="unknown/clmm",
+            trading_pair="SOL-USDC",
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+        executor.stop = MagicMock()
+
+        result = executor._validate_and_normalize_connector("unknown/clmm")
+
+        self.assertIsNone(result)
+        self.assertEqual(executor.close_type, CloseType.FAILED)
+        executor.stop.assert_called_once()
+
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm', 'orca/amm'})
+    def test_validate_connector_base_name_no_clmm_with_other_type(self):
+        """Test connector validation fails for base name with non-CLMM type available"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="orca",  # orca/amm exists but not orca/clmm
+            trading_pair="SOL-USDC",
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+        executor.stop = MagicMock()
+
+        result = executor._validate_and_normalize_connector("orca")
+
+        self.assertIsNone(result)
+        self.assertEqual(executor.close_type, CloseType.FAILED)
+        executor.stop.assert_called_once()
+
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
+    def test_validate_connector_base_name_not_found(self):
+        """Test connector validation fails for unknown base name"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="unknown",
+            trading_pair="SOL-USDC",
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+        executor.stop = MagicMock()
+
+        result = executor._validate_and_normalize_connector("unknown")
+
+        self.assertIsNone(result)
+        self.assertEqual(executor.close_type, CloseType.FAILED)
+        executor.stop.assert_called_once()
+
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
+    def test_validate_connector_success_full_name(self):
+        """Test connector validation succeeds with full name"""
+        executor = self.get_executor()
+
+        result = executor._validate_and_normalize_connector("meteora/clmm")
+
+        self.assertEqual(result, "meteora/clmm")
+
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
+    def test_validate_connector_success_base_name(self):
+        """Test connector validation auto-appends /clmm"""
+        executor = self.get_executor()
+
+        result = executor._validate_and_normalize_connector("meteora")
+
+        self.assertEqual(result, "meteora/clmm")
+
+    async def test_on_start_resolve_trading_pair(self):
+        """Test on_start resolves trading pair from pool address"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="meteora/clmm",
+            trading_pair="",  # Empty - should be resolved
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+
+        connector = self.strategy.connectors["meteora/clmm"]
+        connector.resolve_trading_pair_from_pool = AsyncMock(return_value={"trading_pair": "SOL-USDC"})
+
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'}):
+            await executor.on_start()
+
+        self.assertEqual(executor.config.trading_pair, "SOL-USDC")
+
+    async def test_on_start_resolve_trading_pair_failure(self):
+        """Test on_start fails when trading pair resolution fails"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="meteora/clmm",
+            trading_pair="",  # Empty - should be resolved
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+        executor.stop = MagicMock()
+
+        connector = self.strategy.connectors["meteora/clmm"]
+        connector.resolve_trading_pair_from_pool = AsyncMock(return_value=None)
+
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'}):
+            await executor.on_start()
+
+        self.assertEqual(executor.close_type, CloseType.FAILED)
+        executor.stop.assert_called_once()
+
+    async def test_on_start_connector_normalization(self):
+        """Test on_start normalizes connector name"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="meteora",  # Base name only
+            trading_pair="SOL-USDC",
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'}):
+            await executor.on_start()
+
+        self.assertEqual(executor.config.connector_name, "meteora/clmm")
