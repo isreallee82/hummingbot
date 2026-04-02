@@ -178,6 +178,34 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
     def get_sell_collateral_token(self, trading_pair: str) -> str:
         return self._trading_rules[trading_pair].sell_order_collateral_token
 
+    async def _create_order(
+        self,
+        trade_type: TradeType,
+        order_id: str,
+        trading_pair: str,
+        amount: Decimal,
+        order_type: OrderType,
+        price: Optional[Decimal] = None,
+        position_action: PositionAction = PositionAction.NIL,
+        **kwargs,
+    ):
+        effective_position_action = self._effective_position_action(
+            trading_pair=trading_pair,
+            trade_type=trade_type,
+            amount=amount,
+            position_action=position_action,
+        )
+        await super()._create_order(
+            trade_type=trade_type,
+            order_id=order_id,
+            trading_pair=trading_pair,
+            amount=amount,
+            order_type=order_type,
+            price=price,
+            position_action=effective_position_action,
+            **kwargs,
+        )
+
     async def _make_network_check_request(self):
         await self._api_post(path_url=self.check_network_request_path, data={"kind": ["PERPETUAL"], "limit": 1})
 
@@ -514,6 +542,7 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
                         )
                     )
                     safe_ensure_future(self._update_balances())
+                    safe_ensure_future(self._update_positions())
                 elif stream == CONSTANTS.PRIVATE_WS_CHANNEL_STATE:
                     tracked_order = self._tracked_order_from_ids(
                         client_order_id=str(feed.get("client_order_id")),
@@ -532,6 +561,7 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
                         )
                     )
                     safe_ensure_future(self._update_balances())
+                    safe_ensure_future(self._update_positions())
                 elif stream == CONSTANTS.PRIVATE_WS_CHANNEL_ORDER:
                     tracked_order = self._tracked_order_from_ids(
                         client_order_id=str(feed.get("metadata", {}).get("client_order_id")),
@@ -543,6 +573,7 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
                         self._order_update_from_order_data(order_data=feed, tracked_order=tracked_order)
                     )
                     safe_ensure_future(self._update_balances())
+                    safe_ensure_future(self._update_positions())
                 elif stream == CONSTANTS.PRIVATE_WS_CHANNEL_POSITION:
                     await self._process_position_stream_event(feed)
                     safe_ensure_future(self._update_balances())
@@ -618,6 +649,78 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
     def _new_client_order_id(self) -> str:
         raw_client_order_id = get_new_numeric_client_order_id(self._nonce_creator, max_id_bit_count=63)
         return str(raw_client_order_id | CONSTANTS.CLIENT_ORDER_ID_HIGH_BIT)
+
+    def _effective_position_action(
+        self,
+        trading_pair: str,
+        trade_type: TradeType,
+        amount: Decimal,
+        position_action: PositionAction,
+    ) -> PositionAction:
+        if position_action != PositionAction.OPEN or self._position_mode != PositionMode.ONEWAY:
+            return position_action
+        current_position = self._active_position_for_trading_pair(trading_pair)
+        if current_position is None:
+            return position_action
+        current_trade_side = TradeType.BUY if current_position.amount > 0 else TradeType.SELL
+        if current_trade_side == trade_type:
+            return position_action
+        if abs(current_position.amount) >= amount:
+            return PositionAction.CLOSE
+        return position_action
+
+    def _active_position_for_trading_pair(self, trading_pair: str) -> Optional[Position]:
+        position = self.account_positions.get(trading_pair)
+        if position is not None and position.amount != Decimal("0"):
+            return position
+        return None
+
+    def _is_reduce_only_position_absent_error(self, exception: Exception) -> bool:
+        return "Reduce only order with no position" in str(exception)
+
+    def _on_order_failure(
+        self,
+        order_id: str,
+        trading_pair: str,
+        amount: Decimal,
+        trade_type: TradeType,
+        order_type: OrderType,
+        price: Optional[Decimal],
+        exception: Exception,
+        **kwargs,
+    ):
+        position_action = kwargs.get("position_action")
+
+        if position_action == PositionAction.CLOSE and self._is_reduce_only_position_absent_error(exception):
+            self.logger().info(
+                f"Treating rejected reduce-only close order {order_id} as already closed for {trading_pair}: {exception}"
+            )
+            self._order_tracker.process_order_update(
+                OrderUpdate(
+                    trading_pair=trading_pair,
+                    update_timestamp=self.current_timestamp,
+                    new_state=OrderState.FILLED,
+                    client_order_id=order_id,
+                    misc_updates={
+                        "error_message": str(exception),
+                        "error_type": exception.__class__.__name__,
+                    },
+                )
+            )
+            safe_ensure_future(self._update_positions())
+            safe_ensure_future(self._update_balances())
+            return
+
+        super()._on_order_failure(
+            order_id=order_id,
+            trading_pair=trading_pair,
+            amount=amount,
+            trade_type=trade_type,
+            order_type=order_type,
+            price=price,
+            exception=exception,
+            **kwargs,
+        )
 
     @staticmethod
     def _is_active_exchange_order_id(exchange_order_id: Optional[str]) -> bool:
