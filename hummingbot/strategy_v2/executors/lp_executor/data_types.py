@@ -30,20 +30,33 @@ class LPExecutorConfig(ExecutorConfigBase):
     - Monitors position state (IN_RANGE, OUT_OF_RANGE)
     - Closes when price exceeds upper_limit_price or lower_limit_price
     - Closes position when executor stops (unless keep_position=True)
+
+    Connector Architecture:
+    - connector_name: The network identifier (e.g., "solana-mainnet-beta")
+      This is the "connector" that hummingbot connects to, similar to exchange connectors.
+    - dex_name: The DEX protocol to use (e.g., "orca", "meteora", "raydium")
+      This specifies which DEX's pools/routes to use on that network.
+    - trading_type: The pool type (default "clmm" for concentrated liquidity)
+      Together with dex_name, constructs gateway route: connectors/{dex_name}/{trading_type}/...
     """
     type: Literal["lp_executor"] = "lp_executor"
 
-    # Market and pool identification
+    # Network as connector - e.g., "solana-mainnet-beta"
+    # This is the network connector that hummingbot connects to
     connector_name: str
+
+    # DEX protocol - e.g., "orca", "meteora", "raydium"
+    # Used to construct gateway routes: connectors/{dex_name}/{trading_type}/...
+    dex_name: str
+
+    # Pool type - default "clmm" for concentrated liquidity
+    trading_type: str = "clmm"
+
+    # Pool identification
     pool_address: str
 
     # Optional - resolved from pool_address if not provided
     trading_pair: Optional[str] = None
-
-    # Network specification (e.g., "solana-mainnet-beta", "ethereum-base")
-    # Format: "{chain}-{network}" - same convention as swap_executor
-    # Optional - uses default network from gateway config if not provided
-    network: Optional[str] = None
 
     # Position price bounds
     lower_price: Decimal

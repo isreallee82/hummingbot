@@ -8,12 +8,12 @@ import pandas as pd
 from hummingbot.client.command.command_utils import GatewayCommandUtils
 
 if TYPE_CHECKING:
-    from hummingbot.connector.gateway.gateway_lp import (
+    from hummingbot.connector.gateway.gateway import (
         AMMPoolInfo,
         AMMPositionInfo,
         CLMMPoolInfo,
         CLMMPositionInfo,
-        GatewayLp,
+        Gateway,
     )
 
 
@@ -23,7 +23,7 @@ class LPCommandUtils:
     @staticmethod
     async def fetch_and_display_pool_info(
         app: Any,  # HummingbotApplication
-        lp_connector: "GatewayLp",
+        lp_connector: "Gateway",
         user_trading_pair: str,
         is_clmm: bool
     ) -> Optional[Tuple[Any, str, str, str, str]]:
@@ -31,7 +31,7 @@ class LPCommandUtils:
         Fetch pool info and display enhanced notification with pool details.
 
         :param app: HummingbotApplication instance
-        :param lp_connector: GatewayLp connector instance
+        :param lp_connector: Gateway connector instance
         :param user_trading_pair: Trading pair entered by user
         :param is_clmm: Whether the connector is CLMM type
         :return: Tuple of (pool_info, pool_address, base_token, quote_token, trading_pair) or None if error

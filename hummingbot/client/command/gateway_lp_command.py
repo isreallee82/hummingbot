@@ -6,13 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 from hummingbot.client.command.command_utils import GatewayCommandUtils
 from hummingbot.client.command.lp_command_utils import LPCommandUtils
 from hummingbot.connector.gateway.common_types import ConnectorType, TransactionStatus, get_connector_type
-from hummingbot.connector.gateway.gateway_lp import (
-    AMMPoolInfo,
-    AMMPositionInfo,
-    CLMMPoolInfo,
-    CLMMPositionInfo,
-    GatewayLp,
-)
+from hummingbot.connector.gateway.gateway import AMMPoolInfo, AMMPositionInfo, CLMMPoolInfo, CLMMPositionInfo, Gateway
 from hummingbot.connector.utils import split_hb_trading_pair
 from hummingbot.core.utils.async_utils import safe_ensure_future
 
@@ -189,8 +183,14 @@ class GatewayLPCommand:
             trading_pair = f"{position.base_token}-{position.quote_token}"
 
             # Create temporary connector to fetch pool info
-            lp_connector = GatewayLp(
-                connector_name=connector,
+            # connector_name is the network identifier (e.g., 'solana-mainnet-beta')
+            network_connector = f"{chain}-{network}"
+            # Parse dex_name from connector (e.g., "orca/clmm" -> "orca")
+            dex_name = connector.split("/")[0] if "/" in connector else connector
+            trading_type = connector.split("/")[1] if "/" in connector else "clmm"
+
+            lp_connector = Gateway(
+                connector_name=network_connector,
                 chain=chain,
                 network=network,
                 address=wallet_address,
@@ -198,7 +198,9 @@ class GatewayLPCommand:
             )
             await lp_connector.start_network()
 
-            pool_info = await lp_connector.get_pool_info(trading_pair)
+            pool_info = await lp_connector.get_pool_info_by_address(
+                position.pool_address, dex_name=dex_name, trading_type=trading_type
+            )
             if pool_info:
                 self.notify("\nPool Statistics:")
                 self.notify(f"  Total Liquidity: {pool_info.base_token_amount:.2f} / "
@@ -212,7 +214,7 @@ class GatewayLPCommand:
 
     async def _monitor_fee_collection_tx(
         self,
-        connector: GatewayLp,
+        connector: Gateway,
         tx_hash: str,
         timeout: float = 60.0
     ) -> Dict[str, Any]:
@@ -273,9 +275,16 @@ class GatewayLPCommand:
                 self.notify(f"Error: {error}")
                 return
 
-            # 3. Determine connector type
+            # 3. Determine connector type and parse dex/trading_type
             connector_type = get_connector_type(connector)
             is_clmm = connector_type == ConnectorType.CLMM
+
+            # Parse dex_name and trading_type from connector (e.g., "orca/clmm" -> dex_name="orca", trading_type="clmm")
+            if "/" in connector:
+                dex_name, trading_type = connector.split("/", 1)
+            else:
+                dex_name = connector
+                trading_type = "clmm" if is_clmm else "amm"
 
             self.notify(f"\n=== Liquidity Positions on {connector} ===")
             self.notify(f"Chain: {chain}")
@@ -283,8 +292,10 @@ class GatewayLPCommand:
             self.notify(f"Wallet: {GatewayCommandUtils.format_address_display(wallet_address)}")
 
             # 4. Create LP connector instance to fetch positions
-            lp_connector = GatewayLp(
-                connector_name=connector,
+            # connector_name is the network identifier (e.g., 'solana-mainnet-beta')
+            network_connector = f"{chain}-{network}"
+            lp_connector = Gateway(
+                connector_name=network_connector,
                 chain=chain,
                 network=network,
                 address=wallet_address,
@@ -342,7 +353,7 @@ class GatewayLPCommand:
                 self.notify(f"\nFetching positions for {user_trading_pair} (pool: {GatewayCommandUtils.format_address_display(pool_address)})...")
 
                 # Get positions for this pool
-                positions = await lp_connector.get_user_positions(pool_address=pool_address)
+                positions = await lp_connector.get_user_positions(dex_name=dex_name, trading_type=trading_type, pool_address=pool_address)
 
                 if not positions:
                     self.notify(f"\nNo liquidity positions found for {user_trading_pair}")
@@ -408,9 +419,16 @@ class GatewayLPCommand:
                 self.notify(f"Error: {error}")
                 return
 
-            # 3. Determine connector type
+            # 3. Determine connector type and parse dex/trading_type
             connector_type = get_connector_type(connector)
             is_clmm = connector_type == ConnectorType.CLMM
+
+            # Parse dex_name and trading_type from connector (e.g., "orca/clmm" -> dex_name="orca", trading_type="clmm")
+            if "/" in connector:
+                dex_name, trading_type = connector.split("/", 1)
+            else:
+                dex_name = connector
+                trading_type = "clmm" if is_clmm else "amm"
 
             self.notify(f"\n=== Add Liquidity to {connector} ===")
             self.notify(f"Chain: {chain}")
@@ -450,8 +468,10 @@ class GatewayLPCommand:
                     user_trading_pair = f"{user_base_token}-{user_quote_token}"
 
                 # 6. Create LP connector instance and start network
-                lp_connector = GatewayLp(
-                    connector_name=connector,
+                # connector_name is the network identifier (e.g., 'solana-mainnet-beta')
+                network_connector = f"{chain}-{network}"
+                lp_connector = Gateway(
+                    connector_name=network_connector,
                     chain=chain,
                     network=network,
                     address=wallet_address,
@@ -736,6 +756,8 @@ class GatewayLPCommand:
                     order_id = lp_connector.add_liquidity(
                         trading_pair=trading_pair,
                         price=pool_info.price,
+                        dex_name=dex_name,
+                        trading_type=trading_type,
                         lower_price=position_params.get('lower_price'),
                         upper_price=position_params.get('upper_price'),
                         base_token_amount=base_amount,
@@ -746,6 +768,8 @@ class GatewayLPCommand:
                     order_id = lp_connector.add_liquidity(
                         trading_pair=trading_pair,
                         price=pool_info.price,
+                        dex_name=dex_name,
+                        trading_type=trading_type,
                         base_token_amount=base_amount,
                         quote_token_amount=quote_amount,
                         slippage_pct=slippage_pct
@@ -816,9 +840,16 @@ class GatewayLPCommand:
                 self.notify(f"Error: {error}")
                 return
 
-            # 3. Determine connector type
+            # 3. Determine connector type and parse dex/trading_type
             connector_type = get_connector_type(connector)
             is_clmm = connector_type == ConnectorType.CLMM
+
+            # Parse dex_name and trading_type from connector (e.g., "orca/clmm" -> dex_name="orca", trading_type="clmm")
+            if "/" in connector:
+                dex_name, trading_type = connector.split("/", 1)
+            else:
+                dex_name = connector
+                trading_type = "clmm" if is_clmm else "amm"
 
             self.notify(f"\n=== Remove Liquidity from {connector} ===")
             self.notify(f"Chain: {chain}")
@@ -826,8 +857,10 @@ class GatewayLPCommand:
             self.notify(f"Wallet: {GatewayCommandUtils.format_address_display(wallet_address)}")
 
             # 4. Create LP connector instance (needed for getting positions)
-            lp_connector = GatewayLp(
-                connector_name=connector,
+            # connector_name is the network identifier (e.g., 'solana-mainnet-beta')
+            network_connector = f"{chain}-{network}"
+            lp_connector = Gateway(
+                connector_name=network_connector,
                 chain=chain,
                 network=network,
                 address=wallet_address,
@@ -881,7 +914,7 @@ class GatewayLPCommand:
                     self.notify(f"\nFetching positions for {user_trading_pair} (pool: {GatewayCommandUtils.format_address_display(pool_address)})...")
 
                     # Get positions for this pool
-                    positions = await lp_connector.get_user_positions(pool_address=pool_address)
+                    positions = await lp_connector.get_user_positions(dex_name=dex_name, trading_type=trading_type, pool_address=pool_address)
 
                     if not positions:
                         self.notify(f"\nNo liquidity positions found for {user_trading_pair}")
@@ -1011,6 +1044,8 @@ class GatewayLPCommand:
                     # - For AMM: always uses amm_remove_liquidity
                     order_id = lp_connector.remove_liquidity(
                         trading_pair=trading_pair_result,
+                        dex_name=dex_name,
+                        trading_type=trading_type,
                         position_address=position_address,
                         percentage=percentage
                     )
@@ -1099,8 +1134,14 @@ class GatewayLPCommand:
             self.notify(f"Wallet: {GatewayCommandUtils.format_address_display(wallet_address)}")
 
             # 4. Create LP connector instance to fetch positions
-            lp_connector = GatewayLp(
-                connector_name=connector,
+            # connector_name is the network identifier (e.g., 'solana-mainnet-beta')
+            network_connector = f"{chain}-{network}"
+            # Parse dex_name from connector (e.g., "orca/clmm" -> "orca")
+            dex_name = connector.split("/")[0] if "/" in connector else connector
+            trading_type = connector.split("/")[1] if "/" in connector else "clmm"
+
+            lp_connector = Gateway(
+                connector_name=network_connector,
                 chain=chain,
                 network=network,
                 address=wallet_address,
@@ -1155,7 +1196,7 @@ class GatewayLPCommand:
                     self.notify(f"\nFetching positions for {user_trading_pair} (pool: {GatewayCommandUtils.format_address_display(pool_address)})...")
 
                     # Get positions for this pool
-                    all_positions = await lp_connector.get_user_positions(pool_address=pool_address)
+                    all_positions = await lp_connector.get_user_positions(dex_name=dex_name, trading_type=trading_type, pool_address=pool_address)
 
                     # Filter positions with fees > 0
                     positions_with_fees = [

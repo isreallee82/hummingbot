@@ -1,7 +1,7 @@
 """
 SwapExecutor - Executes single swaps on Gateway AMM connectors.
 
-Uses GatewaySwap connector's place_order functionality for proper order tracking,
+Uses Gateway connector's place_order functionality for proper order tracking,
 event emission, and retry logic at the connector level.
 """
 import asyncio
@@ -10,8 +10,8 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Union
 
 from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.gateway.gateway import Gateway
 from hummingbot.connector.gateway.gateway_base import extract_error_code
-from hummingbot.connector.gateway.gateway_swap import GatewaySwap
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.event.events import (
@@ -33,7 +33,7 @@ class SwapExecutor(ExecutorBase):
     """
     Executor for single swap operations on Gateway AMM connectors.
 
-    Uses the GatewaySwap connector's place_order functionality which handles:
+    Uses the Gateway connector's place_order functionality which handles:
     - Order tracking
     - Event emission (OrderCreated, OrderFilled, OrderCompleted)
     - Retry logic for transaction timeouts
@@ -102,22 +102,22 @@ class SwapExecutor(ExecutorBase):
         # Position tracking - store completed swaps for position aggregation
         self._held_position_orders: List[Dict] = []
 
-    def _validate_and_normalize_connector(self, connector_name: str) -> Optional[str]:
+    def _validate_and_normalize_swap_provider(self, swap_provider: str) -> Optional[str]:
         """
-        Validate and normalize connector name for swap executor.
+        Validate and normalize swap provider for swap executor.
 
-        - If connector already has /router suffix, validates it exists
-        - If connector is base name only (e.g., "jupiter"), auto-appends /router
+        - If provider already has /router suffix, validates it exists
+        - If provider is base name only (e.g., "jupiter"), auto-appends /router
         - Uses GATEWAY_CONNECTORS list populated at gateway startup
 
         Args:
-            connector_name: Connector name from config
+            swap_provider: Swap provider from config (e.g., "jupiter/router")
 
         Returns:
-            Normalized connector name, or None if validation failed (executor stopped)
+            Normalized swap provider, or None if validation failed (executor stopped)
         """
         normalized, success = validate_and_normalize_connector(
-            connector_name, "router", self.logger().error
+            swap_provider, "router", self.logger().error
         )
         if not success:
             self.close_type = CloseType.FAILED
@@ -126,37 +126,32 @@ class SwapExecutor(ExecutorBase):
         return normalized
 
     async def on_start(self):
-        """Start executor - validates connector and resolves network."""
+        """Start executor - validates swap provider and resolves network from connector_name."""
         await super().on_start()
 
-        # Validate and normalize connector name (auto-append /router if needed)
-        normalized_connector = self._validate_and_normalize_connector(self.config.connector_name)
-        if normalized_connector is None:
+        # Validate and normalize swap provider (auto-append /router if needed)
+        normalized_provider = self._validate_and_normalize_swap_provider(self.config.swap_provider)
+        if normalized_provider is None:
             # Validation failed - executor already stopped
             return
 
-        if normalized_connector != self.config.connector_name:
-            self.logger().info(f"Normalized connector: {self.config.connector_name} -> {normalized_connector}")
-            object.__setattr__(self.config, 'connector_name', normalized_connector)
+        if normalized_provider != self.config.swap_provider:
+            self.logger().info(f"Normalized swap provider: {self.config.swap_provider} -> {normalized_provider}")
+            object.__setattr__(self.config, 'swap_provider', normalized_provider)
 
-        # Resolve network from config or connector
+        # Resolve network from connector_name (connector_name IS the network in new architecture)
         connector = self._get_connector()
-        if self.config.network:
-            # User provided network - parse it
-            self._chain, self._network_name = self.parse_network(self.config.network)
-        elif connector:
-            # Get network from connector
+        if connector:
             self._chain = connector.chain
             self._network_name = connector.network
             self.logger().info(f"Using connector network: {self._chain}-{self._network_name}")
         else:
-            self.logger().error("No network provided and connector not available")
-            self.close_type = CloseType.FAILED
-            self.stop()
-            return
+            # Parse network from connector_name directly (e.g., "solana-mainnet-beta")
+            self._chain, self._network_name = self.parse_network(self.config.connector_name)
+            self.logger().info(f"Parsed network from connector_name: {self._chain}-{self._network_name}")
 
-    def _get_connector(self) -> Optional[GatewaySwap]:
-        """Get the connector for this swap."""
+    def _get_connector(self) -> Optional[Gateway]:
+        """Get the connector for this swap (network connector)."""
         connector_name = self.config.connector_name
         # Try exact match first
         if connector_name in self.connectors:
@@ -213,7 +208,7 @@ class SwapExecutor(ExecutorBase):
             base: Base token symbol
             quote: Quote token symbol
             amount: Amount to swap
-            swap_providers: List of providers to fetch quotes from
+            swap_providers: List of providers to fetch quotes from (e.g., ["jupiter/router", "orca/clmm"])
 
         Returns:
             List of dicts with provider, quote, and pool_address for successful quotes
@@ -222,18 +217,18 @@ class SwapExecutor(ExecutorBase):
             try:
                 pool_address = None
                 if "/" in provider:
-                    connector_base, connector_type = provider.split("/", 1)
+                    dex_name, trading_type = provider.split("/", 1)
                 else:
-                    connector_base = provider
-                    connector_type = "router"
+                    dex_name = provider
+                    trading_type = "router"
 
                 # Look up pool address for CLMM/AMM providers
-                if connector_type in ("clmm", "amm"):
+                if trading_type in ("clmm", "amm"):
                     pool_info = await gateway.get_pool(
                         trading_pair=self.config.trading_pair,
-                        connector=connector_base,
+                        dex=dex_name,
                         network=self._network_name,
-                        type=connector_type
+                        trading_type=trading_type
                     )
                     pool_address = pool_info.get("address")
                     if not pool_address:
@@ -243,7 +238,8 @@ class SwapExecutor(ExecutorBase):
                 # Fetch quote
                 quote_result = await gateway.quote_swap(
                     network=self._network_name,
-                    connector=provider,
+                    dex=dex_name,
+                    trading_type=trading_type,
                     base_asset=base,
                     quote_asset=quote,
                     amount=amount,
@@ -292,21 +288,21 @@ class SwapExecutor(ExecutorBase):
     ) -> Optional[str]:
         """Get pool address for CLMM/AMM providers."""
         if "/" in provider:
-            connector_base, connector_type = provider.split("/", 1)
+            dex_name, trading_type = provider.split("/", 1)
         else:
-            connector_base = provider
-            connector_type = "router"
+            dex_name = provider
+            trading_type = "router"
 
         # Only CLMM/AMM providers need pool address lookup
-        if connector_type not in ("clmm", "amm"):
+        if trading_type not in ("clmm", "amm"):
             return None
 
         try:
             pool_info = await gateway.get_pool(
                 trading_pair=self.config.trading_pair,
-                connector=connector_base,
+                dex=dex_name,
                 network=self._network_name,
-                type=connector_type
+                trading_type=trading_type
             )
             return pool_info.get("address")
         except Exception as e:
@@ -332,10 +328,10 @@ class SwapExecutor(ExecutorBase):
 
         try:
             # Determine swap providers for quote comparison
-            swap_providers = list(self.config.swap_providers or [])
-            # Always include the main connector
-            if self.config.connector_name not in swap_providers:
-                swap_providers.insert(0, self.config.connector_name)
+            swap_providers = list(self.config.additional_swap_providers or [])
+            # Always include the main swap_provider
+            if self.config.swap_provider not in swap_providers:
+                swap_providers.insert(0, self.config.swap_provider)
 
             # If multiple providers, fetch quotes and select best
             selected_pool_address = None
@@ -356,20 +352,20 @@ class SwapExecutor(ExecutorBase):
                 )
 
                 # If best quote is from a different provider, we need that connector
-                if self._selected_provider != self.config.connector_name:
+                if self._selected_provider != self.config.swap_provider:
                     self.logger().warning(
-                        f"Best quote from {self._selected_provider} but using {self.config.connector_name}. "
+                        f"Best quote from {self._selected_provider} but using {self.config.swap_provider}. "
                         "For optimal execution, configure the controller to use the best provider."
                     )
             else:
-                self._selected_provider = self.config.connector_name
+                self._selected_provider = self.config.swap_provider
                 selected_pool_address = await self._get_pool_address_for_provider(
-                    gateway, self.config.connector_name
+                    gateway, self.config.swap_provider
                 )
 
             self.logger().info(
                 f"Executing swap: {side.name} {amount} {base} "
-                f"on {self.config.connector_name}"
+                f"on {self.config.swap_provider} (network: {self.config.connector_name})"
             )
 
             # Use connector's place_order method
@@ -624,12 +620,14 @@ class SwapExecutor(ExecutorBase):
 
     def get_custom_info(self) -> Dict:
         """Return custom info for reporting."""
-        # Use resolved network or config network
-        network = f"{self._chain}-{self._network_name}" if self._chain and self._network_name else self.config.network
+        # Use resolved network or connector_name (which is the network)
+        network = f"{self._chain}-{self._network_name}" if self._chain and self._network_name else self.config.connector_name
         return {
             "state": self._state.value,
             "network": network,
             "connector_name": self.config.connector_name,
+            "swap_provider": self.config.swap_provider,
+            "selected_provider": self._selected_provider,
             "side": self.config.side.name,
             "amount": float(self.config.amount),
             "executed_amount": float(self._executed_amount),
@@ -638,7 +636,6 @@ class SwapExecutor(ExecutorBase):
             "tx_hash": self._exchange_order_id,
             "order_id": self._order_id,
             "exchange_order_id": self._exchange_order_id,
-            "swap_provider": self._selected_provider,
             # Position tracking fields (consistent with order_executor)
             "filled_amount_base": float(self._executed_amount),
             "filled_amount_quote": float(self._executed_amount * self._executed_price),

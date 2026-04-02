@@ -82,13 +82,13 @@ class GatewayPoolCommand:
     ):
         """View pool information."""
         try:
-            # Parse connector format
+            # Parse connector format (e.g., "uniswap/amm" -> dex_name="uniswap", trading_type="amm")
             if "/" not in connector:
                 self.notify(f"Error: Invalid connector format '{connector}'. Use format like 'uniswap/amm'")
                 return
 
             connector_parts = connector.split("/")
-            connector_name = connector_parts[0]
+            dex_name = connector_parts[0]
             trading_type = connector_parts[1]
 
             # Parse trading pair
@@ -113,9 +113,9 @@ class GatewayPoolCommand:
             # Get pool information
             response = await self._get_gateway_instance().get_pool(
                 trading_pair=trading_pair,
-                connector=connector_name,
+                dex=dex_name,
                 network=network,
-                type=trading_type
+                trading_type=trading_type
             )
 
             if "error" in response:
@@ -142,13 +142,13 @@ class GatewayPoolCommand:
     ):
         """Direct mode to add a pool with just the address."""
         try:
-            # Parse connector format
+            # Parse connector format (e.g., "uniswap/amm" -> dex_name="uniswap", trading_type="amm")
             if "/" not in connector:
                 self.notify(f"Error: Invalid connector format '{connector}'. Use format like 'uniswap/amm'")
                 return
 
             connector_parts = connector.split("/")
-            connector_name = connector_parts[0]
+            dex_name = connector_parts[0]
             trading_type = connector_parts[1]
 
             # Parse trading pair
@@ -176,7 +176,8 @@ class GatewayPoolCommand:
             self.notify("\nFetching pool information from Gateway...")
             try:
                 pool_info_response = await self._get_gateway_instance().pool_info(
-                    connector=connector,
+                    dex=dex_name,
+                    trading_type=trading_type,
                     network=network,
                     pool_address=pool_address
                 )
@@ -271,7 +272,7 @@ class GatewayPoolCommand:
             # Add pool
             self.notify("\nAdding pool...")
             result = await self._get_gateway_instance().add_pool(
-                connector=connector_name,
+                connector=dex_name,
                 network=network,
                 pool_data=pool_data
             )
@@ -307,7 +308,7 @@ class GatewayPoolCommand:
                 return
 
             connector_parts = connector.split("/")
-            connector_name = connector_parts[0]
+            dex_name = connector_parts[0]
             trading_type = connector_parts[1]
 
             # Parse trading pair
@@ -336,9 +337,9 @@ class GatewayPoolCommand:
                 try:
                     existing_pool = await self._get_gateway_instance().get_pool(
                         trading_pair=trading_pair,
-                        connector=connector_name,
+                        dex=dex_name,
                         network=network,
-                        type=trading_type
+                        trading_type=trading_type
                     )
                 except Exception:
                     # Pool doesn't exist, which is fine for adding a new pool
@@ -375,7 +376,8 @@ class GatewayPoolCommand:
                 self.notify("\nFetching pool information from Gateway...")
                 try:
                     pool_info_response = await self._get_gateway_instance().pool_info(
-                        connector=connector,
+                        dex=dex_name,
+                        trading_type=trading_type,
                         network=network,
                         pool_address=pool_address
                     )
@@ -479,7 +481,7 @@ class GatewayPoolCommand:
                 # Add pool
                 self.notify("\nAdding pool...")
                 result = await self._get_gateway_instance().add_pool(
-                    connector=connector_name,
+                    connector=dex_name,
                     network=network,
                     pool_data=pool_data
                 )

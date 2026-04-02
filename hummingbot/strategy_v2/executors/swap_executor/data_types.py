@@ -27,17 +27,24 @@ class SwapExecutorConfig(ExecutorConfigBase):
 
     Executes a single swap on a Gateway AMM connector with retry logic
     for handling transaction timeouts and failures.
+
+    Connector Architecture:
+    - connector_name: The network identifier (e.g., "solana-mainnet-beta")
+      This is the "connector" that hummingbot connects to, similar to exchange connectors.
+    - swap_provider: The swap provider/aggregator to use (e.g., "jupiter/router", "orca/router")
+      This specifies which swap route to use on that network.
     """
     type: Literal["swap_executor"] = "swap_executor"
 
-    # Connector to use for the swap (e.g., "jupiter/router", "meteora/clmm")
-    # This connector handles order tracking, events, and retry logic
+    # Network as connector - e.g., "solana-mainnet-beta"
+    # This is the network connector that hummingbot connects to
     connector_name: str
-    trading_pair: str
 
-    # Network identification (e.g., "solana-mainnet-beta", "ethereum-mainnet")
-    # Optional - uses connector's default network if not provided
-    network: Optional[str] = None
+    # Swap provider - e.g., "jupiter/router", "orca/router"
+    # Used to construct gateway routes for swaps
+    swap_provider: str
+
+    trading_pair: str
 
     # Trade parameters
     side: TradeType        # BUY or SELL
@@ -49,7 +56,7 @@ class SwapExecutorConfig(ExecutorConfigBase):
     # Multi-provider quote comparison (optional)
     # If set, fetches quotes from all providers and executes with best price
     # Example: ["jupiter/router", "meteora/clmm", "orca/clmm"]
-    # The connector_name is always included in quote comparison
-    swap_providers: Optional[List[str]] = None
+    # The swap_provider is always included in quote comparison
+    additional_swap_providers: Optional[List[str]] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

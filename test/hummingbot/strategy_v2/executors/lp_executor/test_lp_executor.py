@@ -109,7 +109,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         connector._lp_orders_metadata = {}
 
         strategy.connectors = {
-            "meteora/clmm": connector,
+            "solana-mainnet-beta": connector,
         }
         strategy.notify_hb_app_with_timestamp = MagicMock()
         return strategy
@@ -118,7 +118,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         return LPExecutorConfig(
             id="test-lp-1",
             timestamp=1234567890,
-            connector_name="meteora/clmm",
+            connector_name="solana-mainnet-beta",
+            dex_name="meteora",
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -137,7 +138,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
     def test_executor_initialization(self):
         """Test executor initializes with correct state"""
         executor = self.get_executor()
-        self.assertEqual(executor.config.connector_name, "meteora/clmm")
+        self.assertEqual(executor.config.connector_name, "solana-mainnet-beta")
         self.assertEqual(executor.config.trading_pair, "SOL-USDC")
         self.assertEqual(executor.lp_position_state.state, LPExecutorStates.NOT_ACTIVE)
         self.assertIsNone(executor._pool_info)
@@ -453,7 +454,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_pool_info.address = "pool123"
         mock_pool_info.price = 100.0
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
 
         await executor.update_pool_info()
@@ -464,7 +465,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
     async def test_update_pool_info_error(self):
         """Test update_pool_info handles errors gracefully"""
         executor = self.get_executor()
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_pool_info_by_address = AsyncMock(side_effect=Exception("Network error"))
 
         await executor.update_pool_info()
@@ -509,7 +510,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_pool_info = MagicMock()
         mock_pool_info.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
         connector._clmm_add_liquidity = AsyncMock(side_effect=Exception("Test - prevent actual creation"))
 
@@ -526,7 +527,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_pool_info = MagicMock()
         mock_pool_info.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
 
         with patch.object(executor, 'stop') as mock_stop:
@@ -555,7 +556,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.upper_price = 105.0
         mock_position.price = 120.0  # Above upper_limit_price (115)
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
 
         await executor.control_task()
@@ -586,7 +587,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.upper_price = 105.0
         mock_position.price = 85.0  # Below lower_limit_price (90)
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
 
         await executor.control_task()
@@ -614,7 +615,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.upper_price = 105.0
         mock_position.price = 120.0  # Out of range but no limit set
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
 
         await executor.control_task()
@@ -635,7 +636,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.lower_price = 94.0
         mock_position.upper_price = 106.0
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
 
         await executor._update_position_info()
@@ -650,7 +651,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(side_effect=Exception("Position closed: pos123"))
         connector.create_market_order_id = MagicMock(return_value="order-123")
         connector._trigger_remove_liquidity_event = MagicMock()
@@ -664,7 +665,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = None
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock()
 
         await executor._update_position_info()
@@ -685,7 +686,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=None)
 
         await executor._update_position_info()
@@ -696,7 +697,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(side_effect=Exception("Position not found: pos123"))
 
         await executor._update_position_info()
@@ -707,7 +708,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(side_effect=Exception("Network timeout"))
 
         await executor._update_position_info()
@@ -727,7 +728,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.upper_price = 106.0
         mock_position.price = 99.5
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
 
         await executor._update_position_info()
@@ -742,7 +743,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_pool_info = MagicMock()
         mock_pool_info.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
 
         with patch.object(executor, '_create_position', new_callable=AsyncMock) as mock_create:
@@ -758,7 +759,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_position = MagicMock()
         mock_position.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
 
         with patch.object(executor, '_close_position', new_callable=AsyncMock) as mock_close:
@@ -782,7 +783,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.lower_price = 95.0
         mock_position.upper_price = 105.0
         mock_position.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
 
         await executor.control_task()
@@ -802,7 +803,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.state = LPExecutorStates.OPENING
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._clmm_add_liquidity = AsyncMock(return_value="sig123")
         connector._lp_orders_metadata = {
             "order-123": {"position_address": "pos456", "position_rent": Decimal("0.002"), "tx_fee": Decimal("0.0001")}
@@ -832,7 +833,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.state = LPExecutorStates.OPENING
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._clmm_add_liquidity = AsyncMock(return_value="sig123")
         connector._lp_orders_metadata = {"order-123": {}}  # No position_address
 
@@ -847,7 +848,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.state = LPExecutorStates.OPENING
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._clmm_add_liquidity = AsyncMock(side_effect=Exception("Gateway error"))
         connector._lp_orders_metadata = {}
 
@@ -861,7 +862,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.state = LPExecutorStates.OPENING
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._clmm_add_liquidity = AsyncMock(side_effect=Exception("TRANSACTION_TIMEOUT"))
         connector._lp_orders_metadata = {"order-123": {"signature": "sig999"}}
 
@@ -874,7 +875,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         """Test _create_position fetches position info and stores initial amounts"""
         executor = self.get_executor()
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._clmm_add_liquidity = AsyncMock(return_value="sig123")
         connector._lp_orders_metadata = {
             "order-123": {"position_address": "pos456", "position_rent": Decimal("0.002"), "tx_fee": Decimal("0.0001")}
@@ -905,7 +906,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         """Test _create_position handles None position info response"""
         executor = self.get_executor()
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._clmm_add_liquidity = AsyncMock(return_value="sig123")
         connector._lp_orders_metadata = {
             "order-123": {"position_address": "pos456", "position_rent": Decimal("0.002")}
@@ -932,7 +933,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=None)
         connector._trigger_remove_liquidity_event = MagicMock()
 
@@ -946,7 +947,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(side_effect=Exception("Position closed: pos123"))
         connector._trigger_remove_liquidity_event = MagicMock()
 
@@ -959,7 +960,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(side_effect=Exception("Position not found: pos123"))
         connector._trigger_remove_liquidity_event = MagicMock()
 
@@ -972,7 +973,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         executor.lp_position_state.position_address = "pos123"
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         # First call raises error, but it's not "closed" or "not found"
         connector.get_position_info = AsyncMock(side_effect=Exception("Network timeout"))
         connector._clmm_close_position = AsyncMock(return_value="sig789")
@@ -1001,7 +1002,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_position = MagicMock()
         mock_position.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
         connector._clmm_close_position = AsyncMock(return_value="sig789")
         connector._lp_orders_metadata = {
@@ -1034,7 +1035,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_position = MagicMock()
         mock_position.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
         connector._clmm_close_position = AsyncMock(side_effect=Exception("Gateway error"))
         connector._lp_orders_metadata = {}
@@ -1052,7 +1053,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_position = MagicMock()
         mock_position.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
         connector._clmm_close_position = AsyncMock(side_effect=Exception("TRANSACTION_TIMEOUT"))
         connector._lp_orders_metadata = {"order-123": {"signature": "sig999"}}
@@ -1076,7 +1077,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_pool_info.price = 100.0
         executor._pool_info = mock_pool_info
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._trigger_remove_liquidity_event = MagicMock()
 
         executor._emit_already_closed_event()
@@ -1097,7 +1098,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor.lp_position_state.position_address = "pos123"
         executor._pool_info = None
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector._trigger_remove_liquidity_event = MagicMock()
 
         executor._emit_already_closed_event()
@@ -1110,7 +1111,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         config = LPExecutorConfig(
             id="test-lp-1",
             timestamp=1234567890,
-            connector_name="meteora/clmm",
+            connector_name="solana-mainnet-beta",
+            dex_name="meteora",
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1229,7 +1231,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_position.upper_price = 105.0
         mock_position.price = 100.0
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_position_info = AsyncMock(return_value=mock_position)
         connector.get_pool_info_by_address = AsyncMock()
 
@@ -1247,7 +1249,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         mock_pool_info = MagicMock()
         mock_pool_info.price = 100.0
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
 
         with patch.object(executor, '_create_position', new_callable=AsyncMock):
@@ -1263,7 +1265,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         mock_pool_info = MagicMock()
         mock_pool_info.price = 100.0
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
 
         with patch.object(executor, 'stop') as mock_stop:
@@ -1271,122 +1273,46 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             self.assertEqual(executor.close_type, CloseType.FAILED)
             mock_stop.assert_called_once()
 
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
-    def test_validate_connector_wrong_type(self):
-        """Test connector validation fails for non-CLMM type"""
-        config = LPExecutorConfig(
-            id="test-lp-1",
-            timestamp=1234567890,
-            connector_name="meteora/amm",  # Wrong type
-            trading_pair="SOL-USDC",
-            pool_address="pool123",
-            lower_price=Decimal("95"),
-            upper_price=Decimal("105"),
-            base_amount=Decimal("1.0"),
-            quote_amount=Decimal("100"),
-        )
-        executor = self.get_executor(config)
-        executor.stop = MagicMock()
-
-        result = executor._validate_and_normalize_connector("meteora/amm")
-
-        self.assertIsNone(result)
-        self.assertEqual(executor.close_type, CloseType.FAILED)
-        executor.stop.assert_called_once()
-
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
-    def test_validate_connector_not_found(self):
-        """Test connector validation fails for unknown connector"""
-        config = LPExecutorConfig(
-            id="test-lp-1",
-            timestamp=1234567890,
-            connector_name="unknown/clmm",
-            trading_pair="SOL-USDC",
-            pool_address="pool123",
-            lower_price=Decimal("95"),
-            upper_price=Decimal("105"),
-            base_amount=Decimal("1.0"),
-            quote_amount=Decimal("100"),
-        )
-        executor = self.get_executor(config)
-        executor.stop = MagicMock()
-
-        result = executor._validate_and_normalize_connector("unknown/clmm")
-
-        self.assertIsNone(result)
-        self.assertEqual(executor.close_type, CloseType.FAILED)
-        executor.stop.assert_called_once()
-
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm', 'orca/amm'})
-    def test_validate_connector_base_name_no_clmm_with_other_type(self):
-        """Test connector validation fails for base name with non-CLMM type available"""
-        config = LPExecutorConfig(
-            id="test-lp-1",
-            timestamp=1234567890,
-            connector_name="orca",  # orca/amm exists but not orca/clmm
-            trading_pair="SOL-USDC",
-            pool_address="pool123",
-            lower_price=Decimal("95"),
-            upper_price=Decimal("105"),
-            base_amount=Decimal("1.0"),
-            quote_amount=Decimal("100"),
-        )
-        executor = self.get_executor(config)
-        executor.stop = MagicMock()
-
-        result = executor._validate_and_normalize_connector("orca")
-
-        self.assertIsNone(result)
-        self.assertEqual(executor.close_type, CloseType.FAILED)
-        executor.stop.assert_called_once()
-
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
-    def test_validate_connector_base_name_not_found(self):
-        """Test connector validation fails for unknown base name"""
-        config = LPExecutorConfig(
-            id="test-lp-1",
-            timestamp=1234567890,
-            connector_name="unknown",
-            trading_pair="SOL-USDC",
-            pool_address="pool123",
-            lower_price=Decimal("95"),
-            upper_price=Decimal("105"),
-            base_amount=Decimal("1.0"),
-            quote_amount=Decimal("100"),
-        )
-        executor = self.get_executor(config)
-        executor.stop = MagicMock()
-
-        result = executor._validate_and_normalize_connector("unknown")
-
-        self.assertIsNone(result)
-        self.assertEqual(executor.close_type, CloseType.FAILED)
-        executor.stop.assert_called_once()
-
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
-    def test_validate_connector_success_full_name(self):
-        """Test connector validation succeeds with full name"""
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'})
+    def test_validate_connector_network_format_success(self):
+        """Test connector validation succeeds with network format"""
         executor = self.get_executor()
 
-        result = executor._validate_and_normalize_connector("meteora/clmm")
+        result = executor._validate_and_normalize_connector("solana-mainnet-beta")
 
-        self.assertEqual(result, "meteora/clmm")
+        self.assertEqual(result, "solana-mainnet-beta")
 
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'})
-    def test_validate_connector_success_base_name(self):
-        """Test connector validation auto-appends /clmm"""
-        executor = self.get_executor()
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'})
+    def test_validate_connector_network_not_found(self):
+        """Test connector validation fails for unknown network"""
+        config = LPExecutorConfig(
+            id="test-lp-1",
+            timestamp=1234567890,
+            connector_name="unknown-network",
+            dex_name="unknown",
+            trading_pair="SOL-USDC",
+            pool_address="pool123",
+            lower_price=Decimal("95"),
+            upper_price=Decimal("105"),
+            base_amount=Decimal("1.0"),
+            quote_amount=Decimal("100"),
+        )
+        executor = self.get_executor(config)
+        executor.stop = MagicMock()
 
-        result = executor._validate_and_normalize_connector("meteora")
+        result = executor._validate_and_normalize_connector("unknown-network")
 
-        self.assertEqual(result, "meteora/clmm")
+        self.assertIsNone(result)
+        self.assertEqual(executor.close_type, CloseType.FAILED)
+        executor.stop.assert_called_once()
 
     async def test_on_start_resolve_trading_pair(self):
         """Test on_start resolves trading pair from pool address"""
         config = LPExecutorConfig(
             id="test-lp-1",
             timestamp=1234567890,
-            connector_name="meteora/clmm",
+            connector_name="solana-mainnet-beta",
+            dex_name="meteora",
             trading_pair="",  # Empty - should be resolved
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1396,10 +1322,10 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         )
         executor = self.get_executor(config)
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.resolve_trading_pair_from_pool = AsyncMock(return_value={"trading_pair": "SOL-USDC"})
 
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'}):
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'}):
             await executor.on_start()
 
         self.assertEqual(executor.config.trading_pair, "SOL-USDC")
@@ -1409,7 +1335,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         config = LPExecutorConfig(
             id="test-lp-1",
             timestamp=1234567890,
-            connector_name="meteora/clmm",
+            connector_name="solana-mainnet-beta",
+            dex_name="meteora",
             trading_pair="",  # Empty - should be resolved
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1420,10 +1347,10 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor(config)
         executor.stop = MagicMock()
 
-        connector = self.strategy.connectors["meteora/clmm"]
+        connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.resolve_trading_pair_from_pool = AsyncMock(return_value=None)
 
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'}):
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'}):
             await executor.on_start()
 
         self.assertEqual(executor.close_type, CloseType.FAILED)
@@ -1434,7 +1361,8 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         config = LPExecutorConfig(
             id="test-lp-1",
             timestamp=1234567890,
-            connector_name="meteora",  # Base name only
+            connector_name="solana-mainnet-beta",  # Network format
+            dex_name="meteora",  # DEX name
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1444,7 +1372,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         )
         executor = self.get_executor(config)
 
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'meteora/clmm'}):
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'}):
             await executor.on_start()
 
-        self.assertEqual(executor.config.connector_name, "meteora/clmm")
+        self.assertEqual(executor.config.connector_name, "solana-mainnet-beta")

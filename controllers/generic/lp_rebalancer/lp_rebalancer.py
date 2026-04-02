@@ -22,14 +22,28 @@ class LPRebalancerConfig(ControllerConfigBase):
 
     Uses total_amount_quote and side for position sizing.
     Implements KEEP vs REBALANCE logic based on price limits.
+
+    Connector Architecture:
+    - connector_name: The network identifier (e.g., "solana-mainnet-beta")
+      This is the "connector" that hummingbot connects to, similar to exchange connectors.
+    - dex: The DEX protocol to use (e.g., "orca", "meteora", "raydium")
+      This specifies which DEX's pools/routes to use on that network.
+    - trading_type: The pool type (default "clmm" for concentrated liquidity)
     """
     controller_type: str = "generic"
     controller_name: str = "lp_rebalancer"
     candles_config: List[CandlesConfig] = []
 
-    # Pool configuration (required)
-    connector_name: str = "meteora/clmm"
-    network: str = "solana-mainnet-beta"
+    # Network as connector - e.g., "solana-mainnet-beta"
+    connector_name: str = "solana-mainnet-beta"
+
+    # DEX protocol - e.g., "orca", "meteora", "raydium"
+    dex: str = "orca"
+
+    # Pool type - default "clmm" for concentrated liquidity
+    trading_type: str = "clmm"
+
+    # Pool configuration
     trading_pair: str = ""
     pool_address: str = ""
 
@@ -316,7 +330,7 @@ class LPRebalancer(ControllerBase):
                 )
                 return SwapExecutorConfig(
                     timestamp=self.market_data_provider.time(),
-                    network=self.config.network,
+                    network=self.config.connector_name,  # connector_name is the network
                     trading_pair=self.config.trading_pair,
                     connector_name=self.config.swap_provider,
                     side=TradeType.BUY,
@@ -341,7 +355,7 @@ class LPRebalancer(ControllerBase):
                 )
                 return SwapExecutorConfig(
                     timestamp=self.market_data_provider.time(),
-                    network=self.config.network,
+                    network=self.config.connector_name,  # connector_name is the network
                     trading_pair=self.config.trading_pair,
                     connector_name=self.config.swap_provider,
                     side=TradeType.SELL,
@@ -688,6 +702,8 @@ class LPRebalancer(ControllerBase):
         return LPExecutorConfig(
             timestamp=self.market_data_provider.time(),
             connector_name=self.config.connector_name,
+            dex=self.config.dex,
+            trading_type=self.config.trading_type,
             trading_pair=self.config.trading_pair,
             pool_address=self.config.pool_address,
             lower_price=lower_price,
@@ -889,7 +905,11 @@ class LPRebalancer(ControllerBase):
         try:
             connector = self.market_data_provider.get_connector(self.config.connector_name)
             if hasattr(connector, 'get_pool_info_by_address'):
-                pool_info = await connector.get_pool_info_by_address(self.config.pool_address)
+                pool_info = await connector.get_pool_info_by_address(
+                    self.config.pool_address,
+                    dex=self.config.dex,
+                    trading_type=self.config.trading_type,
+                )
                 if pool_info and pool_info.price:
                     self._pool_price = Decimal(str(pool_info.price))
         except Exception as e:
@@ -908,7 +928,7 @@ class LPRebalancer(ControllerBase):
         status.append("+" + "-" * box_width + "+")
 
         # === CONFIG SECTION ===
-        line = f"| Network: {self.config.network}"
+        line = f"| Network: {self.config.connector_name} | DEX: {self.config.dex}/{self.config.trading_type}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         line = f"| Pool: {self.config.pool_address}"
