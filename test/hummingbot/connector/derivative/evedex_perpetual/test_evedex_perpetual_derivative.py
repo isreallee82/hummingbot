@@ -1480,7 +1480,7 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(transact_time, 456)
         call_kwargs = self.exchange._api_post.call_args.kwargs
         self.assertEqual(call_kwargs["path_url"], CONSTANTS.MARKET_ORDER_PATH_URL)
-        self.assertEqual(call_kwargs["data"]["cashQuantity"], "20")
+        self.assertEqual(call_kwargs["data"]["cashQuantity"], "2")
         self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
 
     def test_place_market_order_uses_order_price_when_price_is_nan(self):
@@ -1506,13 +1506,8 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
 
         self.assertEqual(exchange_order_id, "ex_2b")
         self.assertEqual(transact_time, 456)
-        self.exchange.get_order_price.assert_awaited_once_with(
-            trading_pair=self.trading_pair,
-            is_buy=False,
-            amount=Decimal("2"),
-        )
         call_kwargs = self.exchange._api_post.call_args.kwargs
-        self.assertEqual(call_kwargs["data"]["cashQuantity"], "20")
+        self.assertEqual(call_kwargs["data"]["cashQuantity"], "2")
 
     def test_place_limit_maker_order_uses_limit_endpoint(self):
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)

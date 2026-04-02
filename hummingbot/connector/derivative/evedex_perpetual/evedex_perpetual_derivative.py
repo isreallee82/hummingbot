@@ -327,14 +327,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             }
         elif order_type == OrderType.MARKET:
             path_url = CONSTANTS.MARKET_ORDER_PATH_URL
-            market_price = price
-            if market_price.is_nan():
-                market_price = await self.get_order_price(
-                    trading_pair=trading_pair,
-                    is_buy=trade_type is TradeType.BUY,
-                    amount=amount,
-                )
-            cash_quantity = amount if market_price.is_nan() else amount * market_price
+            cash_quantity = amount
             api_params = {
                 **base_params,
                 "side": side,
