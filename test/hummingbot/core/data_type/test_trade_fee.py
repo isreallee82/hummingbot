@@ -286,6 +286,14 @@ class GetExchangeRateTests(TestCase):
 
             self.assertEqual(Decimal("10"), rate)
 
+    def test_get_exchange_rate_rate_oracle_uses_reverse_pair_when_direct_not_found(self):
+        mock_rate_source = MagicMock()
+        mock_rate_source.get_pair_rate.side_effect = lambda pair: Decimal("0.1") if pair == "USDT-HBOT" else None
+
+        rate = TradeFeeBase._get_exchange_rate("HBOT-USDT", rate_source=mock_rate_source)
+
+        self.assertEqual(Decimal("1") / Decimal("0.1"), rate)
+
     def test_get_exchange_rate_raises_when_rate_source_returns_none(self):
         mock_rate_source = MagicMock()
         mock_rate_source.get_pair_rate.return_value = None

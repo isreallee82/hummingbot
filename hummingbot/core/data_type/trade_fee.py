@@ -199,6 +199,12 @@ class TradeFeeBase(ABC):
         local_rate_source: Optional[RateOracle] = rate_source or RateOracle.get_instance()
         rate: Decimal = local_rate_source.get_pair_rate(trading_pair)
         if rate is None:
+            # Try the reverse pair on the rate oracle (e.g. "USDT-BASED" → "BASED-USDT")
+            base, quote = split_hb_trading_pair(trading_pair)
+            reverse_pair = combine_to_hb_trading_pair(base=quote, quote=base)
+            reverse_rate: Decimal = local_rate_source.get_pair_rate(reverse_pair)
+            if reverse_rate is not None and reverse_rate > Decimal("0"):
+                return Decimal("1") / reverse_rate
             raise ValueError(f"Could not find the exchange rate for {trading_pair} using the rate source "
                              f"{local_rate_source} (please verify it has been correctly configured)")
         return rate
