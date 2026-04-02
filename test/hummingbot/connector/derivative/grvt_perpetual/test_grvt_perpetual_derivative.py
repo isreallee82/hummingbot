@@ -261,9 +261,8 @@ class GrvtPerpetualDerivativeUnitTests(IsolatedAsyncioTestCase):
         self.assertTrue(success)
         self.assertEqual("", error)
 
-    async def test_is_user_stream_initialized_when_subscription_succeeds_without_events(self):
-        self.exchange._user_stream_tracker.data_source._subscribed = True
-        self.exchange._user_stream_tracker.data_source._ws_assistant = None
+    async def test_is_user_stream_initialized_when_user_stream_received_data(self):
+        self.exchange._user_stream_tracker.data_source._ws_assistant = MagicMock(last_recv_time=1)
 
         self.assertTrue(self.exchange._is_user_stream_initialized())
 
