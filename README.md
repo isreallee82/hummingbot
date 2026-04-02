@@ -13,7 +13,7 @@ The Hummingbot codebase is free and publicly available under the Apache 2.0 open
 ## Quick Links
 
 * [Website and Docs](https://hummingbot.org): Official Hummingbot website and documentation
-* [Installation](https://hummingbot.org/installation/docker/): Install Hummingbot on various platforms
+* [Installation](https://hummingbot.org/installation/): Install Hummingbot on various platforms
 * [Discord](https://discord.gg/hummingbot): The main gathering spot for the global Hummingbot community
 * [YouTube](https://www.youtube.com/c/hummingbot): Videos that teach you how to get the most out of Hummingbot
 * [Twitter](https://twitter.com/_hummingbot): Get the latest announcements about Hummingbot
@@ -24,7 +24,7 @@ The Hummingbot codebase is free and publicly available under the Apache 2.0 open
 
 The easiest way to get started with Hummingbot is using Docker:
 
-* To install the Telegram Bot [Condor](https://github.com/hummingbot/condor), follow the instructions in the [Hummingbot Docs](https://hummingbot.org/condor/installation/) site.
+* To install the Telegram Bot [Condor](https://github.com/hummingbot/condor), follow the instructions in the [Condor docs](https://hummingbot.org/condor/) site.
 
 * To install the CLI-based Hummingbot client, follow the instructions below.
 
@@ -75,7 +75,7 @@ make deploy
 docker attach hummingbot
 ```
 
-By default, Gateway will start in development mode with unencrypted HTTP endpoints. To run in production model with encrypted HTTPS, use the `DEV=false` flag and run `gateway generate-certs` in Hummingbot to generate the certificates needed. See [Development vs Production Modes](http://hummingbot.org/gateway/installation/#development-vs-production-modes) for more information.
+By default, Gateway will start in development mode with unencrypted HTTP endpoints. To run in production model with encrypted HTTPS, use the `DEV=false` flag and run `gateway generate-certs` in Hummingbot to generate the certificates needed. See [Development vs Production Modes](https://hummingbot.org/gateway/installation/#development-vs-production-modes) for more information.
 
 ---
 
