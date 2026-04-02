@@ -26,7 +26,7 @@ class LPRebalancerConfig(ControllerConfigBase):
     Connector Architecture:
     - connector_name: The network identifier (e.g., "solana-mainnet-beta")
       This is the "connector" that hummingbot connects to, similar to exchange connectors.
-    - dex: The DEX protocol to use (e.g., "orca", "meteora", "raydium")
+    - dex_name: The DEX protocol to use (e.g., "orca", "meteora", "raydium")
       This specifies which DEX's pools/routes to use on that network.
     - trading_type: The pool type (default "clmm" for concentrated liquidity)
     """
@@ -38,7 +38,7 @@ class LPRebalancerConfig(ControllerConfigBase):
     connector_name: str = "solana-mainnet-beta"
 
     # DEX protocol - e.g., "orca", "meteora", "raydium"
-    dex: str = "orca"
+    dex_name: str = "orca"
 
     # Pool type - default "clmm" for concentrated liquidity
     trading_type: str = "clmm"
@@ -702,7 +702,7 @@ class LPRebalancer(ControllerBase):
         return LPExecutorConfig(
             timestamp=self.market_data_provider.time(),
             connector_name=self.config.connector_name,
-            dex=self.config.dex,
+            dex=self.config.dex_name,
             trading_type=self.config.trading_type,
             trading_pair=self.config.trading_pair,
             pool_address=self.config.pool_address,
@@ -907,7 +907,7 @@ class LPRebalancer(ControllerBase):
             if hasattr(connector, 'get_pool_info_by_address'):
                 pool_info = await connector.get_pool_info_by_address(
                     self.config.pool_address,
-                    dex=self.config.dex,
+                    dex=self.config.dex_name,
                     trading_type=self.config.trading_type,
                 )
                 if pool_info and pool_info.price:
@@ -928,7 +928,7 @@ class LPRebalancer(ControllerBase):
         status.append("+" + "-" * box_width + "+")
 
         # === CONFIG SECTION ===
-        line = f"| Network: {self.config.connector_name} | DEX: {self.config.dex}/{self.config.trading_type}"
+        line = f"| Network: {self.config.connector_name} | DEX: {self.config.dex_name}/{self.config.trading_type}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         line = f"| Pool: {self.config.pool_address}"
