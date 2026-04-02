@@ -656,7 +656,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         """
        {'id': '00239:8f0aa829617c4eca834a367cac', 'instrument': 'XRPUSD', 'user': '42520', 'side': 'SELL', 'quantity': 20, 'limitPrice': 0, 'status': 'FILLED', 'unFilledQuantity': 0, 'realizedPnL': 0.0013588, 'createdAt': '2026-03-20T02:42:54.804Z', 'updatedAt': '2026-03-20T02:42:54.804Z', 'filledAvgPrice': 1.4486, 'type': 'MARKET', 'timeInForce': 'IOC', 'cashQuantity': '0.00000000', 'rejectedReason': '', 'fee': [{'coin': 'usdt', 'quantity': 0.0130374}, {'coin': 'total', 'quantity': 0}], 'group': 'manually', 'stopPrice': None, 'triggeredAt': None, 'check': False, 'completedAt': '2026-03-20T02:42:54.964Z', 'exchangeRequestId': '72057614201194187', 'userSession': None, 'fillQuantity': 20}
         """
-        order_id = str(fill_data.get("orderId", fill_data.get("id", "")))
+        order_id = str(fill_data.get("id", ""))
         tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(order_id)
         fill_amount = self._filled_amount_from_order_event(fill_data)
 
@@ -714,7 +714,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             {'id': '00239:9d6ea491b48b471e82a66d6e4c', 'instrument': 'XRPUSD', 'user': '42520', 'side': 'BUY', 'quantity': 20, 'limitPrice': 1.44853206, 'status': 'FILLED', 'unFilledQuantity': 0, 'realizedPnL': 0, 'createdAt': '2026-03-20T02:41:24.587Z', 'updatedAt': '2026-03-20T02:41:33.799Z', 'filledAvgPrice': 1.44853206, 'type': 'LIMIT', 'timeInForce': 'GTC', 'cashQuantity': '0.00000000', 'rejectedReason': '', 'fee': [{'coin': 'usdt', 'quantity': 0.0043456}, {'coin': 'total', 'quantity': 0.01303678854}], 'group': 'manually', 'stopPrice': None, 'triggeredAt': None, 'check': False, 'completedAt': '2026-03-20T02:41:34.067Z', 'exchangeRequestId': '72057614201035602', 'userSession': None, 'fillQuantity': 20}
         """
 
-        exchange_order_id = str(order_data.get("id", order_data.get("orderId", "")))
+        exchange_order_id = str(order_data.get("id", ""))
         should_refresh_balance = False
         should_refresh_position = False
         tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(exchange_order_id)

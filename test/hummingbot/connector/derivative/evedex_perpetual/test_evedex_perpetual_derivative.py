@@ -506,7 +506,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._order_tracker.start_tracking_order(tracked_order)
         self.exchange._order_tracker.process_trade_update = MagicMock()
         self.exchange._schedule_balance_update = MagicMock()
-        fill_data = {"orderId": "EX123", "executionId": "F1", "fillPrice": "10", "fillQuantity": "1"}
+        fill_data = {"id": "EX123", "executionId": "F1", "fillPrice": "10", "fillQuantity": "1"}
         self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
         self.exchange._order_tracker.process_trade_update.assert_called()
 
@@ -531,7 +531,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
             coro.close()
             return scheduled_task
 
-        fill_data = {"orderId": "EX123", "executionId": "F1", "fillPrice": "10", "fillQuantity": "1"}
+        fill_data = {"id": "EX123", "executionId": "F1", "fillPrice": "10", "fillQuantity": "1"}
         with patch(
             "hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_derivative.safe_ensure_future",
             side_effect=schedule,
