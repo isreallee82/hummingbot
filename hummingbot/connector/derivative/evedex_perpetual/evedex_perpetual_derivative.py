@@ -405,7 +405,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 order_result.get("completedAt"),
             )
             if order_type == OrderType.MARKET:
-                self.logger().info(
+                self.logger().debug(
                     f"Evedex market order diagnostic response: client_order_id={order_id}, "
                     f"payload_order_id={evedex_order_id}, exchange_order_id={exchange_order_id}, "
                     f"status={order_result.get('status')}, type={order_result.get('type')}, "
