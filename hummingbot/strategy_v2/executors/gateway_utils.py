@@ -2,6 +2,11 @@
 Shared utilities for Gateway executors.
 
 Provides connector validation and normalization for SwapExecutor and LPExecutor.
+
+Architecture:
+- connector_name: Network identifier (e.g., "solana-mainnet-beta")
+- dex: DEX protocol name (e.g., "orca", "jupiter")
+- trading_type: Pool/route type (e.g., "clmm", "amm", "router")
 """
 import logging
 from typing import Callable, List, Optional, Tuple
@@ -9,6 +14,46 @@ from typing import Callable, List, Optional, Tuple
 from hummingbot.client.settings import GATEWAY_CONNECTORS
 
 logger = logging.getLogger(__name__)
+
+
+def validate_network_connector(
+    connector_name: str,
+    on_error: Callable[[str], None],
+) -> bool:
+    """
+    Validate that a network-style connector exists.
+
+    Network connectors are in format "chain-network" (e.g., "solana-mainnet-beta").
+    These are registered in GATEWAY_CONNECTORS from the chains endpoint.
+
+    Args:
+        connector_name: Network connector name (e.g., "solana-mainnet-beta")
+        on_error: Callback function to log error messages
+
+    Returns:
+        True if valid, False otherwise
+    """
+    # If GATEWAY_CONNECTORS is empty, skip validation
+    # (API context without monitor loop - Gateway will validate at execution time)
+    if not GATEWAY_CONNECTORS:
+        logger.debug(
+            f"GATEWAY_CONNECTORS empty, skipping validation for {connector_name}. "
+            "Gateway will validate at execution time."
+        )
+        return True
+
+    # Check if connector exists in GATEWAY_CONNECTORS
+    if connector_name in GATEWAY_CONNECTORS:
+        return True
+
+    # Get network-style connectors for better error message
+    network_connectors = [c for c in GATEWAY_CONNECTORS if '-' in c and '/' not in c]
+
+    on_error(
+        f"Network connector '{connector_name}' not found in Gateway. "
+        f"Available network connectors: {network_connectors}"
+    )
+    return False
 
 
 def validate_and_normalize_connector(
@@ -19,14 +64,16 @@ def validate_and_normalize_connector(
     """
     Validate and normalize connector name for Gateway executors.
 
-    - If connector already has a type suffix (e.g., /router, /clmm), validates it
-    - If connector is base name only (e.g., "jupiter"), auto-appends the required type
-    - Uses GATEWAY_CONNECTORS list populated at gateway startup
-    - If GATEWAY_CONNECTORS is empty, skips validation and normalizes the name
-      (Gateway will validate at execution time)
+    Supports two connector formats:
+    1. Network format: "chain-network" (e.g., "solana-mainnet-beta")
+       - Used with separate dex and trading_type parameters
+       - Returns as-is if valid
+    2. DEX format: "dex/type" (e.g., "orca/clmm", "jupiter/router")
+       - Legacy format with type embedded in name
+       - If base name only, auto-appends required_type
 
     Args:
-        connector_name: Connector name from config (e.g., "jupiter", "meteora/clmm")
+        connector_name: Connector name from config
         required_type: The connector type suffix required (e.g., "router", "clmm")
         on_error: Callback function to log error messages
 
@@ -34,19 +81,18 @@ def validate_and_normalize_connector(
         Tuple of (normalized_connector_name, success)
         - If validation succeeds: (normalized_name, True)
         - If validation fails: (None, False)
-
-    Example:
-        # For SwapExecutor (requires router)
-        result, ok = validate_and_normalize_connector("jupiter", "router", logger.error)
-        # Returns ("jupiter/router", True) if jupiter/router exists
-
-        # For LPExecutor (requires clmm)
-        result, ok = validate_and_normalize_connector("meteora", "clmm", logger.error)
-        # Returns ("meteora/clmm", True) if meteora/clmm exists
     """
     type_suffix = f"/{required_type}"
 
-    # If already has suffix, validate it matches the required type
+    # Check if it's a network-style connector (chain-network format)
+    # Network connectors don't have '/' and typically have '-' (e.g., "solana-mainnet-beta")
+    if '/' not in connector_name and '-' in connector_name:
+        # Network connector format - validate it exists
+        if validate_network_connector(connector_name, on_error):
+            return connector_name, True
+        return None, False
+
+    # DEX format: handle /type suffix
     if "/" in connector_name:
         base, connector_type = connector_name.split("/", 1)
 
@@ -120,3 +166,13 @@ def get_connectors_by_type(connector_type: str) -> List[str]:
     """
     type_suffix = f"/{connector_type}"
     return [c for c in GATEWAY_CONNECTORS if type_suffix in c]
+
+
+def get_network_connectors() -> List[str]:
+    """
+    Get all network-style connectors (chain-network format).
+
+    Returns:
+        List of network connector names (e.g., ["solana-mainnet-beta", "ethereum-mainnet"])
+    """
+    return [c for c in GATEWAY_CONNECTORS if '-' in c and '/' not in c]

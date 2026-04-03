@@ -3,7 +3,7 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Dict, List, Optional, Union
 
-from hummingbot.connector.gateway.gateway_lp import AMMPoolInfo, CLMMPoolInfo
+from hummingbot.connector.gateway.gateway import AMMPoolInfo, CLMMPoolInfo
 from hummingbot.connector.utils import split_hb_trading_pair
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
@@ -100,7 +100,11 @@ class LPExecutor(ExecutorBase):
         if not self.config.trading_pair:
             connector = self.connectors.get(self.config.connector_name)
             if connector:
-                result = await connector.resolve_trading_pair_from_pool(self.config.pool_address)
+                result = await connector.resolve_trading_pair_from_pool(
+                    self.config.pool_address,
+                    dex_name=self.config.dex_name,
+                    trading_type=self.config.trading_type,
+                )
                 if result and result.get("trading_pair"):
                     # Update config with resolved trading pair
                     object.__setattr__(self.config, 'trading_pair', result["trading_pair"])
@@ -194,6 +198,8 @@ class LPExecutor(ExecutorBase):
         try:
             position_info = await connector.get_position_info(
                 trading_pair=self.config.trading_pair,
+                dex_name=self.config.dex_name,
+                trading_type=self.config.trading_type,
                 position_address=self.lp_position_state.position_address
             )
 
@@ -270,6 +276,8 @@ class LPExecutor(ExecutorBase):
                 pool_address=self.config.pool_address,
                 extra_params=self.config.extra_params,
                 max_retries=self._max_retries,
+                dex_name=self.config.dex_name,
+                trading_type=self.config.trading_type,
             )
             # Note: If operation fails after all retries, connector re-raises the exception
             # so it will be caught by the except block below
@@ -302,6 +310,8 @@ class LPExecutor(ExecutorBase):
             # Fetch full position info from chain to get actual amounts and bounds
             position_info = await connector.get_position_info(
                 trading_pair=self.config.trading_pair,
+                dex_name=self.config.dex_name,
+                trading_type=self.config.trading_type,
                 position_address=position_address
             )
 
@@ -395,6 +405,8 @@ class LPExecutor(ExecutorBase):
         try:
             position_info = await connector.get_position_info(
                 trading_pair=self.config.trading_pair,
+                dex_name=self.config.dex_name,
+                trading_type=self.config.trading_type,
                 position_address=self.lp_position_state.position_address
             )
             if position_info is None:
@@ -436,6 +448,8 @@ class LPExecutor(ExecutorBase):
                 trading_pair=self.config.trading_pair,
                 position_address=self.lp_position_state.position_address,
                 max_retries=self._max_retries,
+                dex_name=self.config.dex_name,
+                trading_type=self.config.trading_type,
             )
             # Note: If operation fails after all retries, connector re-raises the exception
             # so it will be caught by the except block below
@@ -912,7 +926,11 @@ class LPExecutor(ExecutorBase):
             return
 
         try:
-            self._pool_info = await connector.get_pool_info_by_address(self.config.pool_address)
+            self._pool_info = await connector.get_pool_info_by_address(
+                self.config.pool_address,
+                dex_name=self.config.dex_name,
+                trading_type=self.config.trading_type,
+            )
             if self._pool_info:
                 self._current_price = Decimal(str(self._pool_info.price))
         except Exception as e:

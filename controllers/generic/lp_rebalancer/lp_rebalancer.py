@@ -22,14 +22,28 @@ class LPRebalancerConfig(ControllerConfigBase):
 
     Uses total_amount_quote and side for position sizing.
     Implements KEEP vs REBALANCE logic based on price limits.
+
+    Connector Architecture:
+    - connector_name: The network identifier (e.g., "solana-mainnet-beta")
+      This is the "connector" that hummingbot connects to, similar to exchange connectors.
+    - dex_name: The DEX protocol to use (e.g., "orca", "meteora", "raydium")
+      This specifies which DEX's pools/routes to use on that network.
+    - trading_type: The pool type (default "clmm" for concentrated liquidity)
     """
     controller_type: str = "generic"
     controller_name: str = "lp_rebalancer"
     candles_config: List[CandlesConfig] = []
 
-    # Pool configuration (required)
-    connector_name: str = "meteora/clmm"
-    network: str = "solana-mainnet-beta"
+    # Network as connector - e.g., "solana-mainnet-beta"
+    connector_name: str = "solana-mainnet-beta"
+
+    # DEX protocol - e.g., "orca", "meteora", "raydium"
+    dex_name: str = "orca"
+
+    # Pool type - default "clmm" for concentrated liquidity
+    trading_type: str = "clmm"
+
+    # Pool configuration
     trading_pair: str = ""
     pool_address: str = ""
 
@@ -66,17 +80,17 @@ class LPRebalancerConfig(ControllerConfigBase):
     autoswap: bool = Field(
         default=False,
         json_schema_extra={"is_updatable": True},
-        description="Automatically swap tokens if balance is insufficient for position"
+        description="Automatically swap tokens if balance is insufficient for position."
+    )
+    swap_provider: Optional[str] = Field(
+        default=None,
+        json_schema_extra={"is_updatable": False},
+        description="Swap provider for autoswap (e.g., 'jupiter/router'). If not set, uses network's default."
     )
     swap_buffer_pct: Decimal = Field(
         default=Decimal("0.01"),
         json_schema_extra={"is_updatable": True},
         description="Extra % to swap beyond deficit to account for slippage (e.g., 0.01 = 0.01%)"
-    )
-    swap_provider: Optional[str] = Field(
-        default=None,
-        json_schema_extra={"is_updatable": False},
-        description="Swap provider for autoswap (e.g., 'jupiter/router'). Required if autoswap=True."
     )
 
     @field_validator("sell_price_min", "sell_price_max", "buy_price_min", "buy_price_max", mode="before")
@@ -112,17 +126,11 @@ class LPRebalancerConfig(ControllerConfigBase):
                     f"For in-range positions, |position_offset_pct| ({abs(self.position_offset_pct)}) "
                     f"must not exceed position_width_pct ({self.position_width_pct})"
                 )
-        # swap_provider is required when autoswap is enabled
-        if self.autoswap and not self.swap_provider:
-            raise ValueError("swap_provider is required when autoswap=True")
         return self
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
-        """Register the LP connector and swap provider with trading pair"""
+        """Register the LP connector with trading pair"""
         markets = markets.add_or_update(self.connector_name, self.trading_pair)
-        # Also register swap provider if autoswap is enabled
-        if self.autoswap and self.swap_provider:
-            markets = markets.add_or_update(self.swap_provider, self.trading_pair)
         return markets
 
 
@@ -180,6 +188,9 @@ class LPRebalancer(ControllerBase):
         # Swap executor tracking (for autoswap feature)
         self._swap_executor_id: Optional[str] = None
         self._pending_swap_side: Optional[int] = None  # LP side to create after swap completes
+
+        # Cached default swap provider (fetched from network in update_processed_data)
+        self._default_swap_provider: Optional[str] = None
 
         # Track if initial position has been created (after that, always use side 1 or 2)
         self._initial_position_created: bool = False
@@ -250,6 +261,12 @@ class LPRebalancer(ControllerBase):
         if not self.config.autoswap:
             return None
 
+        # Get swap provider: use config value if set, otherwise use auto-detected default
+        swap_provider = self.config.swap_provider or self._default_swap_provider
+        if not swap_provider:
+            self.logger().warning("Autoswap enabled but no swap provider found (set swap_provider in config or check Gateway)")
+            return None
+
         # Capture closed position amounts BEFORE creating LP position
         # (they get cleared after position creation in determine_executor_actions)
         closed_base = self._last_closed_base_amount or Decimal("0")
@@ -316,12 +333,11 @@ class LPRebalancer(ControllerBase):
                 )
                 return SwapExecutorConfig(
                     timestamp=self.market_data_provider.time(),
-                    network=self.config.network,
+                    connector_name=self.config.connector_name,
+                    swap_provider=swap_provider,
                     trading_pair=self.config.trading_pair,
-                    connector_name=self.config.swap_provider,
                     side=TradeType.BUY,
                     amount=swap_amount,
-                    swap_providers=[self.config.swap_provider] if self.config.swap_provider else None,
                 )
             else:
                 self.logger().warning(
@@ -341,12 +357,11 @@ class LPRebalancer(ControllerBase):
                 )
                 return SwapExecutorConfig(
                     timestamp=self.market_data_provider.time(),
-                    network=self.config.network,
+                    connector_name=self.config.connector_name,
+                    swap_provider=swap_provider,
                     trading_pair=self.config.trading_pair,
-                    connector_name=self.config.swap_provider,
                     side=TradeType.SELL,
                     amount=swap_amount,
-                    swap_providers=[self.config.swap_provider] if self.config.swap_provider else None,
                 )
             else:
                 self.logger().warning(
@@ -688,6 +703,8 @@ class LPRebalancer(ControllerBase):
         return LPExecutorConfig(
             timestamp=self.market_data_provider.time(),
             connector_name=self.config.connector_name,
+            dex_name=self.config.dex_name,
+            trading_type=self.config.trading_type,
             trading_pair=self.config.trading_pair,
             pool_address=self.config.pool_address,
             lower_price=lower_price,
@@ -884,14 +901,45 @@ class LPRebalancer(ControllerBase):
         # No price limits defined - default to BUY
         return 1
 
+    async def _get_default_swap_provider(self, network: str) -> Optional[str]:
+        """
+        Get the default swap provider (router) for a network from Gateway.
+
+        Args:
+            network: Full network name (e.g., "solana-mainnet-beta")
+
+        Returns:
+            Swap provider string in format "dex_name/trading_type" or None if not found
+        """
+        from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
+
+        try:
+            gateway = GatewayHttpClient.get_instance()
+            return await gateway.get_default_swap_provider(network)
+        except Exception as e:
+            self.logger().warning(f"Failed to get default swap provider: {e}")
+            return None
+
     async def update_processed_data(self):
-        """Called every tick - always fetch fresh pool price for accurate position creation."""
+        """Called every tick - fetch pool price and default swap provider."""
         try:
             connector = self.market_data_provider.get_connector(self.config.connector_name)
             if hasattr(connector, 'get_pool_info_by_address'):
-                pool_info = await connector.get_pool_info_by_address(self.config.pool_address)
+                pool_info = await connector.get_pool_info_by_address(
+                    self.config.pool_address,
+                    dex_name=self.config.dex_name,
+                    trading_type=self.config.trading_type,
+                )
                 if pool_info and pool_info.price:
                     self._pool_price = Decimal(str(pool_info.price))
+
+            # Fetch default swap provider if autoswap is enabled and not cached
+            if self.config.autoswap and not self._default_swap_provider:
+                self._default_swap_provider = await self._get_default_swap_provider(self.config.connector_name)
+                if self._default_swap_provider:
+                    self.logger().info(f"Using default swap provider: {self._default_swap_provider}")
+                else:
+                    self.logger().warning(f"Could not find default swap provider for network '{self.config.connector_name}'")
         except Exception as e:
             self.logger().debug(f"Could not fetch pool price: {e}")
 
@@ -908,7 +956,7 @@ class LPRebalancer(ControllerBase):
         status.append("+" + "-" * box_width + "+")
 
         # === CONFIG SECTION ===
-        line = f"| Network: {self.config.network}"
+        line = f"| Network: {self.config.connector_name} | DEX: {self.config.dex_name}/{self.config.trading_type}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         line = f"| Pool: {self.config.pool_address}"
