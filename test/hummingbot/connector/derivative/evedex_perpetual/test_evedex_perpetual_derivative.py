@@ -1457,6 +1457,15 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
 
     def test_place_market_order(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
         self.exchange.get_leverage = MagicMock(return_value=2)
         self.exchange._api_post = AsyncMock(return_value={"id": "ex_2", "createdAt": 456})
@@ -1480,10 +1489,19 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(transact_time, 456)
         call_kwargs = self.exchange._api_post.call_args.kwargs
         self.assertEqual(call_kwargs["path_url"], CONSTANTS.MARKET_ORDER_PATH_URL)
-        self.assertEqual(call_kwargs["data"]["cashQuantity"], "2")
+        self.assertEqual(Decimal(call_kwargs["data"]["cashQuantity"]), Decimal("20"))
         self.assertEqual(call_kwargs["data"]["signature"], "0xsig")
 
     def test_place_market_order_uses_order_price_when_price_is_nan(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
         self.exchange.get_leverage = MagicMock(return_value=2)
         self.exchange.get_order_price = AsyncMock(return_value=Decimal("10"))
@@ -1507,7 +1525,46 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(exchange_order_id, "ex_2b")
         self.assertEqual(transact_time, 456)
         call_kwargs = self.exchange._api_post.call_args.kwargs
-        self.assertEqual(call_kwargs["data"]["cashQuantity"], "2")
+        self.assertEqual(Decimal(call_kwargs["data"]["cashQuantity"]), Decimal("20"))
+        self.exchange.get_order_price.assert_awaited_once_with(
+            trading_pair=self.trading_pair,
+            is_buy=False,
+            amount=Decimal("2"),
+        )
+
+    def test_place_market_order_quantizes_cash_quantity_to_price_increment(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.0001"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=2)
+        self.exchange._api_post = AsyncMock(return_value={"id": "ex_quantized", "createdAt": 456})
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_market_order = MagicMock(return_value="0xsig")
+
+        exchange_order_id, transact_time = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID2C",
+                trading_pair=self.trading_pair,
+                amount=Decimal("6.8"),
+                trade_type=TradeType.SELL,
+                order_type=OrderType.MARKET,
+                price=Decimal("1.31865"),
+                position_action=PositionAction.OPEN,
+            )
+        )
+
+        self.assertEqual(exchange_order_id, "ex_quantized")
+        self.assertEqual(transact_time, 456)
+        call_kwargs = self.exchange._api_post.call_args.kwargs
+        self.assertEqual(call_kwargs["data"]["cashQuantity"], "8.9668")
 
     def test_place_limit_maker_order_uses_limit_endpoint(self):
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)

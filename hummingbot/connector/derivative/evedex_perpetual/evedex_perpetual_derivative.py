@@ -160,6 +160,11 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         trading_rule: TradingRule = self._trading_rules[trading_pair]
         return trading_rule.sell_order_collateral_token
 
+    def _quantize_market_cash_quantity(self, trading_pair: str, cash_quantity: Decimal) -> Decimal:
+        # Evedex validates cashQuantity against the instrument price increment.
+        cash_quantity_quantum = self.get_order_price_quantum(trading_pair, cash_quantity)
+        return (cash_quantity // cash_quantity_quantum) * cash_quantity_quantum
+
     async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
         """
         Fetches prices for all trading pairs from EvedEx.
@@ -327,11 +332,24 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             }
         elif order_type == OrderType.MARKET:
             path_url = CONSTANTS.MARKET_ORDER_PATH_URL
-            cash_quantity = amount
+            reference_price = price
+            if reference_price.is_nan():
+                reference_price = await self.get_order_price(
+                    trading_pair=trading_pair,
+                    is_buy=trade_type is TradeType.BUY,
+                    amount=amount,
+                )
+            raw_cash_quantity = amount * reference_price
+            cash_quantity = self._quantize_market_cash_quantity(trading_pair, raw_cash_quantity)
+            if cash_quantity <= Decimal("0"):
+                raise ValueError(
+                    f"Calculated market cash quantity {cash_quantity} is invalid for {trading_pair}. "
+                    f"Raw value: {raw_cash_quantity}."
+                )
             api_params = {
                 **base_params,
                 "side": side,
-                "cashQuantity": str(cash_quantity),
+                "cashQuantity": f"{cash_quantity:f}",
                 "timeInForce": CONSTANTS.TIME_IN_FORCE_IOC,
             }
             signer = self.authenticator.sign_market_order
@@ -386,6 +404,16 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 order_result.get("updatedAt"),
                 order_result.get("completedAt"),
             )
+            if order_type == OrderType.MARKET:
+                self.logger().info(
+                    f"Evedex market order diagnostic response: client_order_id={order_id}, "
+                    f"payload_order_id={evedex_order_id}, exchange_order_id={exchange_order_id}, "
+                    f"status={order_result.get('status')}, type={order_result.get('type')}, "
+                    f"quantity={order_result.get('quantity')}, cashQuantity={order_result.get('cashQuantity')}, "
+                    f"fillQuantity={order_result.get('fillQuantity')}, "
+                    f"unFilledQuantity={order_result.get('unFilledQuantity')}, "
+                    f"filledAvgPrice={order_result.get('filledAvgPrice')}."
+                )
 
         except IOError as e:
             error_description = str(e)
@@ -659,6 +687,11 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         order_id = str(fill_data.get("id", ""))
         tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(order_id)
         fill_amount = self._filled_amount_from_order_event(fill_data)
+        self.logger().debug(
+            f"Received Evedex order fill event for exchange order {order_id or '<missing>'}: "
+            f"status={fill_data.get('status')}, fillQuantity={fill_data.get('fillQuantity')}, "
+            f"tracked_fillable={tracked_order is not None}"
+        )
 
         if tracked_order is not None:
             fill_price = Decimal(str(fill_data.get("fillPrice", fill_data.get("filledAvgPrice", 0))))
@@ -694,6 +727,10 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
             self._schedule_balance_update()
         elif fill_amount > Decimal("0"):
+            self.logger().debug(
+                f"Evedex fill event for exchange order {order_id or '<missing>'} did not match any fillable order. "
+                f"Scheduling balance and position refresh."
+            )
             self._schedule_balance_update()
             self._schedule_position_update()
 
@@ -719,6 +756,11 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         should_refresh_position = False
         tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(exchange_order_id)
         fill_quantity = self._filled_amount_from_order_event(order_data)
+        self.logger().debug(
+            f"Received Evedex order update for exchange order {exchange_order_id or '<missing>'}: "
+            f"status={order_data.get('status')}, type={order_data.get('type')}, "
+            f"fillQuantity={order_data.get('fillQuantity')}, tracked_fillable={tracked_order is not None}"
+        )
 
         if tracked_order is not None:
             # Calculate filled quantity from Order type fields: quantity - unFilledQuantity
@@ -750,6 +792,11 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         # Process order status update - find by exchange_order_id
         tracked_order = self._order_tracker.all_updatable_orders_by_exchange_order_id.get(exchange_order_id)
         is_updatable_order_tracked = tracked_order is not None
+        if not is_updatable_order_tracked:
+            self.logger().debug(
+                f"Evedex order update for exchange order {exchange_order_id or '<missing>'} did not match any "
+                f"updatable order. status={order_data.get('status')}"
+            )
 
         if tracked_order is not None:
             self._normalize_tracked_order_for_terminal_partial_fill(tracked_order, order_data)
