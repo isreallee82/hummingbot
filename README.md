@@ -75,7 +75,7 @@ make deploy
 docker attach hummingbot
 ```
 
-By default, Gateway will start in development mode with unencrypted HTTP endpoints. To run in production mode with encrypted HTTPS, use the `DEV=false` flag and run `gateway generate-certs` in Hummingbot to generate the certificates needed. See [Development vs Production Modes](http://hummingbot.org/gateway/installation/#development-vs-production-modes) for more information.
+By default, Gateway will start in development mode with unencrypted HTTP endpoints. To run in production mode with encrypted HTTPS, use the `DEV=false` flag and run `gateway generate-certs` in Hummingbot to generate the certificates needed. See [Development vs Production Modes](https://hummingbot.org/gateway/installation/#development-vs-production-modes) for more information.
 
 ---
 
