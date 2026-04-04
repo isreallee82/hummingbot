@@ -59,12 +59,14 @@ ORDER_BOOK_PATH_URL = "full/v1/book"
 TRADES_PATH_URL = "full/v1/trade"
 TRADE_HISTORY_PATH_URL = "full/v1/trade_history"
 FUNDING_PATH_URL = "full/v1/funding"
+KLINE_PATH_URL = "full/v1/kline"
 TIME_PATH_URL = "time"
 
 PUBLIC_WS_CHANNEL_TRADE = "v1.trade"
 PUBLIC_WS_CHANNEL_BOOK_SNAPSHOT = "v1.book.s"
 PUBLIC_WS_CHANNEL_BOOK_DIFF = "v1.book.d"
 PUBLIC_WS_CHANNEL_TICKER = "v1.ticker.s"
+PUBLIC_WS_CHANNEL_CANDLE = "v1.candle"
 PRIVATE_WS_CHANNEL_ORDER = "v1.order"
 PRIVATE_WS_CHANNEL_STATE = "v1.state"
 PRIVATE_WS_CHANNEL_POSITION = "v1.position"
@@ -111,6 +113,7 @@ for limit_id in [
     TRADES_PATH_URL,
     TRADE_HISTORY_PATH_URL,
     FUNDING_PATH_URL,
+    KLINE_PATH_URL,
     TIME_PATH_URL,
 ]:
     RATE_LIMITS.append(
