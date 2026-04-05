@@ -189,7 +189,7 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
         position_action: PositionAction = PositionAction.NIL,
         **kwargs,
     ):
-        effective_position_action = self._effective_position_action(
+        effective_position_action = await self._effective_position_action(
             trading_pair=trading_pair,
             trade_type=trade_type,
             amount=amount,
@@ -653,7 +653,7 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
         raw_client_order_id = get_new_numeric_client_order_id(self._nonce_creator, max_id_bit_count=63)
         return str(raw_client_order_id | CONSTANTS.CLIENT_ORDER_ID_HIGH_BIT)
 
-    def _effective_position_action(
+    async def _effective_position_action(
         self,
         trading_pair: str,
         trade_type: TradeType,
@@ -663,6 +663,15 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
         if position_action != PositionAction.OPEN or self._position_mode != PositionMode.ONEWAY:
             return position_action
         current_position = self._active_position_for_trading_pair(trading_pair)
+        if current_position is None:
+            try:
+                await self._update_positions()
+            except Exception:
+                self.logger().warning(
+                    f"Failed to refresh positions before classifying {trade_type.name} {amount} {trading_pair}.",
+                    exc_info=True,
+                )
+            current_position = self._active_position_for_trading_pair(trading_pair)
         if current_position is None:
             return position_action
         current_trade_side = TradeType.BUY if current_position.amount > 0 else TradeType.SELL

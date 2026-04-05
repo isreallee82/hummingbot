@@ -146,6 +146,36 @@ class GrvtPerpetualDerivativeUnitTests(IsolatedAsyncioTestCase):
         tracked_order = self.exchange.in_flight_orders["9223372036854775808"]
         self.assertEqual(PositionAction.CLOSE, tracked_order.position)
 
+    async def test_create_order_refreshes_positions_before_classifying_oneway_open(self):
+        async def refresh_positions():
+            position = Position(
+                trading_pair="BTC-USDT",
+                position_side=PositionSide.SHORT,
+                unrealized_pnl=Decimal("0"),
+                entry_price=Decimal("62000"),
+                amount=Decimal("-1"),
+                leverage=Decimal("5"),
+            )
+            position_key = self.exchange._perpetual_trading.position_key("BTC-USDT", PositionSide.SHORT)
+            self.exchange._perpetual_trading.set_position(position_key, position)
+
+        self.exchange._update_positions = AsyncMock(side_effect=refresh_positions)
+        self.exchange._place_order = AsyncMock(return_value=("exchange-1", 1.0))
+
+        await self.exchange._create_order(
+            trade_type=TradeType.BUY,
+            order_id="9223372036854775809",
+            trading_pair="BTC-USDT",
+            amount=Decimal("1"),
+            order_type=OrderType.MARKET,
+            price=Decimal("62000"),
+            position_action=PositionAction.OPEN,
+        )
+
+        tracked_order = self.exchange.in_flight_orders["9223372036854775809"]
+        self.assertEqual(PositionAction.CLOSE, tracked_order.position)
+        self.exchange._update_positions.assert_awaited_once()
+
     async def test_request_order_status_maps_partially_filled_open_order(self):
         self.exchange._api_post = AsyncMock(return_value={
             "result": {
