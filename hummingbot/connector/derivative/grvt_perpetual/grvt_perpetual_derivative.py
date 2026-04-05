@@ -374,12 +374,15 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         exchange_symbol = await self.exchange_symbol_associated_to_pair(order.trading_pair)
+        instrument_info = self._instrument_info_by_symbol[exchange_symbol]
         response = await self._api_post(
             path_url=CONSTANTS.FILL_HISTORY_PATH_URL,
             data={
                 "sub_account_id": str(self.trading_account_id),
-                "instrument": exchange_symbol,
-                "limit": 200,
+                "kind": ["PERPETUAL"],
+                "base": [instrument_info["base"]],
+                "quote": [instrument_info["quote"]],
+                "limit": 1000,
             },
             is_auth_required=True,
         )
@@ -665,9 +668,7 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
         current_trade_side = TradeType.BUY if current_position.amount > 0 else TradeType.SELL
         if current_trade_side == trade_type:
             return position_action
-        if abs(current_position.amount) >= amount:
-            return PositionAction.CLOSE
-        return position_action
+        return PositionAction.CLOSE
 
     def _active_position_for_trading_pair(self, trading_pair: str) -> Optional[Position]:
         position = self.account_positions.get(trading_pair)
@@ -692,14 +693,12 @@ class GrvtPerpetualDerivative(PerpetualDerivativePyBase):
         position_action = kwargs.get("position_action")
 
         if position_action == PositionAction.CLOSE and self._is_reduce_only_position_absent_error(exception):
-            self.logger().info(
-                f"Treating rejected reduce-only close order {order_id} as already closed for {trading_pair}: {exception}"
-            )
+            self.logger().info(f"Treating rejected reduce-only close order {order_id} as canceled for {trading_pair}: {exception}")
             self._order_tracker.process_order_update(
                 OrderUpdate(
                     trading_pair=trading_pair,
                     update_timestamp=self.current_timestamp,
-                    new_state=OrderState.FILLED,
+                    new_state=OrderState.CANCELED,
                     client_order_id=order_id,
                     misc_updates={
                         "error_message": str(exception),

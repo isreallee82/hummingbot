@@ -120,6 +120,32 @@ class GrvtPerpetualDerivativeUnitTests(IsolatedAsyncioTestCase):
             position_action=PositionAction.CLOSE,
         )
 
+    async def test_create_order_normalizes_opposite_oneway_open_to_close_when_amount_exceeds_position(self):
+        position = Position(
+            trading_pair="BTC-USDT",
+            position_side=PositionSide.SHORT,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("62000"),
+            amount=Decimal("-0.99"),
+            leverage=Decimal("5"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key("BTC-USDT", PositionSide.SHORT)
+        self.exchange._perpetual_trading.set_position(position_key, position)
+        self.exchange._place_order = AsyncMock(return_value=("exchange-1", 1.0))
+
+        await self.exchange._create_order(
+            trade_type=TradeType.BUY,
+            order_id="9223372036854775808",
+            trading_pair="BTC-USDT",
+            amount=Decimal("1"),
+            order_type=OrderType.MARKET,
+            price=Decimal("62000"),
+            position_action=PositionAction.OPEN,
+        )
+
+        tracked_order = self.exchange.in_flight_orders["9223372036854775808"]
+        self.assertEqual(PositionAction.CLOSE, tracked_order.position)
+
     async def test_request_order_status_maps_partially_filled_open_order(self):
         self.exchange._api_post = AsyncMock(return_value={
             "result": {
@@ -247,6 +273,17 @@ class GrvtPerpetualDerivativeUnitTests(IsolatedAsyncioTestCase):
         )
         updates = await self.exchange._all_trade_updates_for_order(tracked_order)
         self.assertEqual("USDC", updates[0].fee.flat_fees[0].token)
+        self.exchange._api_post.assert_awaited_once_with(
+            path_url=CONSTANTS.FILL_HISTORY_PATH_URL,
+            data={
+                "sub_account_id": "123456",
+                "kind": ["PERPETUAL"],
+                "base": ["BTC"],
+                "quote": ["USDT"],
+                "limit": 1000,
+            },
+            is_auth_required=True,
+        )
 
     async def test_set_trading_pair_leverage_initializes_symbol_map(self):
         instrument_info = dict(self.exchange._instrument_info_by_symbol["BTC_USDT_Perp"])
@@ -356,7 +393,7 @@ class GrvtPerpetualDerivativeUnitTests(IsolatedAsyncioTestCase):
 
         self.assertEqual(2, safe_future.call_count)
 
-    async def test_on_order_failure_marks_absent_reduce_only_close_as_filled(self):
+    async def test_on_order_failure_marks_absent_reduce_only_close_as_canceled(self):
         self.exchange._update_positions = AsyncMock()
         self.exchange._update_balances = AsyncMock()
         self.exchange._order_tracker.process_order_update = MagicMock()
@@ -380,7 +417,7 @@ class GrvtPerpetualDerivativeUnitTests(IsolatedAsyncioTestCase):
         order_update = self.exchange._order_tracker.process_order_update.call_args.args[0]
         self.assertEqual("9223372036854775808", order_update.client_order_id)
         self.assertEqual("BTC-USDT", order_update.trading_pair)
-        self.assertEqual(OrderState.FILLED, order_update.new_state)
+        self.assertEqual(OrderState.CANCELED, order_update.new_state)
         self.assertEqual(2, safe_future.call_count)
 
 
@@ -644,8 +681,10 @@ class GrvtPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualDer
     def validate_trades_request(self, order: InFlightOrder, request_call: RequestCall):
         request_data = self._request_json(request_call)
         self.assertEqual(self.trading_account_id, request_data["sub_account_id"])
-        self.assertEqual(self.exchange_trading_pair, request_data["instrument"])
-        self.assertEqual(200, request_data["limit"])
+        self.assertEqual(["PERPETUAL"], request_data["kind"])
+        self.assertEqual([self.base_asset], request_data["base"])
+        self.assertEqual([self.quote_asset], request_data["quote"])
+        self.assertEqual(1000, request_data["limit"])
 
     def configure_all_symbols_response(
         self,
