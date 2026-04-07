@@ -10,6 +10,7 @@ from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
+from hummingbot.strategy_v2.executors.gateway_utils import parse_provider
 from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig, LPExecutorStates
 from hummingbot.strategy_v2.executors.swap_executor.data_types import SwapExecutorConfig, SwapExecutorStates
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
@@ -23,25 +24,21 @@ class LPRebalancerConfig(ControllerConfigBase):
     Uses total_amount_quote and side for position sizing.
     Implements KEEP vs REBALANCE logic based on price limits.
 
-    Connector Architecture:
+    Provider Architecture:
     - connector_name: The network identifier (e.g., "solana-mainnet-beta")
-      This is the "connector" that hummingbot connects to, similar to exchange connectors.
-    - dex_name: The DEX protocol to use (e.g., "orca", "meteora", "raydium")
-      This specifies which DEX's pools/routes to use on that network.
-    - trading_type: The pool type (default "clmm" for concentrated liquidity)
+    - lp_provider: LP provider in format "dex/trading_type" (e.g., "meteora/clmm")
+    - swap_provider: Optional swap provider for autoswap (e.g., "jupiter/router")
     """
     controller_type: str = "generic"
     controller_name: str = "lp_rebalancer"
     candles_config: List[CandlesConfig] = []
 
-    # Network as connector - e.g., "solana-mainnet-beta"
+    # Network connector - e.g., "solana-mainnet-beta"
     connector_name: str = "solana-mainnet-beta"
 
-    # DEX protocol - e.g., "orca", "meteora", "raydium"
-    dex_name: str = "orca"
-
-    # Pool type - default "clmm" for concentrated liquidity
-    trading_type: str = "clmm"
+    # LP provider (required) - format: "dex/trading_type"
+    # Examples: "meteora/clmm", "orca/clmm", "raydium/clmm"
+    lp_provider: str = "orca/clmm"
 
     # Pool configuration
     trading_pair: str = ""
@@ -156,6 +153,11 @@ class LPRebalancer(ControllerBase):
     def __init__(self, config: LPRebalancerConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config: LPRebalancerConfig = config
+
+        # Parse lp_provider into dex_name and trading_type for gateway calls
+        self.lp_dex_name, self.lp_trading_type = parse_provider(
+            config.lp_provider, default_trading_type="clmm"
+        )
 
         # Parse token symbols from trading pair
         parts = config.trading_pair.split("-")
@@ -703,8 +705,7 @@ class LPRebalancer(ControllerBase):
         return LPExecutorConfig(
             timestamp=self.market_data_provider.time(),
             connector_name=self.config.connector_name,
-            dex_name=self.config.dex_name,
-            trading_type=self.config.trading_type,
+            lp_provider=self.config.lp_provider,
             trading_pair=self.config.trading_pair,
             pool_address=self.config.pool_address,
             lower_price=lower_price,
@@ -927,8 +928,8 @@ class LPRebalancer(ControllerBase):
             if hasattr(connector, 'get_pool_info_by_address'):
                 pool_info = await connector.get_pool_info_by_address(
                     self.config.pool_address,
-                    dex_name=self.config.dex_name,
-                    trading_type=self.config.trading_type,
+                    dex_name=self.lp_dex_name,
+                    trading_type=self.lp_trading_type,
                 )
                 if pool_info and pool_info.price:
                     self._pool_price = Decimal(str(pool_info.price))
@@ -956,7 +957,7 @@ class LPRebalancer(ControllerBase):
         status.append("+" + "-" * box_width + "+")
 
         # === CONFIG SECTION ===
-        line = f"| Network: {self.config.connector_name} | DEX: {self.config.dex_name}/{self.config.trading_type}"
+        line = f"| Network: {self.config.connector_name} | LP: {self.config.lp_provider}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         line = f"| Pool: {self.config.pool_address}"

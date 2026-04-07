@@ -28,21 +28,23 @@ class SwapExecutorConfig(ExecutorConfigBase):
     Executes a single swap on a Gateway AMM connector with retry logic
     for handling transaction timeouts and failures.
 
-    Connector Architecture:
+    Provider Architecture:
     - connector_name: The network identifier (e.g., "solana-mainnet-beta")
-      This is the "connector" that hummingbot connects to, similar to exchange connectors.
-    - swap_provider: The swap provider/aggregator to use (e.g., "jupiter/router", "orca/router")
-      This specifies which swap route to use on that network.
+      This is the "connector" that hummingbot connects to.
+    - swap_provider: Optional swap provider in format "dex/trading_type"
+      (e.g., "jupiter/router", "orca/clmm"). If not provided, uses the
+      network's default swap provider.
+    - additional_swap_providers: Optional list for multi-quote comparison.
     """
     type: Literal["swap_executor"] = "swap_executor"
 
-    # Network as connector - e.g., "solana-mainnet-beta"
-    # This is the network connector that hummingbot connects to
+    # Network connector - e.g., "solana-mainnet-beta"
     connector_name: str
 
-    # Swap provider - e.g., "jupiter/router", "orca/router"
-    # Used to construct gateway routes for swaps
-    swap_provider: str
+    # Swap provider (optional) - format: "dex/trading_type"
+    # Examples: "jupiter/router", "orca/clmm", "meteora/clmm"
+    # If None, uses the network's default swap provider (typically first router found)
+    swap_provider: Optional[str] = None
 
     trading_pair: str
 

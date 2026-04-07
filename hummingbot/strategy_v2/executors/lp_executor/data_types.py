@@ -31,28 +31,31 @@ class LPExecutorConfig(ExecutorConfigBase):
     - Closes when price exceeds upper_limit_price or lower_limit_price
     - Closes position when executor stops (unless keep_position=True)
 
-    Connector Architecture:
+    Provider Architecture:
     - connector_name: The network identifier (e.g., "solana-mainnet-beta")
-      This is the "connector" that hummingbot connects to, similar to exchange connectors.
-    - dex_name: The DEX protocol to use (e.g., "orca", "meteora", "raydium")
-      This specifies which DEX's pools/routes to use on that network.
-    - trading_type: The pool type (default "clmm" for concentrated liquidity)
-      Together with dex_name, constructs gateway route: connectors/{dex_name}/{trading_type}/...
+      This is the "connector" that hummingbot connects to.
+    - lp_provider: LP provider in format "dex/trading_type" (e.g., "meteora/clmm")
+      Used for pool info, add liquidity, remove liquidity operations.
+    - swap_provider: Optional swap provider for close-out swaps when keep_position=False.
+      If not provided, uses the network's default swap provider.
     """
     type: Literal["lp_executor"] = "lp_executor"
 
-    # Network as connector - e.g., "solana-mainnet-beta"
-    # This is the network connector that hummingbot connects to
+    # Network connector - e.g., "solana-mainnet-beta"
     connector_name: str
 
-    # DEX protocol - e.g., "orca", "meteora", "raydium"
-    # Used to construct gateway routes: connectors/{dex_name}/{trading_type}/...
-    dex_name: str
+    # LP provider (required) - format: "dex/trading_type"
+    # Examples: "meteora/clmm", "orca/clmm", "raydium/clmm"
+    # Used for pool operations: get_pool_info, add_liquidity, remove_liquidity
+    lp_provider: str
 
-    # Pool type - default "clmm" for concentrated liquidity
-    trading_type: str = "clmm"
+    # Swap provider (optional) - format: "dex/trading_type"
+    # Examples: "jupiter/router", "orca/router"
+    # Used for close-out swaps when keep_position=False to return to original quote asset.
+    # If None, uses the network's default swap provider.
+    swap_provider: Optional[str] = None
 
-    # Pool identification
+    # Pool identification (required)
     pool_address: str
 
     # Optional - resolved from pool_address if not provided

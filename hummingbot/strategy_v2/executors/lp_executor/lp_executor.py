@@ -8,11 +8,12 @@ from hummingbot.connector.utils import split_hb_trading_pair
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
 from hummingbot.core.event.events import RangePositionLiquidityAddedEvent, RangePositionLiquidityRemovedEvent
+from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
-from hummingbot.strategy_v2.executors.gateway_utils import validate_and_normalize_connector
+from hummingbot.strategy_v2.executors.gateway_utils import parse_provider, validate_and_normalize_connector
 from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig, LPExecutorState, LPExecutorStates
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
@@ -58,6 +59,10 @@ class LPExecutor(ExecutorBase):
         self._current_price: Optional[Decimal] = None  # Updated from pool_info or position_info
         # Position tracking - store LP position for position aggregation when keep_position=True
         self._held_position_orders: List[Dict] = []
+        # Parse lp_provider into dex_name and trading_type for gateway calls
+        self.lp_dex_name, self.lp_trading_type = parse_provider(
+            config.lp_provider, default_trading_type="clmm"
+        )
 
     def _validate_and_normalize_connector(self, connector_name: str) -> Optional[str]:
         """
@@ -83,18 +88,28 @@ class LPExecutor(ExecutorBase):
         return normalized
 
     async def on_start(self):
-        """Start executor - will create position in first control_task"""
+        """Start executor - resolves providers and creates position."""
         await super().on_start()
 
-        # Validate and normalize connector name (auto-append /clmm if needed)
-        normalized_connector = self._validate_and_normalize_connector(self.config.connector_name)
-        if normalized_connector is None:
-            # Validation failed - executor already stopped
-            return
+        # Log LP provider info
+        self.logger().info(
+            f"Using LP provider: {self.config.lp_provider} "
+            f"(dex={self.lp_dex_name}, type={self.lp_trading_type})"
+        )
 
-        if normalized_connector != self.config.connector_name:
-            self.logger().info(f"Normalized connector: {self.config.connector_name} -> {normalized_connector}")
-            object.__setattr__(self.config, 'connector_name', normalized_connector)
+        # Resolve swap_provider from network default if not provided and keep_position=False
+        # (needed for close-out swaps when returning to original quote asset)
+        if not self.config.keep_position and not self.config.swap_provider:
+            gateway = GatewayHttpClient.get_instance()
+            default_provider = await gateway.get_default_swap_provider(self.config.connector_name)
+            if default_provider:
+                object.__setattr__(self.config, 'swap_provider', default_provider)
+                self.logger().info(f"Using network default swap provider: {default_provider}")
+            else:
+                self.logger().warning(
+                    f"No swap provider found for {self.config.connector_name}. "
+                    "Close-out swaps will not be available."
+                )
 
         # Resolve trading_pair from pool_address if not provided
         if not self.config.trading_pair:
@@ -102,8 +117,8 @@ class LPExecutor(ExecutorBase):
             if connector:
                 result = await connector.resolve_trading_pair_from_pool(
                     self.config.pool_address,
-                    dex_name=self.config.dex_name,
-                    trading_type=self.config.trading_type,
+                    dex_name=self.lp_dex_name,
+                    trading_type=self.lp_trading_type,
                 )
                 if result and result.get("trading_pair"):
                     # Update config with resolved trading pair
@@ -198,8 +213,8 @@ class LPExecutor(ExecutorBase):
         try:
             position_info = await connector.get_position_info(
                 trading_pair=self.config.trading_pair,
-                dex_name=self.config.dex_name,
-                trading_type=self.config.trading_type,
+                dex_name=self.lp_dex_name,
+                trading_type=self.lp_trading_type,
                 position_address=self.lp_position_state.position_address
             )
 
@@ -276,8 +291,8 @@ class LPExecutor(ExecutorBase):
                 pool_address=self.config.pool_address,
                 extra_params=self.config.extra_params,
                 max_retries=self._max_retries,
-                dex_name=self.config.dex_name,
-                trading_type=self.config.trading_type,
+                dex_name=self.lp_dex_name,
+                trading_type=self.lp_trading_type,
             )
             # Note: If operation fails after all retries, connector re-raises the exception
             # so it will be caught by the except block below
@@ -310,8 +325,8 @@ class LPExecutor(ExecutorBase):
             # Fetch full position info from chain to get actual amounts and bounds
             position_info = await connector.get_position_info(
                 trading_pair=self.config.trading_pair,
-                dex_name=self.config.dex_name,
-                trading_type=self.config.trading_type,
+                dex_name=self.lp_dex_name,
+                trading_type=self.lp_trading_type,
                 position_address=position_address
             )
 
@@ -405,8 +420,8 @@ class LPExecutor(ExecutorBase):
         try:
             position_info = await connector.get_position_info(
                 trading_pair=self.config.trading_pair,
-                dex_name=self.config.dex_name,
-                trading_type=self.config.trading_type,
+                dex_name=self.lp_dex_name,
+                trading_type=self.lp_trading_type,
                 position_address=self.lp_position_state.position_address
             )
             if position_info is None:
@@ -448,8 +463,8 @@ class LPExecutor(ExecutorBase):
                 trading_pair=self.config.trading_pair,
                 position_address=self.lp_position_state.position_address,
                 max_retries=self._max_retries,
-                dex_name=self.config.dex_name,
-                trading_type=self.config.trading_type,
+                dex_name=self.lp_dex_name,
+                trading_type=self.lp_trading_type,
             )
             # Note: If operation fails after all retries, connector re-raises the exception
             # so it will be caught by the except block below
@@ -928,8 +943,8 @@ class LPExecutor(ExecutorBase):
         try:
             self._pool_info = await connector.get_pool_info_by_address(
                 self.config.pool_address,
-                dex_name=self.config.dex_name,
-                trading_type=self.config.trading_type,
+                dex_name=self.lp_dex_name,
+                trading_type=self.lp_trading_type,
             )
             if self._pool_info:
                 self._current_price = Decimal(str(self._pool_info.price))

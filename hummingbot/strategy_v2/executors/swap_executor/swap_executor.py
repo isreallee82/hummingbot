@@ -126,18 +126,8 @@ class SwapExecutor(ExecutorBase):
         return normalized
 
     async def on_start(self):
-        """Start executor - validates swap provider and resolves network from connector_name."""
+        """Start executor - resolves swap provider and validates configuration."""
         await super().on_start()
-
-        # Validate and normalize swap provider (auto-append /router if needed)
-        normalized_provider = self._validate_and_normalize_swap_provider(self.config.swap_provider)
-        if normalized_provider is None:
-            # Validation failed - executor already stopped
-            return
-
-        if normalized_provider != self.config.swap_provider:
-            self.logger().info(f"Normalized swap provider: {self.config.swap_provider} -> {normalized_provider}")
-            object.__setattr__(self.config, 'swap_provider', normalized_provider)
 
         # Resolve network from connector_name (connector_name IS the network in new architecture)
         connector = self._get_connector()
@@ -149,6 +139,31 @@ class SwapExecutor(ExecutorBase):
             # Parse network from connector_name directly (e.g., "solana-mainnet-beta")
             self._chain, self._network_name = self.parse_network(self.config.connector_name)
             self.logger().info(f"Parsed network from connector_name: {self._chain}-{self._network_name}")
+
+        # Resolve swap_provider from network default if not provided
+        if not self.config.swap_provider:
+            gateway = GatewayHttpClient.get_instance()
+            default_provider = await gateway.get_default_swap_provider(self.config.connector_name)
+            if default_provider:
+                object.__setattr__(self.config, 'swap_provider', default_provider)
+                self.logger().info(f"Using network default swap provider: {default_provider}")
+            else:
+                self.logger().error(
+                    f"No swap provider specified and no default found for {self.config.connector_name}"
+                )
+                self.close_type = CloseType.FAILED
+                self.stop()
+                return
+
+        # Validate and normalize swap provider (auto-append /router if needed)
+        normalized_provider = self._validate_and_normalize_swap_provider(self.config.swap_provider)
+        if normalized_provider is None:
+            # Validation failed - executor already stopped
+            return
+
+        if normalized_provider != self.config.swap_provider:
+            self.logger().info(f"Normalized swap provider: {self.config.swap_provider} -> {normalized_provider}")
+            object.__setattr__(self.config, 'swap_provider', normalized_provider)
 
     def _get_connector(self) -> Optional[Gateway]:
         """Get the connector for this swap (network connector)."""
@@ -377,11 +392,12 @@ class SwapExecutor(ExecutorBase):
             price = Decimal("0")
             try:
                 price = await connector.get_quote_price(
-                    trading_pair,
-                    is_buy,
-                    amount,
-                    self.config.slippage_pct,
-                    selected_pool_address
+                    trading_pair=trading_pair,
+                    is_buy=is_buy,
+                    amount=amount,
+                    dex_name=self._selected_provider,
+                    slippage_pct=self.config.slippage_pct,
+                    pool_address=selected_pool_address
                 ) or Decimal("0")
             except Exception as e:
                 error_str = str(e)
@@ -402,11 +418,12 @@ class SwapExecutor(ExecutorBase):
                     # Get price for flipped direction
                     try:
                         flipped_price = await connector.get_quote_price(
-                            flipped_pair,
-                            flipped_is_buy,
-                            amount,  # Use same amount initially to get price
-                            self.config.slippage_pct,
-                            selected_pool_address
+                            trading_pair=flipped_pair,
+                            is_buy=flipped_is_buy,
+                            amount=amount,  # Use same amount initially to get price
+                            dex_name=self._selected_provider,
+                            slippage_pct=self.config.slippage_pct,
+                            pool_address=selected_pool_address
                         ) or Decimal("0")
 
                         if flipped_price > 0:
@@ -444,6 +461,7 @@ class SwapExecutor(ExecutorBase):
                 trading_pair=trading_pair,
                 amount=amount,
                 price=price,
+                dex_name=self._selected_provider,
                 pool_address=selected_pool_address,
                 slippage_pct=self.config.slippage_pct,
                 max_retries=self._max_retries,

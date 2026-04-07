@@ -5,8 +5,14 @@ Provides connector validation and normalization for SwapExecutor and LPExecutor.
 
 Architecture:
 - connector_name: Network identifier (e.g., "solana-mainnet-beta")
-- dex: DEX protocol name (e.g., "orca", "jupiter")
-- trading_type: Pool/route type (e.g., "clmm", "amm", "router")
+- provider: Combined format "dex/trading_type" (e.g., "jupiter/router", "meteora/clmm")
+- dex_name: DEX protocol name parsed from provider (e.g., "orca", "jupiter")
+- trading_type: Pool/route type parsed from provider (e.g., "clmm", "amm", "router")
+
+Provider Format:
+- Executors use provider strings: "jupiter/router", "meteora/clmm"
+- Gateway HTTP client uses separate dex_name and trading_type
+- Use parse_provider() to convert between formats
 """
 import logging
 from typing import Callable, List, Optional, Tuple
@@ -14,6 +20,38 @@ from typing import Callable, List, Optional, Tuple
 from hummingbot.client.settings import GATEWAY_CONNECTORS
 
 logger = logging.getLogger(__name__)
+
+
+def parse_provider(provider: str, default_trading_type: str = "router") -> Tuple[str, str]:
+    """
+    Parse provider string into (dex_name, trading_type) tuple.
+
+    Provider strings are used by executors in format "dex/trading_type".
+    Gateway HTTP client requires separate dex_name and trading_type parameters.
+
+    Args:
+        provider: Provider string in format "dex/type" or just "dex"
+            Examples: "jupiter/router", "meteora/clmm", "orca"
+        default_trading_type: Default type if not specified in provider
+            Use "router" for swap operations, "clmm" for LP operations
+
+    Returns:
+        Tuple of (dex_name, trading_type)
+
+    Examples:
+        >>> parse_provider("jupiter/router")
+        ("jupiter", "router")
+        >>> parse_provider("meteora/clmm")
+        ("meteora", "clmm")
+        >>> parse_provider("orca")
+        ("orca", "router")
+        >>> parse_provider("orca", default_trading_type="clmm")
+        ("orca", "clmm")
+    """
+    if "/" in provider:
+        parts = provider.split("/", 1)
+        return parts[0], parts[1]
+    return provider, default_trading_type
 
 
 def validate_network_connector(
