@@ -163,6 +163,11 @@ class LPExecutor(ExecutorBase):
                 # and we should retry (connector will handle max retries)
                 await self._close_position()
 
+            case LPExecutorStates.SWAPPING:
+                # Close-out swap in progress (keep_position=False)
+                # Similar to grid executor placing close order to rebalance
+                await self._execute_closeout_swap()
+
             case LPExecutorStates.FAILED:
                 # Max retries reached - stop executor with failure
                 self.close_type = CloseType.FAILED
@@ -530,7 +535,28 @@ class LPExecutor(ExecutorBase):
 
             self.lp_position_state.active_close_order = None
             self.lp_position_state.position_address = None
-            self.lp_position_state.state = LPExecutorStates.COMPLETE
+
+            # If keep_position=False, execute close-out swap to return to original position
+            # Similar to how grid executor sells/buys back to rebalance
+            if not self.config.keep_position and self.close_type != CloseType.POSITION_HOLD:
+                # Calculate net base change (include fees - same as position_hold REMOVE calculation)
+                # What we received: base_amount + base_fee
+                # What we deposited: initial_base_amount
+                # Difference: what we need to swap back
+                received_base = self.lp_position_state.base_amount + self.lp_position_state.base_fee
+                base_diff = received_base - self.lp_position_state.initial_base_amount
+                if abs(base_diff) > Decimal("0.000001"):  # Non-trivial difference
+                    self.logger().info(
+                        f"Close-out swap needed: base_diff={base_diff:.6f} "
+                        f"(received={received_base:.6f} [amount={self.lp_position_state.base_amount:.6f} + "
+                        f"fee={self.lp_position_state.base_fee:.6f}], initial={self.lp_position_state.initial_base_amount:.6f})"
+                    )
+                    self.lp_position_state.state = LPExecutorStates.SWAPPING
+                else:
+                    self.logger().info("No close-out swap needed (base amounts match)")
+                    self.lp_position_state.state = LPExecutorStates.COMPLETE
+            else:
+                self.lp_position_state.state = LPExecutorStates.COMPLETE
 
         except Exception as e:
             self._handle_close_failure(e)
@@ -544,6 +570,102 @@ class LPExecutor(ExecutorBase):
         # Connector exhausted retries or non-retryable error - transition to FAILED
         self.logger().error(f"Position close failed: {error}")
         self.lp_position_state.active_close_order = None
+        self.lp_position_state.state = LPExecutorStates.FAILED
+
+    async def _execute_closeout_swap(self):
+        """
+        Execute close-out swap to return to original position when keep_position=False.
+        Similar to grid executor's place_close_order_and_cancel_open_orders().
+
+        This sells excess base tokens or buys back base tokens to match the initial position.
+        """
+        connector = self.connectors.get(self.config.connector_name)
+        if connector is None:
+            self.logger().error(f"Connector {self.config.connector_name} not found")
+            self._handle_swap_failure(ValueError(f"Connector {self.config.connector_name} not found"))
+            return
+
+        if not self.config.swap_provider:
+            self.logger().error("No swap_provider configured for close-out swap")
+            self._handle_swap_failure(ValueError("No swap_provider configured"))
+            return
+
+        # Check if we already have an active swap order
+        if self.lp_position_state.active_swap_order is not None:
+            # Check swap order status
+            order = connector.get_order(self.lp_position_state.active_swap_order.order_id)
+            if order is None:
+                # Order not found - might have completed or failed
+                self._swap_not_found_count = getattr(self, '_swap_not_found_count', 0) + 1
+                if self._swap_not_found_count >= 3:
+                    self.logger().warning(
+                        f"Swap order {self.lp_position_state.active_swap_order.order_id} not found after "
+                        f"{self._swap_not_found_count} checks. Assuming completed."
+                    )
+                    self.lp_position_state.active_swap_order = None
+                    self.lp_position_state.state = LPExecutorStates.COMPLETE
+                return
+
+            from hummingbot.core.data_type.in_flight_order import OrderState
+            if order.current_state == OrderState.FILLED:
+                self.logger().info(f"Close-out swap completed: {order.client_order_id}")
+                self.lp_position_state.active_swap_order = None
+                self.lp_position_state.state = LPExecutorStates.COMPLETE
+            elif order.current_state == OrderState.FAILED:
+                self.logger().error(f"Close-out swap failed: {order.client_order_id}")
+                self._handle_swap_failure(ValueError("Swap order failed"))
+            elif order.current_state == OrderState.CANCELED:
+                self.logger().warning(f"Close-out swap cancelled: {order.client_order_id}")
+                self._handle_swap_failure(ValueError("Swap order cancelled"))
+            # Otherwise still pending - wait for next tick
+            return
+
+        # Calculate swap amount and direction (same calculation as in _close_position)
+        # Include fees - consistent with position_hold REMOVE calculation
+        received_base = self.lp_position_state.base_amount + self.lp_position_state.base_fee
+        base_diff = received_base - self.lp_position_state.initial_base_amount
+
+        if abs(base_diff) < Decimal("0.000001"):
+            # No swap needed
+            self.lp_position_state.state = LPExecutorStates.COMPLETE
+            return
+
+        # Determine trade direction
+        # If base_diff > 0: We received more base than deposited → SELL excess base
+        # If base_diff < 0: We received less base than deposited → BUY base to restore
+        is_buy = base_diff < 0
+        amount = abs(base_diff)
+        side = TradeType.BUY if is_buy else TradeType.SELL
+
+        self.logger().info(
+            f"Executing close-out swap: {side.name} {amount:.6f} base "
+            f"(received={received_base:.6f}, initial={self.lp_position_state.initial_base_amount:.6f}, "
+            f"diff={base_diff:.6f})"
+        )
+
+        try:
+            # Place swap order using connector's place_order with swap_provider
+            order_id = connector.place_order(
+                is_buy=is_buy,
+                trading_pair=self.config.trading_pair,
+                amount=amount,
+                price=Decimal("0"),  # Market order
+                dex_name=self.config.swap_provider,
+                slippage_pct=Decimal("1.0"),  # 1% slippage for close-out
+                max_retries=self._max_retries,
+            )
+            self.lp_position_state.active_swap_order = TrackedOrder(order_id=order_id)
+            self._swap_not_found_count = 0
+            self.logger().info(f"Close-out swap order placed: {order_id}")
+
+        except Exception as e:
+            self.logger().error(f"Failed to place close-out swap: {e}")
+            self._handle_swap_failure(e)
+
+    def _handle_swap_failure(self, error: Exception):
+        """Handle close-out swap failure - transition to FAILED state."""
+        self.logger().error(f"Close-out swap failed: {error}")
+        self.lp_position_state.active_swap_order = None
         self.lp_position_state.state = LPExecutorStates.FAILED
 
     def _emit_already_closed_event(self):

@@ -18,6 +18,7 @@ class LPExecutorStates(Enum):
     IN_RANGE = "IN_RANGE"                  # Position active, price within bounds
     OUT_OF_RANGE = "OUT_OF_RANGE"          # Position active, price outside bounds
     CLOSING = "CLOSING"                    # remove_liquidity submitted, waiting
+    SWAPPING = "SWAPPING"                  # Close-out swap in progress (keep_position=False)
     COMPLETE = "COMPLETE"                  # Position closed permanently
     FAILED = "FAILED"                      # Max retries reached, manual intervention required
 
@@ -118,6 +119,7 @@ class LPExecutorState(BaseModel):
     # Order tracking
     active_open_order: Optional[TrackedOrder] = None
     active_close_order: Optional[TrackedOrder] = None
+    active_swap_order: Optional[TrackedOrder] = None  # Close-out swap order
 
     # State
     state: LPExecutorStates = LPExecutorStates.NOT_ACTIVE
