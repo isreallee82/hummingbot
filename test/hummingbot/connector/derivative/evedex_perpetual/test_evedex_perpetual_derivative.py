@@ -693,6 +693,96 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.assertEqual(1, len(self.sell_order_completed_logger.event_log))
         self.assertEqual(0, len(self.order_cancelled_logger.event_log))
 
+    def test_process_order_update_treats_smaller_filled_market_order_as_filled(self):
+        self.exchange._order_tracker.TRADE_FILLS_WAIT_TIMEOUT = 0.01
+        self.exchange.start_tracking_order(
+            order_id="OIDU_FILLED_MARKET_MISMATCH",
+            exchange_order_id="EX_FILLED_MARKET_MISMATCH",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.MARKET,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("6.8"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange._schedule_balance_update = MagicMock()
+
+        order_data = {
+            "id": "EX_FILLED_MARKET_MISMATCH",
+            "status": "FILLED",
+            "type": "MARKET",
+            "timeInForce": "IOC",
+            "side": "BUY",
+            "quantity": "6.7",
+            "unFilledQuantity": "0",
+            "fillQuantity": "6.7",
+            "filledAvgPrice": "1.3157",
+            "updatedAt": "2026-03-20T05:16:14.681Z",
+            "fee": [{"coin": "usdt", "quantity": "0.01246334"}],
+        }
+
+        self.async_run_with_timeout(self.exchange._process_order_update(order_data))
+        self.async_run_with_timeout(asyncio.sleep(0.05))
+
+        cached_order = self.exchange._order_tracker.fetch_cached_order("OIDU_FILLED_MARKET_MISMATCH")
+        self.assertIsNotNone(cached_order)
+        self.assertEqual(OrderState.FILLED, cached_order.current_state)
+        self.assertEqual(Decimal("6.7"), cached_order.amount)
+        self.assertEqual(Decimal("6.7"), cached_order.executed_amount_base)
+        self.assertTrue(cached_order.completely_filled_event.is_set())
+        self.assertFalse(
+            self._is_logged(
+                "WARNING",
+                "The order fill updates did not arrive on time for OIDU_FILLED_MARKET_MISMATCH. "
+                "The complete update will be processed with incomplete information.",
+            )
+        )
+        self.assertEqual(1, len(self.order_filled_logger.event_log))
+        self.assertEqual(1, len(self.buy_order_completed_logger.event_log))
+
+    def test_process_order_update_does_not_duplicate_explicit_fill(self):
+        self.exchange.start_tracking_order(
+            order_id="OIDU_NO_DUP",
+            exchange_order_id="EX_NO_DUP",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.MARKET,
+            trade_type=TradeType.BUY,
+            price=Decimal("10"),
+            amount=Decimal("2"),
+            position_action=PositionAction.OPEN,
+        )
+
+        fill_data = {
+            "id": "EX_NO_DUP",
+            "status": "PARTIALLY_FILLED",
+            "fillPrice": "10",
+            "fillQuantity": "1",
+            "createdAt": "2026-03-20T02:42:54.804Z",
+            "updatedAt": "2026-03-20T02:42:54.804Z",
+        }
+        self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
+
+        tracked_order = self.exchange._order_tracker.fetch_tracked_order("OIDU_NO_DUP")
+        self.assertEqual(Decimal("1"), tracked_order.executed_amount_base)
+        self.assertEqual(1, len(tracked_order.order_fills))
+
+        order_data = {
+            "id": "EX_NO_DUP",
+            "status": "PARTIALLY_FILLED",
+            "type": "MARKET",
+            "timeInForce": "IOC",
+            "quantity": "2",
+            "unFilledQuantity": "1",
+            "filledAvgPrice": "10",
+            "fillQuantity": "1",
+            "updatedAt": "2026-03-20T02:42:54.804Z",
+        }
+        self.async_run_with_timeout(self.exchange._process_order_update(order_data))
+
+        tracked_order = self.exchange._order_tracker.fetch_tracked_order("OIDU_NO_DUP")
+        self.assertEqual(Decimal("1"), tracked_order.executed_amount_base)
+        self.assertEqual(1, len(tracked_order.order_fills))
+
     def test_process_order_update_schedules_balance_refresh_for_cancel(self):
         self.exchange.start_tracking_order(
             order_id="OIDU_CANCEL",
@@ -1009,6 +1099,52 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
 
         trade_update = self.exchange._order_tracker.process_trade_update.call_args.args[0]
         self.assertIsInstance(trade_update.fee, AddedToCostTradeFee)
+
+    def test_update_order_fills_from_trades_dedupes_fill_seen_on_user_stream(self):
+        self.exchange._last_poll_timestamp = 0
+        self.exchange._set_current_timestamp(self.exchange.UPDATE_ORDER_STATUS_MIN_INTERVAL * 2)
+        order_id = "EX_DEDUPE"
+        self.exchange.start_tracking_order(
+            order_id="OID_DEDUPE",
+            exchange_order_id=order_id,
+            trading_pair=self.trading_pair,
+            order_type=OrderType.MARKET,
+            trade_type=TradeType.SELL,
+            price=Decimal("10"),
+            amount=Decimal("2"),
+            position_action=PositionAction.OPEN,
+        )
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+
+        fill_data = {
+            "id": order_id,
+            "status": "PARTIALLY_FILLED",
+            "fillPrice": "10",
+            "fillQuantity": "1",
+            "createdAt": "2026-02-09T01:24:54.937Z",
+            "updatedAt": "2026-02-09T01:24:54.937Z",
+        }
+        self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
+
+        tracked_order = self.exchange._order_tracker.fetch_tracked_order("OID_DEDUPE")
+        self.assertEqual(Decimal("1"), tracked_order.executed_amount_base)
+        self.assertEqual(1, len(tracked_order.order_fills))
+
+        self.exchange._api_get = AsyncMock(return_value={
+            "list": [{
+                "order": order_id,
+                "id": "REST_FILL_1",
+                "fillPrice": "10",
+                "fillQuantity": "1",
+                "createdAt": "2026-02-09T01:24:54.937Z",
+            }]
+        })
+
+        self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
+
+        tracked_order = self.exchange._order_tracker.fetch_tracked_order("OID_DEDUPE")
+        self.assertEqual(Decimal("1"), tracked_order.executed_amount_base)
+        self.assertEqual(1, len(tracked_order.order_fills))
 
     def test_update_order_status_processes_update(self):
         self.exchange._last_poll_timestamp = 0

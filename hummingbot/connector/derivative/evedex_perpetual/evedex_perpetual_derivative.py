@@ -404,16 +404,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 order_result.get("updatedAt"),
                 order_result.get("completedAt"),
             )
-            if order_type == OrderType.MARKET:
-                self.logger().debug(
-                    f"Evedex market order diagnostic response: client_order_id={order_id}, "
-                    f"payload_order_id={evedex_order_id}, exchange_order_id={exchange_order_id}, "
-                    f"status={order_result.get('status')}, type={order_result.get('type')}, "
-                    f"quantity={order_result.get('quantity')}, cashQuantity={order_result.get('cashQuantity')}, "
-                    f"fillQuantity={order_result.get('fillQuantity')}, "
-                    f"unFilledQuantity={order_result.get('unFilledQuantity')}, "
-                    f"filledAvgPrice={order_result.get('filledAvgPrice')}."
-                )
 
         except IOError as e:
             error_description = str(e)
@@ -601,9 +591,14 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         filled_quantity = EvedexPerpetualDerivative._filled_amount_from_order_event(fill_data)
 
         price = fill_data.get("fillPrice", fill_data.get("filledAvgPrice", 0))
+        # Evedex does not expose one stable fill identifier across WS order updates, WS fill events,
+        # and REST /fill payloads. Prefer the most execution-specific field available, then fall back
+        # to shared timestamps so the same economic fill hashes to the same trade_id across sources.
         trade_identifier = (
             fill_data.get("executionId")
+            or fill_data.get("createdAt")
             or fill_data.get("updatedAt")
+            or fill_data.get("completedAt")
             or fill_data.get("exchangeRequestId")
             or "trade"
         )
@@ -637,36 +632,45 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         tracked_order_is_market = tracked_order is not None and tracked_order.order_type == OrderType.MARKET
         return raw_type == "MARKET" or time_in_force == CONSTANTS.TIME_IN_FORCE_IOC or tracked_order_is_market
 
-    def _should_treat_terminal_partial_order_as_filled(
+    def _terminal_reported_executed_quantity(
         self,
         order_data: Dict[str, Any],
         tracked_order: Optional[InFlightOrder] = None,
-    ) -> bool:
+    ) -> Optional[Decimal]:
+        if tracked_order is None or not self._is_ioc_or_market_order_event(order_data, tracked_order):
+            return None
+
         status = str(order_data.get("status", "")).upper()
-        if status not in {"CANCELLED", "EXPIRED"}:
-            return False
+        if status not in {"FILLED", "CANCELLED", "EXPIRED"}:
+            return None
 
         filled_quantity = self._filled_amount_from_order_event(order_data)
-        if filled_quantity <= Decimal("0"):
-            return False
+        order_quantity = Decimal(str(order_data.get("quantity", tracked_order.amount)))
+        quantity_candidates = [quantity for quantity in (filled_quantity, order_quantity) if quantity > Decimal("0")]
+        reference_quantity = max(tracked_order.amount, order_quantity)
 
-        order_quantity = Decimal(str(order_data.get("quantity", tracked_order.amount if tracked_order is not None else 0)))
-        return (
-            order_quantity > Decimal("0")
-            and filled_quantity < order_quantity
-            and self._is_ioc_or_market_order_event(order_data, tracked_order)
-        )
+        if not quantity_candidates:
+            return None
+
+        normalized_quantity = min(quantity_candidates)
+        if normalized_quantity >= reference_quantity:
+            return None
+
+        if status == "FILLED" or filled_quantity > Decimal("0"):
+            return normalized_quantity
+
+        return None
 
     def _normalize_tracked_order_for_terminal_partial_fill(
         self,
         tracked_order: Optional[InFlightOrder],
         order_data: Dict[str, Any],
     ):
-        if tracked_order is None or not self._should_treat_terminal_partial_order_as_filled(order_data, tracked_order):
+        if tracked_order is None:
             return
 
-        executed_quantity = self._filled_amount_from_order_event(order_data)
-        if executed_quantity > Decimal("0") and executed_quantity < tracked_order.amount:
+        executed_quantity = self._terminal_reported_executed_quantity(order_data, tracked_order)
+        if executed_quantity is not None:
             tracked_order.amount = executed_quantity
             tracked_order.check_filled_condition()
 
@@ -675,9 +679,13 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         order_data: Dict[str, Any],
         tracked_order: Optional[InFlightOrder] = None,
     ) -> Optional[OrderState]:
-        if self._should_treat_terminal_partial_order_as_filled(order_data, tracked_order):
+        status = str(order_data.get("status", "")).upper()
+        if (
+            status in {"CANCELLED", "EXPIRED"}
+            and self._terminal_reported_executed_quantity(order_data, tracked_order) is not None
+        ):
             return OrderState.FILLED
-        return CONSTANTS.ORDER_STATE.get(str(order_data.get("status", "")))
+        return CONSTANTS.ORDER_STATE.get(status)
 
     async def _process_order_fill(self, fill_data: Dict[str, Any]):
         # Process OrderFill from orderFills-{userExchangeId} channel.
@@ -687,26 +695,23 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         order_id = str(fill_data.get("id", ""))
         tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(order_id)
         fill_amount = self._filled_amount_from_order_event(fill_data)
-        self.logger().debug(
-            f"Received Evedex order fill event for exchange order {order_id or '<missing>'}: "
-            f"status={fill_data.get('status')}, fillQuantity={fill_data.get('fillQuantity')}, "
-            f"tracked_fillable={tracked_order is not None}"
-        )
 
         if tracked_order is not None:
             fill_price = Decimal(str(fill_data.get("fillPrice", fill_data.get("filledAvgPrice", 0))))
             fill_timestamp = self._parse_exchange_timestamp(fill_data.get("updatedAt"))
+            trade_id = self._trade_id_from_fill_data(fill_data, order_id)
+            new_fill_amount = max(Decimal("0"), fill_amount - tracked_order.executed_amount_base)
 
-            if fill_amount > Decimal("0"):
+            if new_fill_amount > Decimal("0"):
                 trade_update: TradeUpdate = TradeUpdate(
-                    trade_id=self._trade_id_from_fill_data(fill_data, order_id),
+                    trade_id=trade_id,
                     client_order_id=tracked_order.client_order_id,
                     exchange_order_id=order_id,
                     trading_pair=tracked_order.trading_pair,
                     fill_timestamp=fill_timestamp,
                     fill_price=fill_price,
-                    fill_base_amount=fill_amount,
-                    fill_quote_amount=fill_amount * fill_price,
+                    fill_base_amount=new_fill_amount,
+                    fill_quote_amount=new_fill_amount * fill_price,
                     fee=self._trade_fee_for_update(tracked_order, fill_data.get("fee", [])),
                 )
                 self._order_tracker.process_trade_update(trade_update)
@@ -727,10 +732,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
             self._schedule_balance_update()
         elif fill_amount > Decimal("0"):
-            self.logger().debug(
-                f"Evedex fill event for exchange order {order_id or '<missing>'} did not match any fillable order. "
-                f"Scheduling balance and position refresh."
-            )
             self._schedule_balance_update()
             self._schedule_position_update()
 
@@ -756,11 +757,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         should_refresh_position = False
         tracked_order = self._order_tracker.all_fillable_orders_by_exchange_order_id.get(exchange_order_id)
         fill_quantity = self._filled_amount_from_order_event(order_data)
-        self.logger().debug(
-            f"Received Evedex order update for exchange order {exchange_order_id or '<missing>'}: "
-            f"status={order_data.get('status')}, type={order_data.get('type')}, "
-            f"fillQuantity={order_data.get('fillQuantity')}, tracked_fillable={tracked_order is not None}"
-        )
 
         if tracked_order is not None:
             # Calculate filled quantity from Order type fields: quantity - unFilledQuantity
@@ -773,9 +769,10 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 new_fill_amount = filled_quantity - tracked_order.executed_amount_base
                 fill_price = Decimal(str(order_data.get("filledAvgPrice", order_data.get("fillPrice", 0))))
                 fill_timestamp = self._parse_exchange_timestamp(order_data.get("updatedAt"))
+                trade_id = self._trade_id_from_fill_data(order_data, exchange_order_id)
 
                 trade_update: TradeUpdate = TradeUpdate(
-                    trade_id=self._trade_id_from_fill_data(order_data, exchange_order_id),
+                    trade_id=trade_id,
                     client_order_id=tracked_order.client_order_id,
                     exchange_order_id=exchange_order_id,
                     trading_pair=tracked_order.trading_pair,
@@ -792,11 +789,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         # Process order status update - find by exchange_order_id
         tracked_order = self._order_tracker.all_updatable_orders_by_exchange_order_id.get(exchange_order_id)
         is_updatable_order_tracked = tracked_order is not None
-        if not is_updatable_order_tracked:
-            self.logger().debug(
-                f"Evedex order update for exchange order {exchange_order_id or '<missing>'} did not match any "
-                f"updatable order. status={order_data.get('status')}"
-            )
 
         if tracked_order is not None:
             self._normalize_tracked_order_for_terminal_partial_fill(tracked_order, order_data)
@@ -1054,16 +1046,22 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                             tracked_order: InFlightOrder = order_map.get(order_id)
                             fill_timestamp = self._parse_exchange_timestamp(fill.get("createdAt"))
                             fee = self._trade_fee_for_update(tracked_order, fill.get("fee", []))
+                            fill_quantity = Decimal(str(fill.get("fillQuantity", 0)))
+                            fill_price = Decimal(str(fill.get("fillPrice", 0)))
+                            trade_id = self._trade_id_from_fill_data(fill, order_id)
+
+                            if fill_quantity <= Decimal("0"):
+                                continue
 
                             trade_update: TradeUpdate = TradeUpdate(
-                                trade_id=str(fill.get("id")),
+                                trade_id=trade_id,
                                 client_order_id=tracked_order.client_order_id,
                                 exchange_order_id=order_id,
                                 trading_pair=trading_pair,
                                 fill_timestamp=fill_timestamp,
-                                fill_price=Decimal(str(fill.get("fillPrice", 0))),
-                                fill_base_amount=Decimal(str(fill.get("fillQuantity", 0))),
-                                fill_quote_amount=Decimal(str(fill.get("fillQuantity", 0))) * Decimal(str(fill.get("fillPrice", 0))),
+                                fill_price=fill_price,
+                                fill_base_amount=fill_quantity,
+                                fill_quote_amount=fill_quantity * fill_price,
                                 fee=fee,
                             )
                             self._order_tracker.process_trade_update(trade_update)
