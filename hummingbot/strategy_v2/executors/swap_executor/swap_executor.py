@@ -93,6 +93,7 @@ class SwapExecutor(ExecutorBase):
         self._order_id: Optional[str] = None  # Internal order ID from connector
         self._order: Optional[InFlightOrder] = None  # Order object for to_json() (same pattern as order_executor)
         self._selected_provider: Optional[str] = None  # Provider used for multi-provider comparison
+        self._order_not_found_count: int = 0  # Track consecutive times order wasn't found
         # Network info - parsed from connector_name (which is now the network identifier)
         if config.connector_name:
             self._chain, self._network_name = self.parse_network(config.connector_name)
@@ -482,9 +483,24 @@ class SwapExecutor(ExecutorBase):
 
         order = connector.get_order(self._order_id)
         if not order:
-            # Order not found - might have been cleaned up
-            self.logger().warning(f"Order {self._order_id} not found in tracker")
+            # Order not found - might have been cleaned up after failure
+            # If order is consistently not found, assume it failed
+            # (failure event was emitted but we missed it)
+            self._order_not_found_count += 1
+            if self._order_not_found_count >= 3:
+                self.logger().error(
+                    f"Order {self._order_id} not found in tracker after {self._order_not_found_count} checks. "
+                    f"Assuming order failed (possibly due to insufficient balance or other error)."
+                )
+                self._state = SwapExecutorStates.FAILED
+            else:
+                self.logger().warning(
+                    f"Order {self._order_id} not found in tracker (check {self._order_not_found_count}/3)"
+                )
             return
+
+        # Order found - reset not found counter
+        self._order_not_found_count = 0
 
         # Check order state
         if order.current_state == OrderState.FILLED:
