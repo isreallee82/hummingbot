@@ -263,6 +263,7 @@ class LPExecutor(ExecutorBase):
         connector = self.connectors.get(self.config.connector_name)
         if connector is None:
             self.logger().error(f"Connector {self.config.connector_name} not found")
+            self._handle_create_failure(ValueError(f"Connector {self.config.connector_name} not found"))
             return
 
         # Use config bounds directly
@@ -414,6 +415,7 @@ class LPExecutor(ExecutorBase):
         connector = self.connectors.get(self.config.connector_name)
         if connector is None:
             self.logger().error(f"Connector {self.config.connector_name} not found")
+            self._handle_close_failure(ValueError(f"Connector {self.config.connector_name} not found"))
             return
 
         # Verify position still exists before trying to close (handles timeout-but-succeeded case)
