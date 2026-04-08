@@ -2,7 +2,7 @@ from decimal import Decimal
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
-from hummingbot.core.data_type.common import PositionAction, PriceType, TradeType
+from hummingbot.core.data_type.common import PositionAction, TradeType
 from hummingbot.core.data_type.in_flight_order import TradeUpdate
 from hummingbot.core.data_type.trade_fee import (
     AddedToCostTradeFee,
@@ -252,47 +252,24 @@ class TradeFeeTests(TestCase):
 
 class GetExchangeRateTests(TestCase):
 
-    def test_get_exchange_rate_from_exchange_order_books(self):
-        mock_exchange = MagicMock()
-        mock_exchange.order_books = {"HBOT-USDT": MagicMock()}
-        mock_exchange.get_price_by_type.return_value = Decimal("10.5")
+    def test_get_exchange_rate_from_rate_source(self):
+        mock_rate_source = MagicMock()
+        mock_rate_source.get_pair_rate.return_value = Decimal("10.5")
 
-        rate = TradeFeeBase._get_exchange_rate("HBOT-USDT", exchange=mock_exchange)
+        rate = TradeFeeBase._get_exchange_rate("HBOT-USDT", rate_source=mock_rate_source)
 
         self.assertEqual(Decimal("10.5"), rate)
-        mock_exchange.get_price_by_type.assert_called_once_with("HBOT-USDT", PriceType.MidPrice)
+        mock_rate_source.get_pair_rate.assert_called_once_with("HBOT-USDT")
 
-    def test_get_exchange_rate_uses_reverse_pair_when_direct_not_found(self):
-        mock_exchange = MagicMock()
-        mock_exchange.order_books = {"USDT-HBOT": MagicMock()}
-        mock_exchange.get_price_by_type.return_value = Decimal("0.1")
-
-        rate = TradeFeeBase._get_exchange_rate("HBOT-USDT", exchange=mock_exchange)
-
-        self.assertEqual(Decimal("1") / Decimal("0.1"), rate)
-        mock_exchange.get_price_by_type.assert_called_once_with("USDT-HBOT", PriceType.MidPrice)
-
-    def test_get_exchange_rate_reverse_pair_zero_falls_through_to_rate_oracle(self):
-        mock_exchange = MagicMock()
-        mock_exchange.order_books = {"USDT-HBOT": MagicMock()}
-        mock_exchange.get_price_by_type.return_value = Decimal("0")
-
+    def test_get_exchange_rate_uses_default_rate_oracle_instance(self):
         with patch("hummingbot.core.rate_oracle.rate_oracle.RateOracle") as mock_oracle_cls:
             mock_oracle = MagicMock()
             mock_oracle.get_pair_rate.return_value = Decimal("10")
             mock_oracle_cls.get_instance.return_value = mock_oracle
 
-            rate = TradeFeeBase._get_exchange_rate("HBOT-USDT", exchange=mock_exchange)
+            rate = TradeFeeBase._get_exchange_rate("HBOT-USDT")
 
             self.assertEqual(Decimal("10"), rate)
-
-    def test_get_exchange_rate_rate_oracle_uses_reverse_pair_when_direct_not_found(self):
-        mock_rate_source = MagicMock()
-        mock_rate_source.get_pair_rate.side_effect = lambda pair: Decimal("0.1") if pair == "USDT-HBOT" else None
-
-        rate = TradeFeeBase._get_exchange_rate("HBOT-USDT", rate_source=mock_rate_source)
-
-        self.assertEqual(Decimal("1") / Decimal("0.1"), rate)
 
     def test_get_exchange_rate_raises_when_rate_source_returns_none(self):
         mock_rate_source = MagicMock()
