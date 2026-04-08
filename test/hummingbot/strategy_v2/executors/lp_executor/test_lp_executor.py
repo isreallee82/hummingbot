@@ -1345,3 +1345,435 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             await executor.on_start()
 
         self.assertEqual(executor.config.connector_name, "solana-mainnet-beta")
+
+    # Tests for SWAPPING state and close-out swap functionality
+
+    async def test_control_task_swapping_state(self):
+        """Test control_task calls _execute_closeout_swap when SWAPPING"""
+        executor = self.get_executor()
+        executor._status = RunnableStatus.RUNNING
+        executor.lp_position_state.state = LPExecutorStates.SWAPPING
+
+        mock_pool_info = MagicMock()
+        mock_pool_info.price = 100.0
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.get_pool_info_by_address = AsyncMock(return_value=mock_pool_info)
+
+        with patch.object(executor, '_execute_closeout_swap', new_callable=AsyncMock) as mock_swap:
+            await executor.control_task()
+            mock_swap.assert_called_once()
+
+    async def test_close_position_with_keep_position_false_needs_swap(self):
+        """Test _close_position triggers swap when keep_position=False and base differs"""
+        config = self.get_default_config()
+        config_dict = config.model_dump()
+        config_dict["keep_position"] = False
+        config_dict["swap_provider"] = "jupiter/router"
+        new_config = LPExecutorConfig(**config_dict)
+
+        executor = self.get_executor(new_config)
+        executor.lp_position_state.position_address = "pos123"
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.initial_quote_amount = Decimal("100.0")
+
+        # Position close returns more base than initial (IL scenario)
+        mock_position = MagicMock()
+        mock_position.price = 100.0
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.get_position_info = AsyncMock(return_value=mock_position)
+        connector._clmm_close_position = AsyncMock(return_value="sig789")
+        connector._lp_orders_metadata = {
+            "order-123": {
+                "base_amount": Decimal("1.5"),  # More base than initial
+                "quote_amount": Decimal("50.0"),  # Less quote
+                "base_fee": Decimal("0.01"),
+                "quote_fee": Decimal("0.5"),
+                "position_rent_refunded": Decimal("0.002"),
+                "tx_fee": Decimal("0.0001")
+            }
+        }
+        connector._trigger_remove_liquidity_event = MagicMock(return_value=create_mock_remove_event(
+            base_amount=Decimal("1.5"), quote_amount=Decimal("50.0")
+        ))
+
+        await executor._close_position()
+
+        # Should transition to SWAPPING since base_diff > 0.000001
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.SWAPPING)
+
+    async def test_close_position_with_keep_position_false_no_swap_needed(self):
+        """Test _close_position goes to COMPLETE when no swap needed"""
+        config = self.get_default_config()
+        config_dict = config.model_dump()
+        config_dict["keep_position"] = False
+        config_dict["swap_provider"] = "jupiter/router"
+        new_config = LPExecutorConfig(**config_dict)
+
+        executor = self.get_executor(new_config)
+        executor.lp_position_state.position_address = "pos123"
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.initial_quote_amount = Decimal("100.0")
+
+        mock_position = MagicMock()
+        mock_position.price = 100.0
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.get_position_info = AsyncMock(return_value=mock_position)
+        connector._clmm_close_position = AsyncMock(return_value="sig789")
+        connector._lp_orders_metadata = {
+            "order-123": {
+                "base_amount": Decimal("1.0"),  # Same as initial
+                "quote_amount": Decimal("100.0"),
+                "base_fee": Decimal("0.0"),
+                "quote_fee": Decimal("0.0"),
+                "position_rent_refunded": Decimal("0.002"),
+                "tx_fee": Decimal("0.0001")
+            }
+        }
+        connector._trigger_remove_liquidity_event = MagicMock(return_value=create_mock_remove_event(
+            base_amount=Decimal("1.0"), quote_amount=Decimal("100.0")
+        ))
+
+        await executor._close_position()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.COMPLETE)
+
+    async def test_execute_closeout_swap_no_connector(self):
+        """Test _execute_closeout_swap handles missing connector"""
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.connectors = {}  # No connectors
+
+        await executor._execute_closeout_swap()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+
+    async def test_execute_closeout_swap_no_swap_provider(self):
+        """Test _execute_closeout_swap handles missing swap_provider"""
+        executor = self.get_executor()
+        executor.config.swap_provider = None
+
+        await executor._execute_closeout_swap()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+
+    async def test_execute_closeout_swap_active_order_filled(self):
+        """Test _execute_closeout_swap handles FILLED swap order"""
+        from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
+        from hummingbot.strategy_v2.executors.lp_executor.data_types import TrackedOrder
+
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.active_swap_order = TrackedOrder(order_id="swap-123")
+
+        mock_order = MagicMock(spec=InFlightOrder)
+        mock_order.client_order_id = "swap-123"
+        mock_order.current_state = OrderState.FILLED
+
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.get_order = MagicMock(return_value=mock_order)
+
+        await executor._execute_closeout_swap()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.COMPLETE)
+        self.assertIsNone(executor.lp_position_state.active_swap_order)
+
+    async def test_execute_closeout_swap_active_order_failed(self):
+        """Test _execute_closeout_swap handles FAILED swap order"""
+        from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
+        from hummingbot.strategy_v2.executors.lp_executor.data_types import TrackedOrder
+
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.active_swap_order = TrackedOrder(order_id="swap-123")
+
+        mock_order = MagicMock(spec=InFlightOrder)
+        mock_order.client_order_id = "swap-123"
+        mock_order.current_state = OrderState.FAILED
+
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.get_order = MagicMock(return_value=mock_order)
+
+        await executor._execute_closeout_swap()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+
+    async def test_execute_closeout_swap_active_order_canceled(self):
+        """Test _execute_closeout_swap handles CANCELED swap order"""
+        from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
+        from hummingbot.strategy_v2.executors.lp_executor.data_types import TrackedOrder
+
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.active_swap_order = TrackedOrder(order_id="swap-123")
+
+        mock_order = MagicMock(spec=InFlightOrder)
+        mock_order.client_order_id = "swap-123"
+        mock_order.current_state = OrderState.CANCELED
+
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.get_order = MagicMock(return_value=mock_order)
+
+        await executor._execute_closeout_swap()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+
+    async def test_execute_closeout_swap_active_order_not_found_multiple_times(self):
+        """Test _execute_closeout_swap handles order not found after multiple checks"""
+        from hummingbot.strategy_v2.executors.lp_executor.data_types import TrackedOrder
+
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.active_swap_order = TrackedOrder(order_id="swap-123")
+        executor._swap_not_found_count = 2  # Already checked twice
+
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.get_order = MagicMock(return_value=None)
+
+        await executor._execute_closeout_swap()
+
+        # After 3 checks, assume completed
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.COMPLETE)
+        self.assertIsNone(executor.lp_position_state.active_swap_order)
+
+    async def test_execute_closeout_swap_no_swap_needed(self):
+        """Test _execute_closeout_swap completes when no swap needed"""
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.base_amount = Decimal("1.0")  # Same
+        executor.lp_position_state.base_fee = Decimal("0.0")
+
+        await executor._execute_closeout_swap()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.COMPLETE)
+
+    async def test_execute_closeout_swap_sell_excess_base(self):
+        """Test _execute_closeout_swap sells excess base tokens"""
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.base_amount = Decimal("1.5")  # More base than initial
+        executor.lp_position_state.base_fee = Decimal("0.01")
+
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.place_order = MagicMock(return_value="swap-order-123")
+
+        await executor._execute_closeout_swap()
+
+        # Should place a SELL order
+        connector.place_order.assert_called_once()
+        call_kwargs = connector.place_order.call_args[1]
+        self.assertFalse(call_kwargs["is_buy"])  # SELL
+        self.assertIsNotNone(executor.lp_position_state.active_swap_order)
+
+    async def test_execute_closeout_swap_buy_back_base(self):
+        """Test _execute_closeout_swap buys back base tokens"""
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.base_amount = Decimal("0.5")  # Less base than initial
+        executor.lp_position_state.base_fee = Decimal("0.01")
+
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.place_order = MagicMock(return_value="swap-order-123")
+
+        await executor._execute_closeout_swap()
+
+        # Should place a BUY order
+        connector.place_order.assert_called_once()
+        call_kwargs = connector.place_order.call_args[1]
+        self.assertTrue(call_kwargs["is_buy"])  # BUY
+        self.assertIsNotNone(executor.lp_position_state.active_swap_order)
+
+    async def test_execute_closeout_swap_exception(self):
+        """Test _execute_closeout_swap handles exception when placing swap"""
+        executor = self.get_executor()
+        executor.config.swap_provider = "jupiter/router"
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.base_amount = Decimal("1.5")
+        executor.lp_position_state.base_fee = Decimal("0.01")
+
+        connector = self.strategy.connectors["solana-mainnet-beta"]
+        connector.place_order = MagicMock(side_effect=Exception("Swap failed"))
+
+        await executor._execute_closeout_swap()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+
+    # Tests for _store_lp_event_from_remove variations
+
+    def test_store_lp_event_from_remove_tx_fee_only(self):
+        """Test _store_lp_event_from_remove records tx_fee with no conversion"""
+        executor = self.get_executor()
+        # Set up ADD amounts (stored when position opened)
+        executor._add_base_amount = Decimal("1.0")
+        executor._add_quote_amount = Decimal("100.0")
+        executor._add_tx_fee_quote = 0.001
+
+        event = create_mock_remove_event(
+            base_amount=Decimal("1.0"),  # Same as initial
+            quote_amount=Decimal("100.0"),  # Same as initial
+            base_fee=Decimal("0.0"),
+            quote_fee=Decimal("0.0"),
+            tx_fee=Decimal("0.001"),  # Only tx_fee
+        )
+
+        executor._store_lp_event_from_remove(event)
+
+        # Should record with tx_fee but 0 amounts
+        self.assertEqual(len(executor._held_position_orders), 1)
+        self.assertEqual(executor._held_position_orders[0]["executed_amount_base"], 0.0)
+        self.assertGreater(executor._held_position_orders[0]["cumulative_fee_paid_quote"], 0)
+
+    def test_store_lp_event_from_remove_buy_scenario(self):
+        """Test _store_lp_event_from_remove records BUY when gained base, lost quote"""
+        executor = self.get_executor()
+        executor._add_base_amount = Decimal("1.0")
+        executor._add_quote_amount = Decimal("100.0")
+        executor._add_tx_fee_quote = 0.0
+
+        event = create_mock_remove_event(
+            base_amount=Decimal("1.5"),  # Gained 0.5 base
+            quote_amount=Decimal("50.0"),  # Lost 50 quote
+            base_fee=Decimal("0.01"),
+            quote_fee=Decimal("0.5"),
+        )
+
+        executor._store_lp_event_from_remove(event)
+
+        self.assertEqual(len(executor._held_position_orders), 1)
+        self.assertEqual(executor._held_position_orders[0]["trade_type"], "BUY")
+        self.assertGreater(executor._held_position_orders[0]["executed_amount_base"], 0)
+
+    def test_store_lp_event_from_remove_sell_scenario(self):
+        """Test _store_lp_event_from_remove records SELL when lost base, gained quote"""
+        executor = self.get_executor()
+        executor._add_base_amount = Decimal("1.0")
+        executor._add_quote_amount = Decimal("100.0")
+        executor._add_tx_fee_quote = 0.0
+
+        event = create_mock_remove_event(
+            base_amount=Decimal("0.5"),  # Lost 0.5 base
+            quote_amount=Decimal("150.0"),  # Gained 50 quote
+            base_fee=Decimal("0.01"),
+            quote_fee=Decimal("0.5"),
+        )
+
+        executor._store_lp_event_from_remove(event)
+
+        self.assertEqual(len(executor._held_position_orders), 1)
+        self.assertEqual(executor._held_position_orders[0]["trade_type"], "SELL")
+        self.assertGreater(executor._held_position_orders[0]["executed_amount_base"], 0)
+
+    def test_store_lp_event_from_remove_base_only_change_positive(self):
+        """Test _store_lp_event_from_remove handles positive base-only change (BUY)"""
+        executor = self.get_executor()
+        executor._add_base_amount = Decimal("1.0")
+        executor._add_quote_amount = Decimal("100.0")
+        executor._add_tx_fee_quote = 0.0
+
+        event = create_mock_remove_event(
+            base_amount=Decimal("1.5"),  # Gained 0.5 base
+            quote_amount=Decimal("100.0"),  # Same quote
+            base_fee=Decimal("0.0"),
+            quote_fee=Decimal("0.0"),
+        )
+
+        executor._store_lp_event_from_remove(event)
+
+        self.assertEqual(len(executor._held_position_orders), 1)
+        self.assertEqual(executor._held_position_orders[0]["trade_type"], "BUY")
+
+    def test_store_lp_event_from_remove_base_only_change_negative(self):
+        """Test _store_lp_event_from_remove handles negative base-only change (SELL)"""
+        executor = self.get_executor()
+        executor._add_base_amount = Decimal("1.0")
+        executor._add_quote_amount = Decimal("100.0")
+        executor._add_tx_fee_quote = 0.0
+
+        event = create_mock_remove_event(
+            base_amount=Decimal("0.5"),  # Lost 0.5 base
+            quote_amount=Decimal("100.0"),  # Same quote
+            base_fee=Decimal("0.0"),
+            quote_fee=Decimal("0.0"),
+        )
+
+        executor._store_lp_event_from_remove(event)
+
+        self.assertEqual(len(executor._held_position_orders), 1)
+        self.assertEqual(executor._held_position_orders[0]["trade_type"], "SELL")
+
+    def test_store_lp_event_from_remove_quote_only_change(self):
+        """Test _store_lp_event_from_remove handles quote-only change"""
+        executor = self.get_executor()
+        executor._add_base_amount = Decimal("1.0")
+        executor._add_quote_amount = Decimal("100.0")
+        executor._add_tx_fee_quote = 0.0
+
+        event = create_mock_remove_event(
+            base_amount=Decimal("1.0"),  # Same base
+            quote_amount=Decimal("110.0"),  # Gained 10 quote (fees)
+            base_fee=Decimal("0.0"),
+            quote_fee=Decimal("10.0"),
+        )
+
+        executor._store_lp_event_from_remove(event)
+
+        self.assertEqual(len(executor._held_position_orders), 1)
+        self.assertEqual(executor._held_position_orders[0]["executed_amount_base"], 0.0)
+
+    # Tests for early_stop from OPENING state
+
+    def test_early_stop_from_opening_state(self):
+        """Test early_stop from OPENING state goes to FAILED with EARLY_STOP"""
+        executor = self.get_executor()
+        executor.lp_position_state.state = LPExecutorStates.OPENING
+
+        executor.early_stop()
+
+        self.assertEqual(executor.lp_position_state.state, LPExecutorStates.FAILED)
+        self.assertEqual(executor.close_type, CloseType.EARLY_STOP)
+
+    # Tests for _calculate_net_base_difference
+
+    def test_calculate_net_base_difference_positive(self):
+        """Test _calculate_net_base_difference returns positive when gained base"""
+        executor = self.get_executor()
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.base_amount = Decimal("1.4")
+        executor.lp_position_state.base_fee = Decimal("0.1")
+
+        # received = 1.4 + 0.1 = 1.5, initial = 1.0, diff = 0.5
+        diff = executor._calculate_net_base_difference()
+        self.assertEqual(diff, Decimal("0.5"))
+
+    def test_calculate_net_base_difference_negative(self):
+        """Test _calculate_net_base_difference returns negative when lost base"""
+        executor = self.get_executor()
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.base_amount = Decimal("0.4")
+        executor.lp_position_state.base_fee = Decimal("0.1")
+
+        # received = 0.4 + 0.1 = 0.5, initial = 1.0, diff = -0.5
+        diff = executor._calculate_net_base_difference()
+        self.assertEqual(diff, Decimal("-0.5"))
+
+    def test_calculate_net_base_difference_zero(self):
+        """Test _calculate_net_base_difference returns zero when balanced"""
+        executor = self.get_executor()
+        executor.lp_position_state.initial_base_amount = Decimal("1.0")
+        executor.lp_position_state.base_amount = Decimal("0.9")
+        executor.lp_position_state.base_fee = Decimal("0.1")
+
+        # received = 0.9 + 0.1 = 1.0, initial = 1.0, diff = 0
+        diff = executor._calculate_net_base_difference()
+        self.assertEqual(diff, Decimal("0"))
+
+    # Test for filled_amount_base property
+
+    def test_filled_amount_base_returns_position_base(self):
+        """Test filled_amount_base returns current base amount"""
+        executor = self.get_executor()
+        executor.lp_position_state.base_amount = Decimal("2.5")
+
+        self.assertEqual(executor.filled_amount_base, Decimal("2.5"))

@@ -149,9 +149,9 @@ class LPExecutorState(BaseModel):
             current_price: Current market price
             current_time: Current timestamp (for tracking _out_of_range_since)
         """
-        # If already complete, closing, failed, or opening (waiting for retry), preserve state
+        # If already complete, closing, swapping, failed, or opening (waiting for retry), preserve state
         # These states are managed explicitly by the executor, don't overwrite them
-        if self.state in (LPExecutorStates.COMPLETE, LPExecutorStates.CLOSING, LPExecutorStates.FAILED):
+        if self.state in (LPExecutorStates.COMPLETE, LPExecutorStates.CLOSING, LPExecutorStates.SWAPPING, LPExecutorStates.FAILED):
             return
 
         # Preserve OPENING state when no position exists (handles max_retries case)
