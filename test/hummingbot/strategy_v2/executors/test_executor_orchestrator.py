@@ -308,6 +308,42 @@ class TestExecutorOrchestrator(unittest.TestCase):
         self.orchestrator.store_all_positions()
         self.assertEqual(len(self.orchestrator.positions_held), 0)
 
+    @patch.object(MarketsRecorder, "get_instance")
+    def test_store_all_positions_with_nan_mid_price(self, markets_recorder_mock):
+        """Test store_all_positions handles NaN mid_price correctly."""
+        markets_recorder_mock.return_value = MagicMock(spec=MarketsRecorder)
+        markets_recorder_mock.update_or_store_position = MagicMock(return_value=None)
+
+        # Create a NaN decimal for mid_price
+        nan_decimal = Decimal("NaN")
+        self.orchestrator.strategy.market_data_provider.get_price_by_type = MagicMock(
+            return_value=nan_decimal
+        )
+        # Add SOL-USDT to the mocked markets so it passes the check
+        self.orchestrator.strategy.markets = {"binance": {"ETH-USDT", "BTC-USDT", "SOL-USDT"}}
+
+        position_held = PositionHold("binance", "SOL-USDT", side=TradeType.BUY)
+        executor_info = ExecutorInfo(
+            id="123", timestamp=1234, type="position_executor",
+            status=RunnableStatus.TERMINATED, config=PositionExecutorConfig(
+                timestamp=1234, trading_pair="SOL-USDT", connector_name="binance",
+                side=TradeType.BUY, amount=Decimal(10), entry_price=Decimal(100),
+            ), net_pnl_pct=Decimal(0), net_pnl_quote=Decimal(0), cum_fees_quote=Decimal(0),
+            filled_amount_quote=Decimal(100), is_active=False, is_trading=False,
+            custom_info={"held_position_orders": [
+                {"order_id": "123", "amount": Decimal(10), "trade_type": "BUY",
+                 "executed_amount_base": Decimal("10"), "executed_amount_quote": Decimal("2300"),
+                 "cumulative_fee_paid_quote": Decimal(0)}]},
+            controller_id="main"
+        )
+        position_held.add_orders_from_executor(executor_info)
+        self.orchestrator.positions_held = {
+            "main": [position_held]
+        }
+        # Should use 0 as mid_price when NaN
+        self.orchestrator.store_all_positions()
+        self.assertEqual(len(self.orchestrator.positions_held), 0)
+
     def test_get_positions_report(self):
         position_held = PositionHold("binance", "SOL-USDT", side=TradeType.BUY)
         executor_info = ExecutorInfo(

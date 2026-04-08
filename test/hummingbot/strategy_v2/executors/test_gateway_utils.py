@@ -4,7 +4,13 @@ Tests for Gateway executor utilities.
 import unittest
 from unittest.mock import patch
 
-from hummingbot.strategy_v2.executors.gateway_utils import get_connectors_by_type, validate_and_normalize_connector
+from hummingbot.strategy_v2.executors.gateway_utils import (
+    get_connectors_by_type,
+    get_network_connectors,
+    parse_provider,
+    validate_and_normalize_connector,
+    validate_network_connector,
+)
 
 
 class TestValidateAndNormalizeConnector(unittest.TestCase):
@@ -169,6 +175,113 @@ class TestGetConnectorsByType(unittest.TestCase):
     def test_get_nonexistent_type(self):
         """Test getting connectors of nonexistent type."""
         result = get_connectors_by_type("perp")
+        self.assertEqual(result, [])
+
+
+class TestParseProvider(unittest.TestCase):
+    """Tests for parse_provider function."""
+
+    def test_parse_provider_with_slash(self):
+        """Test parsing provider with slash separator."""
+        dex, trading_type = parse_provider("meteora/clmm")
+        self.assertEqual(dex, "meteora")
+        self.assertEqual(trading_type, "clmm")
+
+    def test_parse_provider_without_slash(self):
+        """Test parsing provider without slash uses default."""
+        dex, trading_type = parse_provider("jupiter", default_trading_type="router")
+        self.assertEqual(dex, "jupiter")
+        self.assertEqual(trading_type, "router")
+
+    def test_parse_provider_without_slash_different_default(self):
+        """Test parsing provider without slash with clmm default."""
+        dex, trading_type = parse_provider("orca", default_trading_type="clmm")
+        self.assertEqual(dex, "orca")
+        self.assertEqual(trading_type, "clmm")
+
+
+class TestValidateNetworkConnector(unittest.TestCase):
+    """Tests for validate_network_connector function."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.errors = []
+
+        def capture_error(msg):
+            self.errors.append(msg)
+
+        self.capture_error = capture_error
+
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [])
+    def test_empty_gateway_connectors_skips_validation(self):
+        """Test that empty GATEWAY_CONNECTORS skips validation."""
+        result = validate_network_connector("solana-mainnet-beta", self.capture_error)
+        self.assertTrue(result)
+        self.assertEqual(len(self.errors), 0)
+
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+        "solana-mainnet-beta",
+        "ethereum-mainnet",
+    ])
+    def test_valid_network_connector(self):
+        """Test valid network connector."""
+        result = validate_network_connector("solana-mainnet-beta", self.capture_error)
+        self.assertTrue(result)
+        self.assertEqual(len(self.errors), 0)
+
+
+class TestValidateAndNormalizeConnectorEmptyGateway(unittest.TestCase):
+    """Tests for validate_and_normalize_connector with empty GATEWAY_CONNECTORS."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.errors = []
+
+        def capture_error(msg):
+            self.errors.append(msg)
+
+        self.capture_error = capture_error
+
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [])
+    def test_empty_gateway_with_suffix(self):
+        """Test empty GATEWAY_CONNECTORS with already normalized connector."""
+        result, success = validate_and_normalize_connector(
+            "jupiter/router", "router", self.capture_error
+        )
+        self.assertTrue(success)
+        self.assertEqual(result, "jupiter/router")
+
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [])
+    def test_empty_gateway_base_name(self):
+        """Test empty GATEWAY_CONNECTORS with base name normalizes it."""
+        result, success = validate_and_normalize_connector(
+            "meteora", "clmm", self.capture_error
+        )
+        self.assertTrue(success)
+        self.assertEqual(result, "meteora/clmm")
+
+
+class TestGetNetworkConnectors(unittest.TestCase):
+    """Tests for get_network_connectors function."""
+
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+        "solana-mainnet-beta",
+        "ethereum-mainnet",
+        "jupiter/router",
+        "meteora/clmm",
+    ])
+    def test_get_network_connectors(self):
+        """Test getting network-style connectors."""
+        result = get_network_connectors()
+        self.assertEqual(sorted(result), ["ethereum-mainnet", "solana-mainnet-beta"])
+
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+        "jupiter/router",
+        "meteora/clmm",
+    ])
+    def test_get_network_connectors_none_available(self):
+        """Test getting network connectors when none exist."""
+        result = get_network_connectors()
         self.assertEqual(result, [])
 
 

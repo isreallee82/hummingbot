@@ -159,6 +159,51 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             await executor.on_start()
             mock_super.assert_called_once()
 
+    @patch('hummingbot.strategy_v2.executors.lp_executor.lp_executor.GatewayHttpClient')
+    async def test_on_start_resolves_swap_provider(self, mock_gateway_client):
+        """Test on_start resolves swap_provider when keep_position=False and no swap_provider."""
+        config = self.get_default_config()
+        config_dict = config.model_dump()
+        config_dict["keep_position"] = False
+        config_dict["swap_provider"] = None
+        new_config = LPExecutorConfig(**config_dict)
+
+        executor = self.get_executor(new_config)
+
+        # Mock gateway client to return a swap provider
+        mock_instance = MagicMock()
+        mock_instance.get_default_swap_provider = AsyncMock(return_value="jupiter/router")
+        mock_gateway_client.get_instance.return_value = mock_instance
+
+        with patch.object(executor.__class__.__bases__[0], 'on_start', new_callable=AsyncMock):
+            await executor.on_start()
+
+        mock_instance.get_default_swap_provider.assert_called_once_with(new_config.connector_name)
+        self.assertEqual(executor.config.swap_provider, "jupiter/router")
+
+    @patch('hummingbot.strategy_v2.executors.lp_executor.lp_executor.GatewayHttpClient')
+    async def test_on_start_no_swap_provider_warning(self, mock_gateway_client):
+        """Test on_start logs warning when no swap_provider available."""
+        config = self.get_default_config()
+        config_dict = config.model_dump()
+        config_dict["keep_position"] = False
+        config_dict["swap_provider"] = None
+        new_config = LPExecutorConfig(**config_dict)
+
+        executor = self.get_executor(new_config)
+
+        # Mock gateway client to return None (no swap provider)
+        mock_instance = MagicMock()
+        mock_instance.get_default_swap_provider = AsyncMock(return_value=None)
+        mock_gateway_client.get_instance.return_value = mock_instance
+
+        with patch.object(executor.__class__.__bases__[0], 'on_start', new_callable=AsyncMock):
+            await executor.on_start()
+
+        mock_instance.get_default_swap_provider.assert_called_once_with(new_config.connector_name)
+        # swap_provider should remain None
+        self.assertIsNone(executor.config.swap_provider)
+
     def test_early_stop_with_keep_position_false(self):
         """Test early_stop transitions to CLOSING when position exists"""
         executor = self.get_executor()
