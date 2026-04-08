@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Type
 
 from hummingbot.connector.utils import combine_to_hb_trading_pair, split_hb_trading_pair
-from hummingbot.core.data_type.common import PositionAction, PriceType, TradeType
+from hummingbot.core.data_type.common import PositionAction, TradeType
 
 if typing.TYPE_CHECKING:  # avoid circular import problems
     from hummingbot.connector.exchange_base import ExchangeBase
@@ -179,32 +179,13 @@ class TradeFeeBase(ABC):
     @staticmethod
     def _get_exchange_rate(
             trading_pair: str,
-            exchange: Optional["ExchangeBase"] = None,
             rate_source: Optional["RateOracle"] = None      # noqa: F821
     ) -> Decimal:
         from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 
-        if exchange is not None and hasattr(exchange, "order_books") and exchange.order_books is not None:
-            if trading_pair in exchange.order_books:
-                rate = exchange.get_price_by_type(trading_pair, PriceType.MidPrice)
-                return rate
-            # Check the reverse pair (e.g. "USDT-SIREN" → try "SIREN-USDT")
-            base, quote = split_hb_trading_pair(trading_pair)
-            reverse_pair = combine_to_hb_trading_pair(base=quote, quote=base)
-            if reverse_pair in exchange.order_books:
-                reverse_rate = exchange.get_price_by_type(reverse_pair, PriceType.MidPrice)
-                if reverse_rate and reverse_rate > Decimal("0"):
-                    return Decimal("1") / reverse_rate
-
         local_rate_source: Optional[RateOracle] = rate_source or RateOracle.get_instance()
-        rate: Decimal = local_rate_source.get_pair_rate(trading_pair)
+        rate: Optional[Decimal] = local_rate_source.get_pair_rate(trading_pair)
         if rate is None:
-            # Try the reverse pair on the rate oracle (e.g. "USDT-BASED" → "BASED-USDT")
-            base, quote = split_hb_trading_pair(trading_pair)
-            reverse_pair = combine_to_hb_trading_pair(base=quote, quote=base)
-            reverse_rate: Decimal = local_rate_source.get_pair_rate(reverse_pair)
-            if reverse_rate is not None and reverse_rate > Decimal("0"):
-                return Decimal("1") / reverse_rate
             raise ValueError(f"Could not find the exchange rate for {trading_pair} using the rate source "
                              f"{local_rate_source} (please verify it has been correctly configured)")
         return rate
@@ -215,7 +196,6 @@ class TradeFeeBase(ABC):
             price: Decimal,
             order_amount: Decimal,
             token: str,
-            exchange: Optional["ExchangeBase"] = None,
             rate_source: Optional["RateOracle"] = None      # noqa: F821
     ) -> Decimal:
         base, quote = split_hb_trading_pair(trading_pair)
@@ -225,7 +205,7 @@ class TradeFeeBase(ABC):
             if self._are_tokens_interchangeable(quote, token):
                 fee_amount += amount_from_percentage
             else:
-                conversion_rate: Decimal = self._get_exchange_rate(trading_pair, exchange, rate_source)
+                conversion_rate: Decimal = self._get_exchange_rate(trading_pair, rate_source)
                 # Protect against division by zero - use trade price as fallback if rate is 0
                 if conversion_rate == S_DECIMAL_0:
                     conversion_rate = price if price > S_DECIMAL_0 else Decimal("1")
@@ -240,7 +220,7 @@ class TradeFeeBase(ABC):
                 fee_amount += flat_fee.amount * price
             else:
                 conversion_pair: str = combine_to_hb_trading_pair(base=flat_fee.token, quote=token)
-                conversion_rate: Decimal = self._get_exchange_rate(conversion_pair, exchange, rate_source)
+                conversion_rate: Decimal = self._get_exchange_rate(conversion_pair, rate_source)
                 fee_amount += flat_fee.amount * conversion_rate
         return fee_amount
 
