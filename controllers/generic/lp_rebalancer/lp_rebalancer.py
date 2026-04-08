@@ -635,6 +635,20 @@ class LPRebalancer(ControllerBase):
         # Calculate position bounds
         lower_price, upper_price = self._calculate_price_bounds(side, current_price)
 
+        # Check if bounds were clamped by price limits
+        clamped = []
+        if side == 1:  # BUY
+            if self.config.buy_price_max and upper_price == self.config.buy_price_max:
+                clamped.append(f"upper=buy_price_max({self.config.buy_price_max})")
+            if self.config.buy_price_min and lower_price == self.config.buy_price_min:
+                clamped.append(f"lower=buy_price_min({self.config.buy_price_min})")
+        elif side == 2:  # SELL
+            if self.config.sell_price_min and lower_price == self.config.sell_price_min:
+                clamped.append(f"lower=sell_price_min({self.config.sell_price_min})")
+            if self.config.sell_price_max and upper_price == self.config.sell_price_max:
+                clamped.append(f"upper=sell_price_max({self.config.sell_price_max})")
+        clamped_info = f", clamped: {', '.join(clamped)}" if clamped else ""
+
         # Validate bounds
         if lower_price >= upper_price:
             self.logger().warning(f"Invalid bounds [{lower_price}, {upper_price}] - skipping position")
@@ -654,7 +668,7 @@ class LPRebalancer(ControllerBase):
             f"Creating position: side={side}, pool_price={current_price:.6f}, "
             f"bounds=[{lower_price:.6f}, {upper_price:.6f}], "
             f"limits=[{lower_limit_price:.6f}, {upper_limit_price:.6f}], "
-            f"base={base_amt:.6f}, quote={quote_amt:.6f}"
+            f"base={base_amt:.6f}, quote={quote_amt:.6f}{clamped_info}"
         )
 
         return LPExecutorConfig(
