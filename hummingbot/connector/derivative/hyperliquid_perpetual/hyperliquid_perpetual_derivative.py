@@ -1061,15 +1061,39 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
     async def _update_balances(self):
         """
         Calls the REST API to update total and available balances.
+        Under unified account or portfolio margin, use spot balances endpoint instead for trading account balance across spot and perps.
         """
 
         account_info = await self._api_post(path_url=CONSTANTS.ACCOUNT_INFO_URL,
                                             data={"type": CONSTANTS.USER_STATE_TYPE,
                                                   "user": self.hyperliquid_perpetual_address},
                                             )
-        quote = CONSTANTS.CURRENCY
-        self._account_balances[quote] = Decimal(account_info["crossMarginSummary"]["accountValue"])
-        self._account_available_balances[quote] = Decimal(account_info["withdrawable"])
+        spot_account_info = await self._api_post(path_url=CONSTANTS.ACCOUNT_INFO_URL,
+                                                 data={"type": CONSTANTS.SPOT_USER_STATE_TYPE,
+                                                       "user": self.hyperliquid_perpetual_address},
+                                                 )
+
+        if Decimal(account_info.get("withdrawable", "0")) == Decimal("0"):
+            local_asset_names = set(self._account_balances.keys())
+            remote_asset_names = set()
+
+            balances = spot_account_info["balances"]
+            for balance_entry in balances:
+                asset_name = balance_entry["coin"]
+                free_balance = Decimal(balance_entry["total"]) - Decimal(balance_entry["hold"])
+                total_balance = Decimal(balance_entry["total"])
+                self._account_available_balances[asset_name] = free_balance
+                self._account_balances[asset_name] = total_balance
+                remote_asset_names.add(asset_name)
+
+            asset_names_to_remove = local_asset_names.difference(remote_asset_names)
+            for asset_name in asset_names_to_remove:
+                del self._account_available_balances[asset_name]
+                del self._account_balances[asset_name]
+        else:
+            quote = CONSTANTS.CURRENCY
+            self._account_balances[quote] = Decimal(account_info["crossMarginSummary"]["accountValue"])
+            self._account_available_balances[quote] = Decimal(account_info["withdrawable"])
 
     async def _update_positions(self):
         all_positions = []

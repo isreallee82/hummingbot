@@ -199,36 +199,122 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
 
     @property
     def balance_request_mock_response_for_base_and_quote(self):
-        mock_response = {'assetPositions': [{'position': {'coin': 'ETH', 'cumFunding': {'allTime': '-0.442044',
-                                                                                        'sinceChange': '0.036699',
-                                                                                        'sinceOpen': '0.036699'},
-                                                          'entryPx': '2059.6',
-                                                          'leverage': {'type': 'cross', 'value': 21},
-                                                          'liquidationPx': None, 'marginUsed': '0.990428',
-                                                          'maxLeverage': 50, 'positionValue': '20.797',
-                                                          'returnOnEquity': '0.20294257', 'szi': '0.01',
-                                                          'unrealizedPnl': '0.201'}, 'type': 'oneWay'}],
-                         'crossMaintenanceMarginUsed': '0.20799',
-                         'crossMarginSummary': {'accountValue': '2000', 'totalMarginUsed': '0.990428',
-                                                'totalNtlPos': '20.799', 'totalRawUsd': '63.442322'},
-                         'marginSummary': {'accountValue': '84.241322', 'totalMarginUsed': '0.990428',
-                                           'totalNtlPos': '20.799', 'totalRawUsd': '63.442322'},
-                         'withdrawable': '2000'}
+        mock_response = {
+            "assetPositions": [
+                {
+                    "position": {
+                        "coin": "ETH",
+                        "cumFunding": {
+                            "allTime": "514.085417",
+                            "sinceChange": "0.0",
+                            "sinceOpen": "0.0",
+                        },
+                        "entryPx": "2986.3",
+                        "leverage": {
+                            "rawUsd": "-95.059824",
+                            "type": "isolated",
+                            "value": 20,
+                        },
+                        "liquidationPx": "2866.26936529",
+                        "marginUsed": "4.967826",
+                        "maxLeverage": 50,
+                        "positionValue": "100.02765",
+                        "returnOnEquity": "-0.0026789",
+                        "szi": "0.0335",
+                        "unrealizedPnl": "-0.0134",
+                    },
+                    "type": "oneWay",
+                }
+            ],
+            "crossMaintenanceMarginUsed": "0.0",
+            "crossMarginSummary": {
+                "accountValue": "13104.514502",
+                "totalMarginUsed": "0.0",
+                "totalNtlPos": "0.0",
+                "totalRawUsd": "13104.514502",
+            },
+            "marginSummary": {
+                "accountValue": "13109.482328",
+                "totalMarginUsed": "4.967826",
+                "totalNtlPos": "100.02765",
+                "totalRawUsd": "13009.454678",
+            },
+            "time": 1708622398623,
+            "withdrawable": "13104.514502",
+        }
 
         return mock_response
 
+    @property
+    def spot_balance_request_mock_response(self):
+        return {
+            "balances": [
+                {
+                    "coin": "USDC",
+                    "token": 0,
+                    "hold": "0.0",
+                    "total": "14.625485",
+                    "entryNtl": "0.0",
+                },
+                {
+                    "coin": "PURR",
+                    "token": 1,
+                    "hold": "0",
+                    "total": "2000",
+                    "entryNtl": "1234.56",
+                },
+            ]
+        }
+
     @aioresponses()
     def test_update_balances(self, mock_api):
-        response = self.balance_request_mock_response_for_base_and_quote
-        self._configure_balance_response(response=response, mock_api=mock_api)
+        account_response = self.balance_request_mock_response_for_base_and_quote
+        spot_response = self.spot_balance_request_mock_response
+        url = self._configure_balance_response(
+            response=account_response,
+            spot_response=spot_response,
+            mock_api=mock_api,
+        )
 
         self.async_run_with_timeout(self.exchange._update_balances())
 
         available_balances = self.exchange.available_balances
         total_balances = self.exchange.get_all_balances()
 
-        self.assertEqual(Decimal("2000"), available_balances[self.quote_asset])
-        self.assertEqual(Decimal("2000"), total_balances[self.quote_asset])
+        self.assertEqual(Decimal("13104.514502"), available_balances[self.quote_asset])
+        self.assertEqual(Decimal("13104.514502"), total_balances[self.quote_asset])
+
+        request_calls = self._all_executed_requests(api_mock=mock_api, url=url)
+        self.assertEqual(2, len(request_calls))
+        request_payloads = [json.loads(request_call.kwargs["data"]) for request_call in request_calls]
+        self.assertEqual(CONSTANTS.USER_STATE_TYPE, request_payloads[0]["type"])
+        self.assertEqual(CONSTANTS.SPOT_USER_STATE_TYPE, request_payloads[1]["type"])
+
+    @aioresponses()
+    def test_update_balances_uses_spot_balances_when_withdrawable_is_zero(self, mock_api):
+        account_response = deepcopy(self.balance_request_mock_response_for_base_and_quote)
+        account_response["withdrawable"] = "0.0"
+        spot_response = self.spot_balance_request_mock_response
+        self.exchange._account_balances = {"OLD": Decimal("10")}
+        self.exchange._account_available_balances = {"OLD": Decimal("5")}
+
+        self._configure_balance_response(
+            response=account_response,
+            spot_response=spot_response,
+            mock_api=mock_api,
+        )
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        available_balances = self.exchange.available_balances
+        total_balances = self.exchange.get_all_balances()
+
+        self.assertEqual(Decimal("14.625485"), available_balances["USDC"])
+        self.assertEqual(Decimal("14.625485"), total_balances["USDC"])
+        self.assertEqual(Decimal("2000"), available_balances["PURR"])
+        self.assertEqual(Decimal("2000"), total_balances["PURR"])
+        self.assertNotIn("OLD", available_balances)
+        self.assertNotIn("OLD", total_balances)
 
     def configure_failed_set_position_mode(
             self,
@@ -1487,13 +1573,19 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
     def _configure_balance_response(
             self,
             response,
+            spot_response,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
 
         url = self.balance_url
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         mock_api.post(
-            re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?")),
+            regex_url,
             body=json.dumps(response),
+            callback=callback)
+        mock_api.post(
+            regex_url,
+            body=json.dumps(spot_response),
             callback=callback)
         return url
 
