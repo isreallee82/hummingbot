@@ -706,6 +706,33 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             return OrderState.FILLED
         return CONSTANTS.ORDER_STATE.get(status)
 
+    def _log_fill_processed(
+        self,
+        tracked_order: InFlightOrder,
+        exchange_order_id: str,
+        fill_amount: Decimal,
+        fill_price: Decimal,
+        source: str,
+    ):
+        self.logger().debug(
+            f"Processed Evedex {source} fill for {tracked_order.client_order_id} ({exchange_order_id}): "
+            f"+{fill_amount} {tracked_order.base_asset} at {fill_price}. "
+            f"Executed {tracked_order.executed_amount_base}/{tracked_order.amount}."
+        )
+
+    def _log_order_state_change(
+        self,
+        tracked_order: InFlightOrder,
+        exchange_order_id: str,
+        previous_state: OrderState,
+        new_state: OrderState,
+        source: str,
+    ):
+        self.logger().debug(
+            f"Processed Evedex {source} order update for {tracked_order.client_order_id} ({exchange_order_id}): "
+            f"{previous_state.name} -> {new_state.name}."
+        )
+
     async def _process_order_fill(self, fill_data: Dict[str, Any]):
         # Process OrderFill from orderFills-{userExchangeId} channel.
         """
@@ -734,13 +761,23 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     fee=self._trade_fee_for_update(tracked_order, fill_data.get("fee", [])),
                 )
                 self._order_tracker.process_trade_update(trade_update)
-                self._schedule_position_update()
+                self._log_fill_processed(
+                    tracked_order=tracked_order,
+                    exchange_order_id=order_id,
+                    fill_amount=new_fill_amount,
+                    fill_price=fill_price,
+                    source="user stream",
+                )
+                self._schedule_position_update(
+                    reason=f"user stream fill for {tracked_order.client_order_id} ({order_id})"
+                )
 
             updatable_order = self._order_tracker.all_updatable_orders_by_exchange_order_id.get(order_id)
             if updatable_order is not None:
                 self._normalize_tracked_order_for_terminal_partial_fill(updatable_order, fill_data)
-                new_state = self._get_order_state_from_order_data(fill_data, updatable_order) or updatable_order.current_state
-                if new_state != updatable_order.current_state:
+                previous_state = updatable_order.current_state
+                new_state = self._get_order_state_from_order_data(fill_data, updatable_order) or previous_state
+                if new_state != previous_state:
                     order_update = OrderUpdate(
                         trading_pair=updatable_order.trading_pair,
                         update_timestamp=fill_timestamp,
@@ -749,19 +786,36 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                         exchange_order_id=order_id,
                     )
                     self._order_tracker.process_order_update(order_update)
+                    self._log_order_state_change(
+                        tracked_order=updatable_order,
+                        exchange_order_id=order_id,
+                        previous_state=previous_state,
+                        new_state=new_state,
+                        source="user stream fill",
+                    )
 
-            self._schedule_balance_update()
+            self._schedule_balance_update(reason=f"user stream fill for {tracked_order.client_order_id} ({order_id})")
         elif fill_amount > Decimal("0"):
-            self._schedule_balance_update()
-            self._schedule_position_update()
+            self.logger().debug(
+                f"Processed untracked Evedex user stream fill for exchange order {order_id}: "
+                f"fill amount {fill_amount}. Scheduling balance and position refresh."
+            )
+            self._schedule_balance_update(reason=f"untracked user stream fill for {order_id}")
+            self._schedule_position_update(reason=f"untracked user stream fill for {order_id}")
 
-    def _schedule_balance_update(self):
+    def _schedule_balance_update(self, reason: str = "connector event"):
         if self._balance_update_task is None or self._balance_update_task.done():
+            self.logger().debug(f"Scheduling Evedex balance refresh ({reason}).")
             self._balance_update_task = safe_ensure_future(self._update_balances())
+        else:
+            self.logger().debug(f"Evedex balance refresh already pending ({reason}).")
 
-    def _schedule_position_update(self):
+    def _schedule_position_update(self, reason: str = "connector event"):
         if self._position_update_task is None or self._position_update_task.done():
+            self.logger().debug(f"Scheduling Evedex position refresh ({reason}).")
             self._position_update_task = safe_ensure_future(self._update_positions())
+        else:
+            self.logger().debug(f"Evedex position refresh already pending ({reason}).")
 
     async def _process_order_update(self, order_data: Dict[str, Any]):
         # Order.id is the EXCHANGE order ID, not the client order ID
@@ -804,6 +858,13 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 )
 
                 self._order_tracker.process_trade_update(trade_update)
+                self._log_fill_processed(
+                    tracked_order=tracked_order,
+                    exchange_order_id=exchange_order_id,
+                    fill_amount=new_fill_amount,
+                    fill_price=fill_price,
+                    source="order update",
+                )
                 should_refresh_balance = True
                 should_refresh_position = True
 
@@ -813,7 +874,8 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
         if tracked_order is not None:
             self._normalize_tracked_order_for_terminal_partial_fill(tracked_order, order_data)
-            new_state = self._get_order_state_from_order_data(order_data, tracked_order) or tracked_order.current_state
+            previous_state = tracked_order.current_state
+            new_state = self._get_order_state_from_order_data(order_data, tracked_order) or previous_state
             order_update: OrderUpdate = OrderUpdate(
                 trading_pair=tracked_order.trading_pair,
                 update_timestamp=self._parse_exchange_timestamp(order_data.get("updatedAt")),
@@ -822,17 +884,33 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 exchange_order_id=exchange_order_id,
             )
             self._order_tracker.process_order_update(order_update)
+            if new_state != previous_state:
+                self._log_order_state_change(
+                    tracked_order=tracked_order,
+                    exchange_order_id=exchange_order_id,
+                    previous_state=previous_state,
+                    new_state=new_state,
+                    source="user stream order",
+                )
             should_refresh_balance = True
             should_refresh_position = should_refresh_position or fill_quantity > Decimal("0")
 
         if not is_updatable_order_tracked and self._is_terminal_order_status(order_data.get("status")):
+            self.logger().debug(
+                f"Processed untracked terminal Evedex order update for exchange order {exchange_order_id}: "
+                f"status={order_data.get('status')}, fill_quantity={fill_quantity}."
+            )
             should_refresh_balance = True
             should_refresh_position = fill_quantity > Decimal("0") or str(order_data.get("status", "")).upper() == "FILLED"
 
         if should_refresh_balance:
-            self._schedule_balance_update()
+            self._schedule_balance_update(
+                reason=f"order update for {exchange_order_id} status={order_data.get('status')}"
+            )
         if should_refresh_position:
-            self._schedule_position_update()
+            self._schedule_position_update(
+                reason=f"order update for {exchange_order_id} status={order_data.get('status')}"
+            )
 
     async def _process_position_update(self, position_data: Dict[str, Any]):
         positions = position_data if isinstance(position_data, list) else [position_data]
@@ -878,8 +956,13 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                         leverage=leverage,
                     ),
                 )
+                self.logger().debug(
+                    f"Updated Evedex position {trading_pair} {position_side.name}: "
+                    f"amount={signed_amount}, entry_price={entry_price}, leverage={leverage}."
+                )
             else:
                 self._perpetual_trading.remove_position(pos_key)
+                self.logger().debug(f"Removed Evedex position {trading_pair} {position_side.name}.")
 
         if remove_stale:
             # REST returns a snapshot of all positions, so stale local positions can be safely removed here.
