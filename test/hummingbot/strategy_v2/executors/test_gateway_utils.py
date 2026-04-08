@@ -25,7 +25,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
 
         self.capture_error = capture_error
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
         "orca/clmm",
@@ -42,7 +42,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
         self.assertEqual(result, "jupiter/router")
         self.assertEqual(len(self.errors), 0)
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])
@@ -55,7 +55,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
         self.assertEqual(result, "meteora/clmm")
         self.assertEqual(len(self.errors), 0)
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])
@@ -68,7 +68,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
         self.assertEqual(result, "jupiter/router")
         self.assertEqual(len(self.errors), 0)
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])
@@ -81,7 +81,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
         self.assertEqual(result, "meteora/clmm")
         self.assertEqual(len(self.errors), 0)
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])
@@ -95,7 +95,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
         self.assertEqual(len(self.errors), 1)
         self.assertIn("requires /router connector type", self.errors[0])
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])
@@ -109,7 +109,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
         self.assertEqual(len(self.errors), 1)
         self.assertIn("not found in Gateway", self.errors[0])
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
         "raydium/amm",
@@ -125,7 +125,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
         self.assertIn("doesn't support /router", self.errors[0])
         self.assertIn("raydium/amm", self.errors[0])
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])
@@ -144,7 +144,7 @@ class TestValidateAndNormalizeConnector(unittest.TestCase):
 class TestGetConnectorsByType(unittest.TestCase):
     """Tests for get_connectors_by_type function."""
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "uniswap/router",
         "meteora/clmm",
@@ -156,7 +156,7 @@ class TestGetConnectorsByType(unittest.TestCase):
         result = get_connectors_by_type("router")
         self.assertEqual(sorted(result), ["jupiter/router", "uniswap/router"])
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "uniswap/router",
         "meteora/clmm",
@@ -168,7 +168,7 @@ class TestGetConnectorsByType(unittest.TestCase):
         result = get_connectors_by_type("clmm")
         self.assertEqual(sorted(result), ["meteora/clmm", "orca/clmm"])
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])
@@ -212,14 +212,14 @@ class TestValidateNetworkConnector(unittest.TestCase):
 
         self.capture_error = capture_error
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [])
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [])
     def test_empty_gateway_connectors_skips_validation(self):
-        """Test that empty GATEWAY_CONNECTORS skips validation."""
+        """Test that empty GATEWAY_DEXS skips validation."""
         result = validate_network_connector("solana-mainnet-beta", self.capture_error)
         self.assertTrue(result)
         self.assertEqual(len(self.errors), 0)
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "solana-mainnet-beta",
         "ethereum-mainnet",
     ])
@@ -231,7 +231,7 @@ class TestValidateNetworkConnector(unittest.TestCase):
 
 
 class TestValidateAndNormalizeConnectorEmptyGateway(unittest.TestCase):
-    """Tests for validate_and_normalize_connector with empty GATEWAY_CONNECTORS."""
+    """Tests for validate_and_normalize_connector with empty GATEWAY_DEXS."""
 
     def setUp(self):
         """Set up test fixtures."""
@@ -242,18 +242,18 @@ class TestValidateAndNormalizeConnectorEmptyGateway(unittest.TestCase):
 
         self.capture_error = capture_error
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [])
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [])
     def test_empty_gateway_with_suffix(self):
-        """Test empty GATEWAY_CONNECTORS with already normalized connector."""
+        """Test empty GATEWAY_DEXS with already normalized connector."""
         result, success = validate_and_normalize_connector(
             "jupiter/router", "router", self.capture_error
         )
         self.assertTrue(success)
         self.assertEqual(result, "jupiter/router")
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [])
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [])
     def test_empty_gateway_base_name(self):
-        """Test empty GATEWAY_CONNECTORS with base name normalizes it."""
+        """Test empty GATEWAY_DEXS with base name normalizes it."""
         result, success = validate_and_normalize_connector(
             "meteora", "clmm", self.capture_error
         )
@@ -264,7 +264,7 @@ class TestValidateAndNormalizeConnectorEmptyGateway(unittest.TestCase):
 class TestGetNetworkConnectors(unittest.TestCase):
     """Tests for get_network_connectors function."""
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "solana-mainnet-beta",
         "ethereum-mainnet",
         "jupiter/router",
@@ -275,7 +275,7 @@ class TestGetNetworkConnectors(unittest.TestCase):
         result = get_network_connectors()
         self.assertEqual(sorted(result), ["ethereum-mainnet", "solana-mainnet-beta"])
 
-    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS", [
+    @patch("hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS", [
         "jupiter/router",
         "meteora/clmm",
     ])

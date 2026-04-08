@@ -17,7 +17,7 @@ Provider Format:
 import logging
 from typing import Callable, List, Optional, Tuple
 
-from hummingbot.client.settings import GATEWAY_CONNECTORS
+from hummingbot.client.settings import GATEWAY_DEXS
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def validate_network_connector(
     Validate that a network-style connector exists.
 
     Network connectors are in format "chain-network" (e.g., "solana-mainnet-beta").
-    These are registered in GATEWAY_CONNECTORS from the chains endpoint.
+    These are registered in GATEWAY_DEXS from the chains endpoint.
 
     Args:
         connector_name: Network connector name (e.g., "solana-mainnet-beta")
@@ -71,21 +71,21 @@ def validate_network_connector(
     Returns:
         True if valid, False otherwise
     """
-    # If GATEWAY_CONNECTORS is empty, skip validation
+    # If GATEWAY_DEXS is empty, skip validation
     # (API context without monitor loop - Gateway will validate at execution time)
-    if not GATEWAY_CONNECTORS:
+    if not GATEWAY_DEXS:
         logger.debug(
-            f"GATEWAY_CONNECTORS empty, skipping validation for {connector_name}. "
+            f"GATEWAY_DEXS empty, skipping validation for {connector_name}. "
             "Gateway will validate at execution time."
         )
         return True
 
-    # Check if connector exists in GATEWAY_CONNECTORS
-    if connector_name in GATEWAY_CONNECTORS:
+    # Check if connector exists in GATEWAY_DEXS
+    if connector_name in GATEWAY_DEXS:
         return True
 
     # Get network-style connectors for better error message
-    network_connectors = [c for c in GATEWAY_CONNECTORS if '-' in c and '/' not in c]
+    network_connectors = [c for c in GATEWAY_DEXS if '-' in c and '/' not in c]
 
     on_error(
         f"Network connector '{connector_name}' not found in Gateway. "
@@ -141,17 +141,17 @@ def validate_and_normalize_connector(
             )
             return None, False
 
-        # If GATEWAY_CONNECTORS is empty, skip validation (API context without monitor loop)
+        # If GATEWAY_DEXS is empty, skip validation (API context without monitor loop)
         # Gateway will validate at execution time
-        if not GATEWAY_CONNECTORS:
+        if not GATEWAY_DEXS:
             logger.debug(
-                f"GATEWAY_CONNECTORS empty, skipping validation for {connector_name}. "
+                f"GATEWAY_DEXS empty, skipping validation for {connector_name}. "
                 "Gateway will validate at execution time."
             )
             return connector_name, True
 
-        if connector_name not in GATEWAY_CONNECTORS:
-            matching_connectors = [c for c in GATEWAY_CONNECTORS if type_suffix in c]
+        if connector_name not in GATEWAY_DEXS:
+            matching_connectors = [c for c in GATEWAY_DEXS if type_suffix in c]
             on_error(
                 f"Connector '{connector_name}' not found in Gateway. "
                 f"Available {required_type} connectors: {matching_connectors}"
@@ -163,27 +163,27 @@ def validate_and_normalize_connector(
     # Base name only - auto-append the required type
     normalized_name = f"{connector_name}/{required_type}"
 
-    # If GATEWAY_CONNECTORS is empty, skip validation (API context without monitor loop)
+    # If GATEWAY_DEXS is empty, skip validation (API context without monitor loop)
     # Just normalize the name and let Gateway validate at execution time
-    if not GATEWAY_CONNECTORS:
+    if not GATEWAY_DEXS:
         logger.debug(
-            f"GATEWAY_CONNECTORS empty, normalizing {connector_name} -> {normalized_name}. "
+            f"GATEWAY_DEXS empty, normalizing {connector_name} -> {normalized_name}. "
             "Gateway will validate at execution time."
         )
         return normalized_name, True
 
-    if normalized_name in GATEWAY_CONNECTORS:
+    if normalized_name in GATEWAY_DEXS:
         return normalized_name, True
 
     # Check if connector exists at all with any type
-    matching = [c for c in GATEWAY_CONNECTORS if c.startswith(f"{connector_name}/")]
+    matching = [c for c in GATEWAY_DEXS if c.startswith(f"{connector_name}/")]
     if matching:
         on_error(
             f"Connector '{connector_name}' doesn't support /{required_type}. "
             f"Available types for {connector_name}: {matching}"
         )
     else:
-        matching_connectors = [c for c in GATEWAY_CONNECTORS if type_suffix in c]
+        matching_connectors = [c for c in GATEWAY_DEXS if type_suffix in c]
         on_error(
             f"Connector '{connector_name}' not found in Gateway. "
             f"Available {required_type} connectors: {matching_connectors}"
@@ -203,7 +203,7 @@ def get_connectors_by_type(connector_type: str) -> List[str]:
         List of connector names matching the type
     """
     type_suffix = f"/{connector_type}"
-    return [c for c in GATEWAY_CONNECTORS if type_suffix in c]
+    return [c for c in GATEWAY_DEXS if type_suffix in c]
 
 
 def get_network_connectors() -> List[str]:
@@ -213,4 +213,4 @@ def get_network_connectors() -> List[str]:
     Returns:
         List of network connector names (e.g., ["solana-mainnet-beta", "ethereum-mainnet"])
     """
-    return [c for c in GATEWAY_CONNECTORS if '-' in c and '/' not in c]
+    return [c for c in GATEWAY_DEXS if '-' in c and '/' not in c]

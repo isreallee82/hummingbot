@@ -69,7 +69,7 @@ class LPExecutor(ExecutorBase):
 
         - If connector already has /clmm suffix, validates it exists
         - If connector is base name only (e.g., "meteora"), auto-appends /clmm
-        - Uses GATEWAY_CONNECTORS list populated at gateway startup
+        - Uses GATEWAY_DEXS list populated at gateway startup
 
         Args:
             connector_name: Connector name from config

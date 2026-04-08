@@ -1242,7 +1242,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             self.assertEqual(executor.close_type, CloseType.FAILED)
             mock_stop.assert_called_once()
 
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'})
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS', {'solana-mainnet-beta'})
     def test_validate_connector_network_format_success(self):
         """Test connector validation succeeds with network format"""
         executor = self.get_executor()
@@ -1251,7 +1251,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         self.assertEqual(result, "solana-mainnet-beta")
 
-    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'})
+    @patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS', {'solana-mainnet-beta'})
     def test_validate_connector_network_not_found(self):
         """Test connector validation fails for unknown network"""
         config = LPExecutorConfig(
@@ -1294,7 +1294,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.resolve_trading_pair_from_pool = AsyncMock(return_value={"trading_pair": "SOL-USDC"})
 
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'}):
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS', {'solana-mainnet-beta'}):
             await executor.on_start()
 
         self.assertEqual(executor.config.trading_pair, "SOL-USDC")
@@ -1319,7 +1319,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         connector = self.strategy.connectors["solana-mainnet-beta"]
         connector.resolve_trading_pair_from_pool = AsyncMock(return_value=None)
 
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'}):
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS', {'solana-mainnet-beta'}):
             await executor.on_start()
 
         self.assertEqual(executor.close_type, CloseType.FAILED)
@@ -1341,7 +1341,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         )
         executor = self.get_executor(config)
 
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_CONNECTORS', {'solana-mainnet-beta'}):
+        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS', {'solana-mainnet-beta'}):
             await executor.on_start()
 
         self.assertEqual(executor.config.connector_name, "solana-mainnet-beta")

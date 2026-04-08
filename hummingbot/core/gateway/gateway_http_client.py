@@ -13,8 +13,8 @@ from hummingbot.client.config.client_config_map import GatewayConfigMap
 from hummingbot.client.config.security import Security
 from hummingbot.client.settings import (
     GATEWAY_CHAINS,
-    GATEWAY_CONNECTORS,
-    GATEWAY_ETH_CONNECTORS,
+    GATEWAY_DEXS,
+    GATEWAY_ETH_DEXS,
     GATEWAY_NAMESPACES,
     AllConnectorSettings,
     ConnectorSetting,
@@ -207,35 +207,22 @@ class GatewayHttpClient:
                 if await asyncio.wait_for(self.ping_gateway(), timeout=POLL_TIMEOUT):
                     if self.gateway_status is GatewayStatus.OFFLINE:
                         # Clear all collections
-                        GATEWAY_CONNECTORS.clear()
-                        GATEWAY_ETH_CONNECTORS.clear()
+                        GATEWAY_DEXS.clear()
+                        GATEWAY_ETH_DEXS.clear()
                         GATEWAY_CHAINS.clear()
                         GATEWAY_NAMESPACES.clear()
 
-                        # Get connectors
+                        # Get DEX providers for CLI completers (not registered in AllConnectorSettings)
                         gateway_connectors = await self.get_connectors(fail_silently=True)
-
-                        # Build connector list with trading types appended
-                        connector_list = []
-                        eth_connector_list = []
                         for connector in gateway_connectors.get("connectors", []):
                             name = connector["name"]
                             chain = connector.get("chain", "")
                             trading_types = connector.get("trading_types", [])
-
-                            # Add each trading type as a separate entry
                             for trading_type in trading_types:
-                                connector_full_name = f"{name}/{trading_type}"
-                                connector_list.append(connector_full_name)
-                                # Add to Ethereum connectors if chain is ethereum
+                                dex_name = f"{name}/{trading_type}"
+                                GATEWAY_DEXS.append(dex_name)
                                 if chain.lower() == "ethereum":
-                                    eth_connector_list.append(connector_full_name)
-
-                        GATEWAY_CONNECTORS.extend(connector_list)
-                        GATEWAY_ETH_CONNECTORS.extend(eth_connector_list)
-
-                        # Update AllConnectorSettings with gateway connectors
-                        await self._register_gateway_connectors(connector_list)
+                                    GATEWAY_ETH_DEXS.append(dex_name)
 
                         # Get chains using the dedicated endpoint
                         try:
@@ -250,8 +237,8 @@ class GatewayHttpClient:
                                     for network in chain_info.get("networks", []):
                                         network_connector = f"{chain_name}-{network}"
                                         network_connectors.append(network_connector)
-                                # Add network connectors to GATEWAY_CONNECTORS
-                                GATEWAY_CONNECTORS.extend(network_connectors)
+                                # Add network connectors to GATEWAY_DEXS
+                                GATEWAY_DEXS.extend(network_connectors)
                                 # Also register network connectors with AllConnectorSettings
                                 await self._register_gateway_connectors(network_connectors)
                         except Exception:
@@ -269,7 +256,7 @@ class GatewayHttpClient:
                         await self.update_gateway_config_key_list()
 
                     # If gateway was already online, ensure connectors are registered
-                    if self._gateway_status is GatewayStatus.ONLINE and not GATEWAY_CONNECTORS:
+                    if self._gateway_status is GatewayStatus.ONLINE and not GATEWAY_DEXS:
                         # Gateway is online but connectors haven't been registered yet
                         await self.ensure_gateway_connectors_registered()
 
@@ -331,28 +318,26 @@ class GatewayHttpClient:
                 )
 
     async def ensure_gateway_connectors_registered(self):
-        """Ensure gateway connectors are registered in AllConnectorSettings"""
+        """Ensure gateway network connectors are registered in AllConnectorSettings"""
         if self.gateway_status is not GatewayStatus.ONLINE:
             return
 
         try:
+            # Populate GATEWAY_DEXS with DEX providers for CLI completers
+            # (not registered in AllConnectorSettings)
             gateway_connectors = await self.get_connectors(fail_silently=True)
-
-            # Build connector list with trading types appended
-            connector_list = []
             for connector in gateway_connectors.get("connectors", []):
                 name = connector["name"]
+                chain = connector.get("chain", "")
                 trading_types = connector.get("trading_types", [])
-
-                # Add each trading type as a separate entry
                 for trading_type in trading_types:
-                    connector_full_name = f"{name}/{trading_type}"
-                    connector_list.append(connector_full_name)
+                    dex_name = f"{name}/{trading_type}"
+                    if dex_name not in GATEWAY_DEXS:
+                        GATEWAY_DEXS.append(dex_name)
+                    if chain.lower() == "ethereum" and dex_name not in GATEWAY_ETH_DEXS:
+                        GATEWAY_ETH_DEXS.append(dex_name)
 
-            # Register the DEX connectors
-            await self._register_gateway_connectors(connector_list)
-
-            # Also register network connectors (e.g., "solana-mainnet-beta")
+            # Register network connectors (e.g., "solana-mainnet-beta", "ethereum-mainnet")
             chains_response = await self.get_chains(fail_silently=True)
             if chains_response and "chains" in chains_response:
                 network_connectors = []
@@ -1699,7 +1684,7 @@ class GatewayHttpClient:
         """
         try:
             # Check if it's a network-style connector (chain-network format)
-            # These are registered in GATEWAY_CONNECTORS from chains endpoint
+            # These are registered in GATEWAY_DEXS from chains endpoint
             if '/' not in connector and '-' in connector:
                 # Network format: try to parse chain-network
                 # Get chains to validate
