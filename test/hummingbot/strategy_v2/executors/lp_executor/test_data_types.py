@@ -38,7 +38,7 @@ class TestLPExecutorConfig(TestCase):
             id="test-1",
             timestamp=1234567890,
             connector_name="solana-mainnet-beta",
-            dex_name="meteora",
+            lp_provider="meteora/clmm",
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("100"),
@@ -46,7 +46,7 @@ class TestLPExecutorConfig(TestCase):
         )
         self.assertEqual(config.type, "lp_executor")
         self.assertEqual(config.connector_name, "solana-mainnet-beta")
-        self.assertEqual(config.dex_name, "meteora")
+        self.assertEqual(config.lp_provider, "meteora/clmm")
         self.assertEqual(config.trading_pair, "SOL-USDC")
         self.assertEqual(config.pool_address, "pool123")
         self.assertEqual(config.lower_price, Decimal("100"))
@@ -65,7 +65,7 @@ class TestLPExecutorConfig(TestCase):
             id="test-2",
             timestamp=1234567890,
             connector_name="solana-mainnet-beta",
-            dex_name="meteora",
+            lp_provider="meteora/clmm",
             trading_pair="SOL-USDC",
             pool_address="pool456",
             lower_price=Decimal("90"),
@@ -93,7 +93,7 @@ class TestLPExecutorConfig(TestCase):
                 id=f"test-side-{side}",
                 timestamp=1234567890,
                 connector_name="solana-mainnet-beta",
-                dex_name="meteora",
+                lp_provider="meteora/clmm",
                 trading_pair="SOL-USDC",
                 pool_address="pool",
                 lower_price=Decimal("100"),

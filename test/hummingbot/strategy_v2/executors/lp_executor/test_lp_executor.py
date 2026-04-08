@@ -119,7 +119,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             id="test-lp-1",
             timestamp=1234567890,
             connector_name="solana-mainnet-beta",
-            dex_name="meteora",
+            lp_provider="meteora/clmm",
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -214,45 +214,6 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         self.assertEqual(executor.lp_position_state.state, LPExecutorStates.COMPLETE)
 
-    def test_store_lp_event_from_remove(self):
-        """Test _store_lp_event_from_remove stores REMOVE event as BUY (tokens returning)"""
-        executor = self.get_executor()
-        executor.lp_position_state.position_address = "pos123"
-        executor.lp_position_state.lower_price = Decimal("95")
-        executor.lp_position_state.upper_price = Decimal("105")
-
-        # Create a mock REMOVE event
-        event = create_mock_remove_event(
-            exchange_order_id="tx_close_123",
-            position_address="pos123",
-            base_amount=Decimal("0.7"),
-            quote_amount=Decimal("35"),
-            base_fee=Decimal("0.01"),
-            quote_fee=Decimal("0.5"),
-            mid_price=Decimal("110"),
-            tx_fee=Decimal("0.001"),
-        )
-
-        executor._store_lp_event_from_remove(event)
-
-        self.assertEqual(len(executor._held_position_orders), 1)
-        snapshot = executor._held_position_orders[0]
-
-        # Verify deduplication key uses tx_hash
-        self.assertEqual(snapshot["client_order_id"], "tx_close_123")
-        self.assertEqual(snapshot["position_address"], "pos123")
-
-        # REMOVE events are BUY (tokens returning to wallet)
-        # effective_base = 0.7 + 0.01 = 0.71
-        # effective_quote = 35 + 0.5 = 35.5
-        self.assertEqual(snapshot["trade_type"], "BUY")
-        self.assertAlmostEqual(float(snapshot["executed_amount_base"]), 0.71, places=5)
-        self.assertAlmostEqual(float(snapshot["executed_amount_quote"]), 35.5, places=5)
-
-        # LP-specific metadata
-        self.assertTrue(snapshot["lp_source"])
-        self.assertEqual(snapshot["order_action"], "REMOVE")
-
     def test_pnl_zero_for_failed_executor_no_position(self):
         """Test P&L returns 0 when executor failed before creating a position.
 
@@ -269,43 +230,6 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         # P&L should be 0, not -100%
         self.assertEqual(executor.get_net_pnl_quote(), Decimal("0"))
         self.assertEqual(executor.get_net_pnl_pct(), Decimal("0"))
-
-    def test_store_lp_event_from_add(self):
-        """Test _store_lp_event_from_add stores ADD event as SELL (tokens leaving)"""
-        executor = self.get_executor()
-        executor.lp_position_state.position_address = "pos123"
-        executor.lp_position_state.lower_price = Decimal("95")
-        executor.lp_position_state.upper_price = Decimal("105")
-
-        # Create a mock ADD event
-        event = create_mock_add_event(
-            exchange_order_id="tx_add_123",
-            position_address="pos123",
-            base_amount=Decimal("5.0"),
-            quote_amount=Decimal("500"),
-            mid_price=Decimal("100"),
-            position_rent=Decimal("0.002"),
-        )
-
-        executor._store_lp_event_from_add(event)
-
-        self.assertEqual(len(executor._held_position_orders), 1)
-        snapshot = executor._held_position_orders[0]
-
-        # Verify deduplication key uses tx_hash
-        self.assertEqual(snapshot["client_order_id"], "tx_add_123")
-        self.assertEqual(snapshot["position_address"], "pos123")
-
-        # ADD events are SELL (tokens leaving wallet into pool)
-        # effective_base = 5.0 (no fees for ADD)
-        # effective_quote = 500
-        self.assertEqual(snapshot["trade_type"], "SELL")
-        self.assertAlmostEqual(float(snapshot["executed_amount_base"]), 5.0, places=5)
-        self.assertAlmostEqual(float(snapshot["executed_amount_quote"]), 500.0, places=5)
-
-        # LP-specific metadata
-        self.assertTrue(snapshot["lp_source"])
-        self.assertEqual(snapshot["order_action"], "ADD")
 
     def test_filled_amount_quote_no_pool_info(self):
         """Test filled_amount_quote returns 0 when no pool info"""
@@ -1112,7 +1036,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             id="test-lp-1",
             timestamp=1234567890,
             connector_name="solana-mainnet-beta",
-            dex_name="meteora",
+            lp_provider="meteora/clmm",
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1289,7 +1213,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             id="test-lp-1",
             timestamp=1234567890,
             connector_name="unknown-network",
-            dex_name="unknown",
+            lp_provider="unknown/clmm",
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1312,7 +1236,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             id="test-lp-1",
             timestamp=1234567890,
             connector_name="solana-mainnet-beta",
-            dex_name="meteora",
+            lp_provider="meteora/clmm",
             trading_pair="",  # Empty - should be resolved
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1336,7 +1260,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             id="test-lp-1",
             timestamp=1234567890,
             connector_name="solana-mainnet-beta",
-            dex_name="meteora",
+            lp_provider="meteora/clmm",
             trading_pair="",  # Empty - should be resolved
             pool_address="pool123",
             lower_price=Decimal("95"),
@@ -1362,7 +1286,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             id="test-lp-1",
             timestamp=1234567890,
             connector_name="solana-mainnet-beta",  # Network format
-            dex_name="meteora",  # DEX name
+            lp_provider="meteora/clmm",  # DEX name
             trading_pair="SOL-USDC",
             pool_address="pool123",
             lower_price=Decimal("95"),
