@@ -606,42 +606,18 @@ class GatewayHttpClient:
 
     async def get_default_swap_provider(self, network: str) -> Optional[str]:
         """
-        Get the default swap provider (router) for a network.
+        Get the default swap provider for a network from Gateway config.
 
         :param network: Full network name (e.g., "solana-mainnet-beta")
         :return: Swap provider string in format "dex_name/trading_type" or None if not found
         """
         try:
-            connectors_resp = await self.get_connectors()
-            if "error" in connectors_resp:
-                return None
-
-            # Parse chain and network_name from network (e.g., "solana-mainnet-beta")
-            parts = network.split("-", 1)
-            chain = parts[0]
-            network_name = parts[1] if len(parts) > 1 else ""
-
-            # Find router connectors for this chain+network (prefer router type for swaps)
-            for conn in connectors_resp.get("connectors", []):
-                conn_chain = conn.get("chain", "")
-                conn_networks = conn.get("networks", [])
-                conn_trading_types = conn.get("trading_types", [])
-
-                if conn_chain == chain and network_name in conn_networks:
-                    if "router" in conn_trading_types:
-                        return f"{conn.get('name')}/router"
-
-            # Fallback: try any connector on this chain+network
-            for conn in connectors_resp.get("connectors", []):
-                conn_chain = conn.get("chain", "")
-                conn_networks = conn.get("networks", [])
-                conn_trading_types = conn.get("trading_types", [])
-
-                if conn_chain == chain and network_name in conn_networks:
-                    # Return first available trading type
-                    trading_type = conn_trading_types[0] if conn_trading_types else "router"
-                    return f"{conn.get('name')}/{trading_type}"
-
+            # Get swapProvider from network config (most authoritative source)
+            network_config = await self.get_configuration(network)
+            if network_config:
+                swap_provider = network_config.get("swapProvider")
+                if swap_provider:
+                    return swap_provider
             return None
         except Exception as e:
             self.logger().warning(f"Failed to get default swap provider for {network}: {e}")

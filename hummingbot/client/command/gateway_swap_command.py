@@ -31,39 +31,10 @@ class GatewaySwapCommand:
 
         safe_ensure_future(self._gateway_swap(connector, pair, side, amount), loop=self.ev_loop)
 
-    async def _get_default_swap_provider(self, chain: str) -> Optional[tuple]:
-        """
-        Get the default swap provider (router) for a chain.
-
-        Returns:
-            Tuple of (dex_name, trading_type) or None if no router found
-        """
-        try:
-            connectors_resp = await self._get_gateway_instance().get_connectors()
-            if "error" in connectors_resp:
-                return None
-
-            # Find router connectors for this chain
-            for conn in connectors_resp.get("connectors", []):
-                if conn.get("chain") == chain:
-                    trading_type = conn.get("trading_type", "")
-                    # Prefer router type for swaps
-                    if trading_type == "router":
-                        return (conn.get("name"), trading_type)
-
-            # Fallback: try any connector on this chain
-            for conn in connectors_resp.get("connectors", []):
-                if conn.get("chain") == chain:
-                    return (conn.get("name"), conn.get("trading_type", "router"))
-
-            return None
-        except Exception as e:
-            self.logger().warning(f"Failed to get default swap provider: {e}")
-            return None
-
     async def _gateway_swap(self, connector: Optional[str] = None,
                             pair: Optional[str] = None, side: Optional[str] = None, amount: Optional[str] = None):
         """Unified swap flow - get quote first, then ask for confirmation to execute."""
+        swap_connector = None
         try:
             if not connector:
                 self.notify("Error: Network is required")
@@ -81,16 +52,6 @@ class GatewaySwapCommand:
             parts = connector.split("-", 1)
             chain = parts[0]
             network = parts[1] if len(parts) > 1 else "mainnet"
-
-            # Get default swap provider for this chain
-            provider_info = await self._get_default_swap_provider(chain)
-            if not provider_info:
-                self.notify(f"Error: No swap provider found for chain '{chain}'")
-                self.notify("Make sure Gateway has a router configured for this chain")
-                return
-
-            dex_name, trading_type = provider_info
-            self.notify(f"Using swap provider: {dex_name}/{trading_type}")
 
             # Parse trading pair
             try:
@@ -138,8 +99,8 @@ class GatewaySwapCommand:
             if side:
                 side = side.upper()
 
-            # Construct pair for display
-            pair_display = f"{base_token}-{quote_token}"
+            # Construct trading pair
+            trading_pair = f"{base_token}-{quote_token}"
 
             # Convert amount to decimal
             try:
@@ -156,7 +117,32 @@ class GatewaySwapCommand:
                 self.notify(error)
                 return
 
-            self.notify(f"\nFetching swap quote for {pair_display} on {connector}...")
+            # Create Gateway connector and start network to get swap_provider
+            swap_connector = Gateway(
+                connector_name=connector,
+                chain=chain,
+                network=network,
+                address=wallet_address,
+                trading_pairs=[trading_pair],
+            )
+            await swap_connector.start_network()
+
+            # Get swap provider from connector (fetched during start_network)
+            swap_provider = swap_connector.swap_provider
+            if not swap_provider:
+                self.notify(f"Error: No swap provider configured for network '{connector}'")
+                self.notify("Make sure Gateway has swapProvider set in the network config")
+                await swap_connector.stop_network()
+                return
+
+            # Parse swap provider into dex_name and trading_type
+            if "/" in swap_provider:
+                dex_name, trading_type = swap_provider.split("/", 1)
+            else:
+                dex_name, trading_type = swap_provider, "router"
+            self.notify(f"Using swap provider: {dex_name}/{trading_type}")
+
+            self.notify(f"\nFetching swap quote for {trading_pair} on {connector}...")
 
             # Get quote from gateway
             trade_side = TradeType.BUY if side == "BUY" else TradeType.SELL
@@ -175,6 +161,7 @@ class GatewaySwapCommand:
 
             if "error" in quote_resp:
                 self.notify(f"\nError getting quote: {quote_resp['error']}")
+                await swap_connector.stop_network()
                 return
 
             # Store quote ID for logging only
@@ -230,25 +217,10 @@ class GatewaySwapCommand:
                     self, "Do you want to execute this swap now?"
                 ):
                     self.notify("Swap cancelled")
+                    await swap_connector.stop_network()
                     return
 
                 self.notify("\nExecuting swap...")
-
-                # Create trading pair first
-                trading_pair = f"{base_token}-{quote_token}"
-
-                # Create a new Gateway instance for this swap
-                # connector_name is the network identifier (e.g., 'solana-mainnet-beta')
-                swap_connector = Gateway(
-                    connector_name=connector,
-                    chain=chain,
-                    network=network,
-                    address=wallet_address,
-                    trading_pairs=[trading_pair],
-                )
-
-                # Start the network connection
-                await swap_connector.start_network()
 
                 # Use price from quote for better tracking
                 price_value = quote_resp.get('price', '0')
@@ -261,8 +233,8 @@ class GatewaySwapCommand:
                     return
 
                 # Store quote data in kwargs for the swap handler
+                # Note: dex_name not needed since connector already has swap_provider
                 swap_kwargs = {
-                    "dex_name": dex_name,
                     "quote_id": quote_id,
                     "quote_response": quote_resp,
                     "pool_address": quote_resp.get("poolAddress"),
@@ -319,3 +291,5 @@ class GatewaySwapCommand:
         except Exception as e:
             self.notify(f"Error: {str(e)}")
             self.logger().exception("Gateway swap error")
+            if swap_connector:
+                await swap_connector.stop_network()

@@ -140,6 +140,7 @@ class GatewayBase(ConnectorBase):
         self._amount_quantum_dict = {}
         self._token_data = {}  # Store complete token information
         self._allowances = {}
+        self._swap_provider: Optional[str] = None  # e.g., "jupiter/router" - fetched from network config
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -166,6 +167,11 @@ class GatewayBase(ConnectorBase):
     @property
     def network(self):
         return self._network
+
+    @property
+    def swap_provider(self) -> Optional[str]:
+        """Swap provider for this network (e.g., 'jupiter/router'). Fetched from Gateway network config."""
+        return self._swap_provider
 
     @property
     def name(self):
@@ -270,6 +276,17 @@ class GatewayBase(ConnectorBase):
             if error:
                 raise ValueError(f"Failed to get default wallet: {error}")
             self._wallet_address = wallet_address
+
+        # Fetch network config to get swap provider
+        try:
+            namespace = f"{self._chain}-{self._network}"
+            network_config = await self._get_gateway_instance().get_configuration(namespace)
+            if network_config:
+                self._swap_provider = network_config.get("swapProvider")
+                if self._swap_provider:
+                    self.logger().info(f"Swap provider for {namespace}: {self._swap_provider}")
+        except Exception as e:
+            self.logger().warning(f"Failed to get network config for {self._chain}-{self._network}: {e}")
 
         # Update the name to same as the connector name
         self._name = f"{self._connector_name}"

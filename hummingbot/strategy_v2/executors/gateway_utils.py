@@ -1,7 +1,7 @@
 """
 Shared utilities for Gateway executors.
 
-Provides connector validation and normalization for SwapExecutor and LPExecutor.
+Provides connector validation and normalization for LPExecutor.
 
 Architecture:
 - connector_name: Network identifier (e.g., "solana-mainnet-beta")

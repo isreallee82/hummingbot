@@ -142,7 +142,6 @@ rebalance_threshold_pct: '0.1'         # Price must be this % beyond bounds befo
 # Auto-swap feature
 autoswap: false                        # Auto-swap tokens if balance insufficient
 swap_buffer_pct: '0.01'                # Extra % to swap for slippage (0.01 = 0.01%)
-swap_provider: 'jupiter/router'        # Required if autoswap=true
 
 # Optional
 strategy_type: 0                       # Connector-specific (Meteora strategy type)
@@ -165,7 +164,6 @@ strategy_type: 0                       # Connector-specific (Meteora strategy ty
 | `rebalance_threshold_pct` | decimal | 0.1 | Price must be this % beyond position bounds before rebalance timer starts (0.1 = 0.1%, 2 = 2%) |
 | `autoswap` | bool | false | Automatically swap tokens if balance is insufficient for position |
 | `swap_buffer_pct` | decimal | 0.01 | Extra % to swap beyond deficit to account for slippage (0.01 = 0.01%) |
-| `swap_provider` | string | null | Swap connector for autoswap (e.g., 'jupiter/router'). **Required if autoswap=true** |
 
 ### Price Limits Visualization
 
@@ -287,9 +285,10 @@ The autoswap feature automatically swaps tokens when your balance is insufficien
 
 ```yaml
 autoswap: true                   # Enable automatic token swapping
-swap_provider: 'jupiter/router'  # Required: swap connector to use
 swap_buffer_pct: '0.01'          # Swap 0.01% extra for slippage buffer
 ```
+
+The swap provider is automatically determined from the Gateway network configuration (e.g., `swapProvider: jupiter/router` for solana-mainnet-beta).
 
 ### When Autoswap Triggers
 
@@ -371,10 +370,11 @@ The autoswap logic is simple: check balance vs required amounts, swap deficit + 
               └───────────────────────┘
 ```
 
-### Swap Executor
+### Order Executor
 
-Autoswap uses the `SwapExecutor` internally, which:
-- Uses the default swap provider for the chain (e.g., Jupiter for Solana)
+Autoswap uses the `OrderExecutor` internally, which:
+- Uses the network's configured swap provider (e.g., Jupiter for Solana via Gateway network config)
+- Executes MARKET orders through the Gateway connector
 - Handles transaction confirmation and retries
 - Reports completion status back to the controller
 

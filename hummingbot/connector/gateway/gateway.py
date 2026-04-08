@@ -18,17 +18,16 @@ from pydantic import BaseModel, Field
 
 from hummingbot.connector.gateway.gateway_base import GatewayBase
 from hummingbot.connector.gateway.gateway_in_flight_order import GatewayInFlightOrder
-from hummingbot.core.data_type.common import LPType, OrderType, TradeType
+from hummingbot.core.data_type.common import LPType, OrderType, PriceType, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount, TradeFeeBase
 from hummingbot.core.event.events import (
-    BuyOrderCreatedEvent,
     MarketEvent,
     RangePositionLiquidityAddedEvent,
     RangePositionLiquidityRemovedEvent,
     RangePositionUpdateFailureEvent,
-    SellOrderCreatedEvent,
 )
+from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.core.utils import async_ttl_cache
 from hummingbot.core.utils.async_utils import safe_ensure_future
 
@@ -111,6 +110,46 @@ class Gateway(GatewayBase):
         super().__init__(*args, **kwargs)
         # Store LP operation metadata for triggering proper events
         self._lp_orders_metadata: Dict[str, Dict] = {}
+
+    def get_price_by_type(self, trading_pair: str, price_type: PriceType) -> Decimal:
+        """
+        Gets price by type for gateway connectors.
+
+        Checks RateOracle for cached prices first (set by MarketDataProvider).
+        Falls back to NaN if no price is available.
+
+        :param trading_pair: The market trading pair
+        :param price_type: The price type (MidPrice, BestBid, BestAsk, etc.)
+        :returns: The price or NaN if not available
+        """
+        # Try to get price from RateOracle (set by MarketDataProvider for gateway connectors)
+        try:
+            rate_oracle = RateOracle.get_instance()
+            price = rate_oracle.get_pair_rate(trading_pair)
+            if price and price > 0:
+                return price
+        except Exception:
+            pass
+        # Fall back to NaN if no cached price
+        return Decimal("nan")
+
+    async def _get_last_traded_price(self, trading_pair: str) -> float:
+        """
+        Gets the last traded price for a trading pair.
+
+        Uses RateOracle for cached prices (set by MarketDataProvider).
+
+        :param trading_pair: The market trading pair
+        :returns: The last traded price or 0 if not available
+        """
+        try:
+            rate_oracle = RateOracle.get_instance()
+            price = rate_oracle.get_pair_rate(trading_pair)
+            if price and price > 0:
+                return float(price)
+        except Exception:
+            pass
+        return 0.0
 
     @staticmethod
     def _parse_dex_name(dex_name: str, default_trading_type: str = "router") -> tuple:
@@ -246,40 +285,27 @@ class Gateway(GatewayBase):
         # Check if order is already being tracked
         existing_order = self._order_tracker.fetch_order(order_id)
         if existing_order is not None:
-            self.logger().debug(f"Order {order_id} already tracked, skipping event emission")
+            self.logger().debug(f"Order {order_id} already tracked, skipping")
         else:
+            # Start tracking - order tracker will emit BuyOrderCreatedEvent when state transitions
             self.start_tracking_order(order_id=order_id,
                                       trading_pair=trading_pair,
                                       trade_type=trade_type,
                                       price=price,
                                       amount=amount)
 
-            # Emit order created event
-            event_class = BuyOrderCreatedEvent if trade_type == TradeType.BUY else SellOrderCreatedEvent
-            event_tag = MarketEvent.BuyOrderCreated if trade_type == TradeType.BUY else MarketEvent.SellOrderCreated
-            self.trigger_event(
-                event_tag,
-                event_class(
-                    timestamp=self.current_timestamp,
-                    type=OrderType.MARKET,
-                    trading_pair=trading_pair,
-                    amount=amount,
-                    price=price,
-                    order_id=order_id,
-                    creation_timestamp=self.current_timestamp,
-                    exchange_order_id=None,
-                )
-            )
-
-        # Extract optional parameters
-        dex_name = kwargs.get("dex_name")
+        # Extract optional parameters - fall back to network's configured swap provider
+        dex_name = kwargs.get("dex_name") or self._swap_provider
         quote_id = kwargs.get("quote_id")
         pool_address = kwargs.get("pool_address")
         slippage_pct = kwargs.get("slippage_pct")
         max_retries = kwargs.get("max_retries", 10)
 
         if not dex_name:
-            raise ValueError("dex_name is required for swap operations on unified Gateway connector")
+            raise ValueError(
+                f"dex_name is required for swap operations. No default swap provider configured for {self.network}. "
+                "Either pass dex_name explicitly or configure swapProvider in Gateway network config."
+            )
 
         dex, trading_type = self._parse_dex_name(dex_name)
 
