@@ -1,5 +1,4 @@
 import logging
-from dataclasses import asdict
 from decimal import Decimal
 from typing import Dict, List, Optional, Union
 
@@ -539,17 +538,13 @@ class LPExecutor(ExecutorBase):
             # If keep_position=False, execute close-out swap to return to original position
             # Similar to how grid executor sells/buys back to rebalance
             if not self.config.keep_position and self.close_type != CloseType.POSITION_HOLD:
-                # Calculate net base change (include fees - same as position_hold REMOVE calculation)
-                # What we received: base_amount + base_fee
-                # What we deposited: initial_base_amount
-                # Difference: what we need to swap back
-                received_base = self.lp_position_state.base_amount + self.lp_position_state.base_fee
-                base_diff = received_base - self.lp_position_state.initial_base_amount
+                # Calculate net base change using helper (same calculation as position_hold)
+                base_diff = self._calculate_net_base_difference()
                 if abs(base_diff) > Decimal("0.000001"):  # Non-trivial difference
                     self.logger().info(
                         f"Close-out swap needed: base_diff={base_diff:.6f} "
-                        f"(received={received_base:.6f} [amount={self.lp_position_state.base_amount:.6f} + "
-                        f"fee={self.lp_position_state.base_fee:.6f}], initial={self.lp_position_state.initial_base_amount:.6f})"
+                        f"(received={self.lp_position_state.base_amount + self.lp_position_state.base_fee:.6f}, "
+                        f"initial={self.lp_position_state.initial_base_amount:.6f})"
                     )
                     self.lp_position_state.state = LPExecutorStates.SWAPPING
                 else:
@@ -620,10 +615,8 @@ class LPExecutor(ExecutorBase):
             # Otherwise still pending - wait for next tick
             return
 
-        # Calculate swap amount and direction (same calculation as in _close_position)
-        # Include fees - consistent with position_hold REMOVE calculation
-        received_base = self.lp_position_state.base_amount + self.lp_position_state.base_fee
-        base_diff = received_base - self.lp_position_state.initial_base_amount
+        # Calculate swap amount and direction using helper (consistent with _close_position)
+        base_diff = self._calculate_net_base_difference()
 
         if abs(base_diff) < Decimal("0.000001"):
             # No swap needed
@@ -638,9 +631,7 @@ class LPExecutor(ExecutorBase):
         side = TradeType.BUY if is_buy else TradeType.SELL
 
         self.logger().info(
-            f"Executing close-out swap: {side.name} {amount:.6f} base "
-            f"(received={received_base:.6f}, initial={self.lp_position_state.initial_base_amount:.6f}, "
-            f"diff={base_diff:.6f})"
+            f"Executing close-out swap: {side.name} {amount:.6f} base (diff={base_diff:.6f})"
         )
 
         try:
@@ -716,75 +707,120 @@ class LPExecutor(ExecutorBase):
         )
 
     def _store_lp_event_from_add(self, event: RangePositionLiquidityAddedEvent):
-        """Store ADD event for position tracking using event object (like grid uses order.to_json()).
+        """Store ADD event data for later net trade calculation at REMOVE.
 
-        ADD events are SELL (tokens leaving wallet into pool).
-        Uses asdict() on the event and appends position tracking fields.
+        Instead of recording ADD as a separate trade, we store the deposit amounts
+        and calculate the net trade when the position is closed (REMOVE).
         """
-        # Convert event to dict (like InFlightOrder.to_json())
-        event_dict = asdict(event)
+        # Store ADD data for net trade calculation at REMOVE
+        self._add_base_amount = event.base_amount
+        self._add_quote_amount = event.quote_amount
+        self._add_order_id = event.exchange_order_id
 
-        # Calculate effective amounts and price for position tracking
-        effective_base = event.base_amount
-        effective_quote = event.quote_amount
-        price = float(effective_quote / effective_base) if effective_base > 0 else float(event.mid_price)
-
-        # TX fee in quote currency
-        native_to_quote = self._get_native_to_quote_rate()
-        tx_fee_quote = float(event.position_rent * native_to_quote)  # position_rent is the tx fee for ADD
-
-        # Append position tracking fields to event dict
-        event_dict.update({
-            # Standard fields for PositionHold aggregation (matches InFlightOrder.to_json format)
-            "client_order_id": event.exchange_order_id,  # tx_hash for deduplication
-            "trade_type": "SELL",  # ADD = tokens leaving wallet
-            "price": str(price),
-            "amount": str(effective_base),
-            "executed_amount_base": str(effective_base),
-            "executed_amount_quote": str(effective_quote),
-            "cumulative_fee_paid_quote": tx_fee_quote,
-            # LP-specific metadata
-            "lp_source": True,
-            "order_action": "ADD",
-        })
-
-        self._held_position_orders.append(event_dict)
-
-    def _store_lp_event_from_remove(self, event: RangePositionLiquidityRemovedEvent):
-        """Store REMOVE event for position tracking using event object (like grid uses order.to_json()).
-
-        REMOVE events are BUY (tokens + fees returning to wallet).
-        Uses asdict() on the event and appends position tracking fields.
-        """
-        # Convert event to dict (like InFlightOrder.to_json())
-        event_dict = asdict(event)
-
-        # Calculate effective amounts (include fees) and price for position tracking
-        effective_base = event.base_amount + event.base_fee
-        effective_quote = event.quote_amount + event.quote_fee
-        price = float(effective_quote / effective_base) if effective_base > 0 else float(event.mid_price)
-
-        # TX fee in quote currency (from trade_fee flat_fees)
+        # Store actual TX fee for ADD (from trade_fee, NOT position_rent which is refundable)
         native_to_quote = self._get_native_to_quote_rate()
         tx_fee = sum(fee.amount for fee in event.trade_fee.flat_fees) if event.trade_fee.flat_fees else Decimal("0")
-        tx_fee_quote = float(tx_fee * native_to_quote)
+        self._add_tx_fee_quote = float(tx_fee * native_to_quote)
 
-        # Append position tracking fields to event dict
-        event_dict.update({
-            # Standard fields for PositionHold aggregation (matches InFlightOrder.to_json format)
-            "client_order_id": event.exchange_order_id,  # tx_hash for deduplication
-            "trade_type": "BUY",  # REMOVE = tokens returning to wallet
-            "price": str(price),
-            "amount": str(effective_base),
-            "executed_amount_base": str(effective_base),
-            "executed_amount_quote": str(effective_quote),
-            "cumulative_fee_paid_quote": tx_fee_quote,
-            # LP-specific metadata
+    def _store_lp_event_from_remove(self, event: RangePositionLiquidityRemovedEvent):
+        """Calculate net trade from ADD/REMOVE and store single order.
+
+        The LP position net change determines if this was effectively a BUY or SELL:
+        - net_base > 0, net_quote < 0: BUY (gained base, spent quote)
+        - net_base < 0, net_quote > 0: SELL (spent base, gained quote)
+        - net_base ≈ 0, net_quote ≈ 0: No trade (same assets in/out)
+        """
+        # Get ADD data (stored when position was opened)
+        add_base = getattr(self, '_add_base_amount', Decimal("0"))
+        add_quote = getattr(self, '_add_quote_amount', Decimal("0"))
+        add_tx_fee = getattr(self, '_add_tx_fee_quote', 0.0)
+
+        # Calculate net change (REMOVE - ADD)
+        # Include LP fees earned in the returned amounts
+        total_base_returned = event.base_amount + event.base_fee
+        total_quote_returned = event.quote_amount + event.quote_fee
+        net_base = total_base_returned - add_base
+        net_quote = total_quote_returned - add_quote
+
+        # TX fee for REMOVE
+        native_to_quote = self._get_native_to_quote_rate()
+        tx_fee = sum(fee.amount for fee in event.trade_fee.flat_fees) if event.trade_fee.flat_fees else Decimal("0")
+        remove_tx_fee_quote = float(tx_fee * native_to_quote)
+
+        # Total TX fees for this LP position
+        total_tx_fee_quote = add_tx_fee + remove_tx_fee_quote
+
+        # Determine trade type based on net change
+        threshold = Decimal("0.0001")
+
+        if abs(net_base) < threshold and abs(net_quote) < threshold:
+            # No significant conversion - don't record a trade
+            # But still track fees if any
+            if total_tx_fee_quote > 0:
+                self._held_position_orders.append({
+                    "client_order_id": event.exchange_order_id,
+                    "trade_type": "BUY",  # Dummy, won't affect P&L with 0 amounts
+                    "price": float(event.mid_price),
+                    "executed_amount_base": 0.0,
+                    "executed_amount_quote": 0.0,
+                    "cumulative_fee_paid_quote": total_tx_fee_quote,
+                    "lp_source": True,
+                    "lp_net_trade": True,
+                })
+            return
+
+        if net_base > threshold and net_quote < -threshold:
+            # Gained base, lost quote = BUY
+            trade_type = "BUY"
+            amount_base = float(net_base)
+            amount_quote = float(abs(net_quote))
+            price = amount_quote / amount_base if amount_base > 0 else float(event.mid_price)
+        elif net_base < -threshold and net_quote > threshold:
+            # Lost base, gained quote = SELL
+            trade_type = "SELL"
+            amount_base = float(abs(net_base))
+            amount_quote = float(net_quote)
+            price = amount_quote / amount_base if amount_base > 0 else float(event.mid_price)
+        elif abs(net_base) > threshold:
+            # Base changed but quote didn't significantly - use mid_price
+            # This happens when LP fees are collected in the same asset
+            if net_base > 0:
+                trade_type = "BUY"
+                amount_base = float(net_base)
+            else:
+                trade_type = "SELL"
+                amount_base = float(abs(net_base))
+            amount_quote = amount_base * float(event.mid_price)
+            price = float(event.mid_price)
+        else:
+            # Only quote changed - record as 0-base trade (fees only)
+            self._held_position_orders.append({
+                "client_order_id": event.exchange_order_id,
+                "trade_type": "BUY",
+                "price": float(event.mid_price),
+                "executed_amount_base": 0.0,
+                "executed_amount_quote": float(abs(net_quote)),
+                "cumulative_fee_paid_quote": total_tx_fee_quote,
+                "lp_source": True,
+                "lp_net_trade": True,
+            })
+            return
+
+        # Create single order representing the net trade
+        self._held_position_orders.append({
+            "client_order_id": event.exchange_order_id,
+            "order_id": event.order_id,
+            "exchange_order_id": event.exchange_order_id,
+            "trading_pair": event.trading_pair,
+            "trade_type": trade_type,
+            "price": price,
+            "amount": amount_base,
+            "executed_amount_base": amount_base,
+            "executed_amount_quote": amount_quote,
+            "cumulative_fee_paid_quote": total_tx_fee_quote,
             "lp_source": True,
-            "order_action": "REMOVE",
+            "lp_net_trade": True,
         })
-
-        self._held_position_orders.append(event_dict)
 
     def early_stop(self, keep_position: bool = True):
         """Stop executor - transitions to CLOSING state.
@@ -811,6 +847,29 @@ class LPExecutor(ExecutorBase):
         elif self.lp_position_state.state == LPExecutorStates.NOT_ACTIVE:
             # No position was created, just complete
             self.lp_position_state.state = LPExecutorStates.COMPLETE
+
+    def _calculate_net_base_difference(self) -> Decimal:
+        """
+        Calculate net base token difference from LP position lifecycle.
+
+        This is the difference between what we received when closing the position
+        (including fees) and what we initially deposited.
+
+        Returns:
+            Positive: We have more base than we started with (need to SELL)
+            Negative: We have less base than we started with (need to BUY)
+            Zero: Position is balanced
+
+        Used by:
+            - _close_position: To determine if close-out swap is needed
+            - _execute_closeout_swap: To determine swap amount and direction
+            - position_hold: Uses same calculation (ADD as SELL, REMOVE+fees as BUY)
+        """
+        # What we received when closing: base_amount + base_fee
+        received_base = self.lp_position_state.base_amount + self.lp_position_state.base_fee
+        # What we deposited when opening: initial_base_amount
+        initial_base = self.lp_position_state.initial_base_amount
+        return received_base - initial_base
 
     def _get_quote_to_global_rate(self) -> Decimal:
         """
@@ -867,13 +926,10 @@ class LPExecutor(ExecutorBase):
 
     @property
     def filled_amount_quote(self) -> Decimal:
-        """Returns initial investment value in global token (USD).
+        """Returns initial investment value in quote currency.
 
-        For LP positions, this represents the capital deployed (initial deposit),
-        NOT the current position value. This ensures volume_traded in performance
-        reports reflects actual trading activity, not price fluctuations.
-
-        Uses stored initial amounts valued at deposit time price.
+        For LP positions, this represents the capital deployed (initial deposit)
+        expressed in the pool's quote currency (e.g., SOL for PERCOLATOR-SOL).
         Returns 0 if position was never created (FAILED state).
         """
         # If position was never created, nothing was filled
@@ -893,10 +949,7 @@ class LPExecutor(ExecutorBase):
         initial_quote = self.lp_position_state.initial_quote_amount
 
         # Initial investment value in pool quote currency
-        initial_value = initial_base * add_price + initial_quote
-
-        # Convert to global token (USD)
-        return initial_value * self._get_quote_to_global_rate()
+        return initial_base * add_price + initial_quote
 
     def get_custom_info(self) -> Dict:
         """Report LP position state to controller"""
@@ -958,13 +1011,11 @@ class LPExecutor(ExecutorBase):
 
     def get_net_pnl_quote(self) -> Decimal:
         """
-        Returns net P&L in global token (USD).
+        Returns net P&L in pool quote currency.
 
-        P&L = (current_position_value + fees_earned) - initial_value
+        P&L = (current_position_value + fees_earned) - initial_value - tx_fees
 
-        Calculates P&L in pool quote currency, then converts to global token
-        for consistent reporting across different pools. Uses stored initial
-        amounts and add_mid_price for accurate calculation matching lphistory.
+        Uses stored initial amounts and add_mid_price for accurate calculation.
         Works for both open positions and closed positions (using final returned amounts).
         Falls back to config values if initial amounts not yet set.
         """
@@ -1007,20 +1058,17 @@ class LPExecutor(ExecutorBase):
 
         # Subtract transaction fees (tx_fee is in native currency, convert to quote)
         tx_fee_quote = self.lp_position_state.tx_fee * self._get_native_to_quote_rate()
-        net_pnl_quote = pnl_in_quote - tx_fee_quote
 
-        # Convert to global token (USD)
-        return net_pnl_quote * self._get_quote_to_global_rate()
+        return pnl_in_quote - tx_fee_quote
 
     def get_net_pnl_pct(self) -> Decimal:
         """Returns net P&L as percentage of initial investment.
 
-        Both P&L and initial value are converted to global token (USD) for
-        consistent percentage calculation across different pools.
+        Both P&L and initial value are in quote currency.
         Falls back to config values if initial amounts not yet set.
         """
-        pnl_global = self.get_net_pnl_quote()  # Already in global token (USD)
-        if pnl_global == Decimal("0"):
+        pnl_quote = self.get_net_pnl_quote()
+        if pnl_quote == Decimal("0"):
             return Decimal("0")
 
         if self._current_price is None or self._current_price == 0:
@@ -1043,10 +1091,7 @@ class LPExecutor(ExecutorBase):
         if initial_value_quote == Decimal("0"):
             return Decimal("0")
 
-        # Convert to global token (USD) for consistent percentage
-        initial_value_global = initial_value_quote * self._get_quote_to_global_rate()
-
-        return (pnl_global / initial_value_global) * Decimal("100")
+        return (pnl_quote / initial_value_quote) * Decimal("100")
 
     def get_cum_fees_quote(self) -> Decimal:
         """
