@@ -90,23 +90,15 @@ class TrackedOrder:
 
     @property
     def cum_fees_base(self):
-        return self.get_cum_fees_base()
-
-    def get_cum_fees_base(self, exchange=None):
         if self.order:
-            return self.order.cumulative_fee_paid(token=self.order.base_asset, exchange=exchange)
-        else:
-            return Decimal("0")
+            return self.order.cumulative_fee_paid(token=self.order.base_asset)
+        return Decimal("0")
 
     @property
     def cum_fees_quote(self):
-        return self.get_cum_fees_quote()
-
-    def get_cum_fees_quote(self, exchange=None):
         if self.order:
-            return self.order.cumulative_fee_paid(token=self.order.quote_asset, exchange=exchange)
-        else:
-            return Decimal("0")
+            return self.order.cumulative_fee_paid(token=self.order.quote_asset)
+        return Decimal("0")
 
     @property
     def is_done(self):
