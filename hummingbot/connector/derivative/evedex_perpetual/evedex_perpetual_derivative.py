@@ -715,6 +715,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                     fee=self._trade_fee_for_update(tracked_order, fill_data.get("fee", [])),
                 )
                 self._order_tracker.process_trade_update(trade_update)
+                self._schedule_position_update()
 
             updatable_order = self._order_tracker.all_updatable_orders_by_exchange_order_id.get(order_id)
             if updatable_order is not None:
@@ -785,6 +786,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
                 self._order_tracker.process_trade_update(trade_update)
                 should_refresh_balance = True
+                should_refresh_position = True
 
         # Process order status update - find by exchange_order_id
         tracked_order = self._order_tracker.all_updatable_orders_by_exchange_order_id.get(exchange_order_id)
@@ -802,6 +804,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             )
             self._order_tracker.process_order_update(order_update)
             should_refresh_balance = True
+            should_refresh_position = should_refresh_position or fill_quantity > Decimal("0")
 
         if not is_updatable_order_tracked and self._is_terminal_order_status(order_data.get("status")):
             should_refresh_balance = True
@@ -957,8 +960,6 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         """
         Calls the REST API to update total and available balances.
         """
-        local_asset_names = set(self._account_balances.keys())
-        remote_asset_names = set()
 
         # Get available balance info
         available_balance_info = await self._api_get(
@@ -973,17 +974,10 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         currency = str(funding.get("currency", available_balance_info.get("currency", "usdt"))).upper()
         # Total balance is in funding.balance
         balance = Decimal(str(funding.get("balance", 0)))
-        # Available balance is at root level availableBalance
         available = Decimal(str(available_balance_info.get("availableBalance", 0)))
 
         self._account_balances[currency] = balance
         self._account_available_balances[currency] = available
-        remote_asset_names.add(currency)
-
-        asset_names_to_remove = local_asset_names.difference(remote_asset_names)
-        for asset_name in asset_names_to_remove:
-            del self._account_available_balances[asset_name]
-            del self._account_balances[asset_name]
 
     async def _update_positions(self):
         positions_response = await self._api_get(

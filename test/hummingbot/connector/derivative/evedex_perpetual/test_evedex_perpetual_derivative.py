@@ -510,7 +510,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
         self.exchange._order_tracker.process_trade_update.assert_called()
 
-    def test_process_order_fill_schedules_balance_refresh(self):
+    def test_process_order_fill_schedules_balance_and_position_refresh(self):
         tracked_order = InFlightOrder(
             client_order_id="OIDF",
             exchange_order_id="EX123",
@@ -524,6 +524,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._order_tracker.start_tracking_order(tracked_order)
         self.exchange._order_tracker.process_trade_update = MagicMock()
         self.exchange._update_balances = AsyncMock()
+        self.exchange._update_positions = AsyncMock()
         scheduled_task = MagicMock()
         scheduled_task.done.return_value = False
 
@@ -538,7 +539,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         ) as schedule_mock:
             self.async_run_with_timeout(self.exchange._process_order_fill(fill_data))
 
-        schedule_mock.assert_called_once()
+        self.assertEqual(2, schedule_mock.call_count)
 
     def test_process_order_fill_with_documented_payload_marks_order_filled(self):
         self.exchange.start_tracking_order(
@@ -609,6 +610,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._order_tracker.process_trade_update = MagicMock()
         self.exchange._order_tracker.process_order_update = MagicMock()
         self.exchange._schedule_balance_update = MagicMock()
+        self.exchange._schedule_position_update = MagicMock()
         order_data = {
             "id": "EXU",
             "status": "PARTIALLY_FILLED",
@@ -620,6 +622,7 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.async_run_with_timeout(self.exchange._process_order_update(order_data))
         self.exchange._order_tracker.process_trade_update.assert_called()
         self.exchange._order_tracker.process_order_update.assert_called()
+        self.exchange._schedule_position_update.assert_called_once()
 
     def test_process_order_update_marks_filled_order_closed(self):
         self.exchange.start_tracking_order(
