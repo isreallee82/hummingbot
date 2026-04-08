@@ -605,8 +605,7 @@ class BinancePerpetualAPIOrderBookDataSourceUnitTests(IsolatedAsyncioWrapperTest
     async def test_connected_websocket_assistant_uses_public_endpoint(self):
         """Test that the public WS connects to the /public endpoint."""
         expected_url = web_utils.wss_url(CONSTANTS.PUBLIC_WS_ENDPOINT, self.domain)
-        self.assertIn("public", expected_url)
-        self.assertNotIn("stream", expected_url)
+        self.assertIn("public/stream", expected_url)
 
     async def test_connected_market_websocket_assistant_uses_market_endpoint(self):
         """Test that the market WS connects to the /market endpoint."""
