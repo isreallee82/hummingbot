@@ -64,6 +64,7 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         self._real_time_balance_update = False  # Remove this once bybit enables available balance again through ws
         self._balance_update_task: Optional[asyncio.Task] = None
         self._position_update_task: Optional[asyncio.Task] = None
+        self._position_transition_order_ids: Dict[str, str] = {}
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @property
@@ -160,10 +161,92 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         trading_rule: TradingRule = self._trading_rules[trading_pair]
         return trading_rule.sell_order_collateral_token
 
+    async def _create_order(
+            self,
+            trade_type: TradeType,
+            order_id: str,
+            trading_pair: str,
+            amount: Decimal,
+            order_type: OrderType,
+            price: Optional[Decimal] = None,
+            position_action: PositionAction = PositionAction.NIL,
+            **kwargs,
+    ):
+        tracks_position_transition = (
+            self._position_mode == PositionMode.ONEWAY and position_action == PositionAction.CLOSE
+        )
+        if tracks_position_transition:
+            self._begin_position_transition(trading_pair=trading_pair, order_id=order_id)
+        try:
+            await super()._create_order(
+                trade_type=trade_type,
+                order_id=order_id,
+                trading_pair=trading_pair,
+                amount=amount,
+                order_type=order_type,
+                price=price,
+                position_action=position_action,
+                **kwargs,
+            )
+        except asyncio.CancelledError:
+            if tracks_position_transition:
+                self._clear_position_transition(
+                    trading_pair=trading_pair,
+                    reason=f"close order task {order_id} canceled before completion",
+                )
+            raise
+        finally:
+            if tracks_position_transition:
+                self._schedule_position_update(reason=f"close order workflow for {order_id}")
+
     def _quantize_market_cash_quantity(self, trading_pair: str, cash_quantity: Decimal) -> Decimal:
         # Evedex validates cashQuantity against the instrument price increment.
         cash_quantity_quantum = self.get_order_price_quantum(trading_pair, cash_quantity)
         return (cash_quantity // cash_quantity_quantum) * cash_quantity_quantum
+
+    def _active_position_for_trading_pair(self, trading_pair: str) -> Optional[Position]:
+        position = self._perpetual_trading.get_position(trading_pair)
+        if position is not None and position.amount != Decimal("0"):
+            return position
+        return None
+
+    def _begin_position_transition(self, trading_pair: str, order_id: str):
+        self._position_transition_order_ids[trading_pair] = order_id
+        self.logger().debug(
+            f"Marked Evedex position transition in progress for {trading_pair} with close order {order_id}."
+        )
+
+    def _clear_position_transition(self, trading_pair: str, reason: str):
+        order_id = self._position_transition_order_ids.pop(trading_pair, None)
+        if order_id is not None:
+            self.logger().debug(
+                f"Cleared Evedex position transition for {trading_pair} (close order {order_id}): {reason}."
+            )
+
+    def _position_transition_order_id(self, trading_pair: str) -> Optional[str]:
+        return self._position_transition_order_ids.get(trading_pair)
+
+    async def _refresh_position_transition_state(self, trading_pair: str, reason: str):
+        if self._position_transition_order_id(trading_pair) is None:
+            return
+        self.logger().debug(
+            f"Refreshing Evedex positions while transition is pending for {trading_pair} ({reason})."
+        )
+        try:
+            await self._update_positions()
+        except Exception:
+            self.logger().warning(
+                f"Failed to refresh positions while transition was pending for {trading_pair}.",
+                exc_info=True,
+            )
+
+    def _reconcile_position_transitions(self):
+        for trading_pair in list(self._position_transition_order_ids.keys()):
+            if self._active_position_for_trading_pair(trading_pair) is None:
+                self._clear_position_transition(
+                    trading_pair=trading_pair,
+                    reason="position refresh confirmed the pair is flat",
+                )
 
     async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
         """
@@ -296,6 +379,20 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             position_action: PositionAction = PositionAction.NIL,
             **kwargs,
     ) -> Tuple[str, float]:
+        if self._position_mode == PositionMode.ONEWAY and position_action == PositionAction.OPEN:
+            transition_order_id = self._position_transition_order_id(trading_pair)
+            if transition_order_id is not None:
+                await self._refresh_position_transition_state(
+                    trading_pair=trading_pair,
+                    reason=f"before placing OPEN order {order_id}",
+                )
+                transition_order_id = self._position_transition_order_id(trading_pair)
+                if transition_order_id is not None:
+                    raise ValueError(
+                        f"Position transition in progress for {trading_pair}. "
+                        f"Close order {transition_order_id} is awaiting flat-position confirmation."
+                    )
+
         symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
 
         # Generate Evedex-compatible order ID
@@ -952,6 +1049,8 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             for pos_key in stale_position_keys:
                 self.logger().debug(f"Removing stale position: {pos_key}")
                 self._perpetual_trading.remove_position(pos_key)
+
+        self._reconcile_position_transitions()
 
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
         """

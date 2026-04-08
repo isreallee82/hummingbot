@@ -11,9 +11,10 @@ from aioresponses.core import aioresponses
 import hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_constants as CONSTANTS
 import hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_web_utils as web_utils
 from hummingbot.connector.derivative.evedex_perpetual.evedex_perpetual_derivative import EvedexPerpetualDerivative
+from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.connector.trading_rule import TradingRule
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee
 from hummingbot.core.event.event_logger import EventLogger
@@ -439,6 +440,192 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._update_order_status.assert_awaited_once()
         self.exchange._update_balances.assert_awaited_once()
         self.exchange._update_positions.assert_awaited_once()
+
+    def test_create_order_preserves_open_action_even_with_opposite_position_when_no_transition_pending(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+        position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.SHORT,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("62000"),
+            amount=Decimal("-1"),
+            leverage=Decimal("5"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.SHORT)
+        self.exchange._perpetual_trading.set_position(position_key, position)
+        self.exchange._place_order = AsyncMock(return_value=("exchange-1", 1.0))
+
+        self.async_run_with_timeout(
+            self.exchange._create_order(
+                trade_type=TradeType.BUY,
+                order_id="OID_CREATE_OPEN",
+                trading_pair=self.trading_pair,
+                amount=Decimal("1"),
+                order_type=OrderType.MARKET,
+                price=Decimal("62000"),
+                position_action=PositionAction.OPEN,
+            )
+        )
+
+        tracked_order = self.exchange.in_flight_orders["OID_CREATE_OPEN"]
+        self.assertEqual(PositionAction.OPEN, tracked_order.position)
+        self.exchange._place_order.assert_awaited_once_with(
+            order_id="OID_CREATE_OPEN",
+            trading_pair=self.trading_pair,
+            amount=Decimal("1"),
+            trade_type=TradeType.BUY,
+            order_type=OrderType.MARKET,
+            price=Decimal("62000"),
+            position_action=PositionAction.OPEN,
+        )
+
+    def test_create_close_order_marks_position_transition(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+
+        self.exchange._place_order = AsyncMock(return_value=("exchange-close", 1.0))
+        self.exchange._schedule_position_update = MagicMock()
+
+        self.async_run_with_timeout(
+            self.exchange._create_order(
+                trade_type=TradeType.SELL,
+                order_id="OID_CREATE_CLOSE",
+                trading_pair=self.trading_pair,
+                amount=Decimal("1"),
+                order_type=OrderType.MARKET,
+                price=Decimal("62000"),
+                position_action=PositionAction.CLOSE,
+            )
+        )
+
+        tracked_order = self.exchange.in_flight_orders["OID_CREATE_CLOSE"]
+        self.assertEqual(PositionAction.CLOSE, tracked_order.position)
+        self.assertEqual("OID_CREATE_CLOSE", self.exchange._position_transition_order_id(self.trading_pair))
+        self.exchange._place_order.assert_awaited_once_with(
+            order_id="OID_CREATE_CLOSE",
+            trading_pair=self.trading_pair,
+            amount=Decimal("1"),
+            trade_type=TradeType.SELL,
+            order_type=OrderType.MARKET,
+            price=Decimal("62000"),
+            position_action=PositionAction.CLOSE,
+        )
+        self.exchange._schedule_position_update.assert_called_once()
+
+    def test_place_open_order_rejects_while_position_transition_pending(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+        position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.SHORT,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("62000"),
+            amount=Decimal("-1"),
+            leverage=Decimal("5"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.SHORT)
+        self.exchange._perpetual_trading.set_position(position_key, position)
+        self.exchange._begin_position_transition(self.trading_pair, "OID_CLOSE")
+        self.exchange._update_positions = AsyncMock()
+        self.exchange._api_post = AsyncMock()
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=2)
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_market_order = MagicMock(return_value="0xsig")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Position transition in progress for BTC-USDT. Close order OID_CLOSE is awaiting flat-position confirmation.",
+        ):
+            self.async_run_with_timeout(
+                self.exchange._place_order(
+                    order_id="OID_OPEN_BLOCKED",
+                    trading_pair=self.trading_pair,
+                    amount=Decimal("1"),
+                    trade_type=TradeType.BUY,
+                    order_type=OrderType.MARKET,
+                    price=Decimal("62000"),
+                    position_action=PositionAction.OPEN,
+                )
+            )
+
+        self.exchange._update_positions.assert_awaited_once()
+        self.exchange._api_post.assert_not_called()
+
+    def test_place_open_order_allows_after_transition_refresh_confirms_flat_position(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+        position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.SHORT,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("62000"),
+            amount=Decimal("-1"),
+            leverage=Decimal("5"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.SHORT)
+        self.exchange._perpetual_trading.set_position(position_key, position)
+        self.exchange._begin_position_transition(self.trading_pair, "OID_CLOSE")
+
+        async def refresh_positions():
+            self.exchange._perpetual_trading.remove_position(position_key)
+            self.exchange._reconcile_position_transitions()
+
+        self.exchange._update_positions = AsyncMock(side_effect=refresh_positions)
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=2)
+        self.exchange._api_post = AsyncMock(return_value={"id": "ex_open_after_transition", "createdAt": 456})
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_market_order = MagicMock(return_value="0xsig")
+
+        exchange_order_id, transact_time = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID_OPEN_AFTER_TRANSITION",
+                trading_pair=self.trading_pair,
+                amount=Decimal("2"),
+                trade_type=TradeType.SELL,
+                order_type=OrderType.MARKET,
+                price=Decimal("10"),
+                position_action=PositionAction.OPEN,
+            )
+        )
+
+        self.assertEqual(exchange_order_id, "ex_open_after_transition")
+        self.assertEqual(transact_time, 456)
+        self.exchange._update_positions.assert_awaited_once()
+        self.assertIsNone(self.exchange._position_transition_order_id(self.trading_pair))
+        self.exchange._api_post.assert_awaited_once()
 
     def test_place_order_requires_private_key(self):
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
