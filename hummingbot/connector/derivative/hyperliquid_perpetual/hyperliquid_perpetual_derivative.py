@@ -1082,9 +1082,11 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                 asset_name = balance_entry["coin"]
                 free_balance = Decimal(balance_entry["total"]) - Decimal(balance_entry["hold"])
                 total_balance = Decimal(balance_entry["total"])
-                self._account_available_balances[asset_name] = free_balance
-                self._account_balances[asset_name] = total_balance
-                remote_asset_names.add(asset_name)
+                if asset_name.upper() == "USDC":
+                    quote = CONSTANTS.CURRENCY
+                    self._account_available_balances[quote] = free_balance
+                    self._account_balances[quote] = total_balance
+                    remote_asset_names.add(asset_name)
 
             asset_names_to_remove = local_asset_names.difference(remote_asset_names)
             for asset_name in asset_names_to_remove:
