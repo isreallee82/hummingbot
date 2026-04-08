@@ -533,10 +533,16 @@ class LPRebalancer2(ControllerBase):
                         f"Position hold total: base={self._position_hold_base}, quote={self._position_hold_quote}"
                     )
 
-            # Capture closed position bounds for side determination
+            # Check if executor FAILED - retry with same side from executor's config
+            executor_failed = terminated_executor and terminated_executor.close_type == CloseType.FAILED
+            failed_executor_side = None
+            if executor_failed:
+                failed_executor_side = terminated_executor.custom_info.get("side")
+
+            # Capture closed position bounds for side determination (only for successful closes)
             closed_lower_price = None
             closed_upper_price = None
-            if terminated_executor and terminated_executor.close_type != CloseType.FAILED:
+            if terminated_executor and not executor_failed:
                 closed_lower_price = Decimal(str(terminated_executor.custom_info.get("lower_price", 0)))
                 closed_upper_price = Decimal(str(terminated_executor.custom_info.get("upper_price", 0)))
 
@@ -544,7 +550,11 @@ class LPRebalancer2(ControllerBase):
             self._current_executor_id = None
 
             # Determine side for new position
-            if not self._initial_position_created:
+            if executor_failed and failed_executor_side is not None:
+                # Retry with same side on failure
+                side = failed_executor_side
+                self.logger().info(f"Retrying with same side={side} after executor failure")
+            elif not self._initial_position_created:
                 # Initial position: use configured side
                 side = self.config.side
             elif closed_lower_price and closed_upper_price and self._pool_price:
