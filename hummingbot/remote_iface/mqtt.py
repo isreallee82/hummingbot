@@ -40,7 +40,6 @@ from hummingbot.remote_iface.messages import (
     ImportCommandMessage,
     InternalEventMessage,
     LogMessage,
-    LPHistoryCommandMessage,
     NotifyMessage,
     StartCommandMessage,
     StatusCommandMessage,
@@ -58,7 +57,6 @@ class CommandTopicSpecs:
     IMPORT: str = '/import'
     STATUS: str = '/status'
     HISTORY: str = '/history'
-    LP_HISTORY: str = '/lphistory'
     BALANCE_LIMIT: str = '/balance/limit'
     BALANCE_PAPER: str = '/balance/paper'
 
@@ -97,7 +95,6 @@ class MQTTCommands:
         self._import_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.IMPORT}'
         self._status_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.STATUS}'
         self._history_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.HISTORY}'
-        self._lp_history_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.LP_HISTORY}'
         self._balance_limit_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.BALANCE_LIMIT}'
         self._balance_paper_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.BALANCE_PAPER}'
 
@@ -133,11 +130,6 @@ class MQTTCommands:
             rpc_name=self._history_uri,
             msg_type=HistoryCommandMessage,
             on_request=self._on_cmd_history
-        )
-        self._node.create_rpc(
-            rpc_name=self._lp_history_uri,
-            msg_type=LPHistoryCommandMessage,
-            on_request=self._on_cmd_lp_history
         )
         self._node.create_rpc(
             rpc_name=self._balance_limit_uri,
@@ -318,20 +310,6 @@ class MQTTCommands:
                 trades = self._hb_app.get_history_trades_json(msg.days)
                 if trades:
                     response.trades = trades
-        except Exception as e:
-            response.status = MQTT_STATUS_CODE.ERROR
-            response.msg = str(e)
-        return response
-
-    def _on_cmd_lp_history(self, msg: LPHistoryCommandMessage.Request):
-        response = LPHistoryCommandMessage.Response()
-        try:
-            if msg.async_backend:
-                self._hb_app.lphistory(msg.days, msg.verbose, msg.precision)
-            else:
-                lp_updates = self._hb_app.get_lp_history_json(msg.days)
-                if lp_updates:
-                    response.lp_updates = lp_updates
         except Exception as e:
             response.status = MQTT_STATUS_CODE.ERROR
             response.msg = str(e)

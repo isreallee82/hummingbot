@@ -39,7 +39,6 @@ class RemoteIfaceMQTTTests(TestCase):
             'import',
             'status',
             'history',
-            'lphistory',
             'balance/limit',
             'balance/paper',
         ]
@@ -49,7 +48,6 @@ class RemoteIfaceMQTTTests(TestCase):
         cls.IMPORT_URI = 'hbot/$instance_id/import'
         cls.STATUS_URI = 'hbot/$instance_id/status'
         cls.HISTORY_URI = 'hbot/$instance_id/history'
-        cls.LP_HISTORY_URI = 'hbot/$instance_id/lphistory'
         cls.BALANCE_LIMIT_URI = 'hbot/$instance_id/balance/limit'
         cls.BALANCE_PAPER_URI = 'hbot/$instance_id/balance/paper'
         cls.fake_mqtt_broker = FakeMQTTBroker()
@@ -409,63 +407,6 @@ class RemoteIfaceMQTTTests(TestCase):
 
         topic = f"test_reply/hbot/{self.instance_id}/history"
         msg = {'status': 400, 'msg': self.fake_err_msg, 'trades': []}
-        self.async_run_with_timeout(self.wait_for_rcv(topic, msg, msg_key='data'), timeout=10)
-        self.assertTrue(self.is_msg_received(topic, msg, msg_key='data'))
-
-    @patch("hummingbot.client.command.history_command.HistoryCommand.get_lp_history_json")
-    def test_mqtt_command_lp_history_success(
-            self,
-            lp_history_mock: MagicMock
-    ):
-        lp_updates = [{"position_address": "pos123", "order_action": "ADD", "base_amount": 1.0}]
-        lp_history_mock.return_value = lp_updates
-        self.start_mqtt()
-
-        self.fake_mqtt_broker.publish_to_subscription(
-            self.get_topic_for(self.LP_HISTORY_URI),
-            {'days': 7, 'verbose': False, 'async_backend': False}
-        )
-
-        topic = f"test_reply/hbot/{self.instance_id}/lphistory"
-        msg = {'status': 200, 'msg': '', 'lp_updates': lp_updates}
-        self.async_run_with_timeout(self.wait_for_rcv(topic, msg, msg_key='data'), timeout=10)
-        self.assertTrue(self.is_msg_received(topic, msg, msg_key='data'))
-
-    @patch("hummingbot.client.command.history_command.HistoryCommand.lphistory")
-    def test_mqtt_command_lp_history_async(
-            self,
-            lphistory_mock: MagicMock
-    ):
-        self.start_mqtt()
-
-        self.fake_mqtt_broker.publish_to_subscription(
-            self.get_topic_for(self.LP_HISTORY_URI),
-            {'days': 7, 'verbose': False, 'async_backend': True}
-        )
-
-        topic = f"test_reply/hbot/{self.instance_id}/lphistory"
-        msg = {'status': 200, 'msg': '', 'lp_updates': []}
-        self.async_run_with_timeout(self.wait_for_rcv(topic, msg, msg_key='data'), timeout=10)
-        self.assertTrue(self.is_msg_received(topic, msg, msg_key='data'))
-        lphistory_mock.assert_called_once()
-
-    @patch("hummingbot.client.command.history_command.HistoryCommand.get_lp_history_json")
-    def test_mqtt_command_lp_history_failure(
-            self,
-            lp_history_mock: MagicMock
-    ):
-        lp_history_mock.side_effect = self._create_exception_and_unlock_test_with_event
-        self.start_mqtt()
-
-        self.fake_mqtt_broker.publish_to_subscription(
-            self.get_topic_for(self.LP_HISTORY_URI),
-            {'days': 7, 'async_backend': False}
-        )
-
-        self.async_run_with_timeout(self.resume_test_event.wait())
-
-        topic = f"test_reply/hbot/{self.instance_id}/lphistory"
-        msg = {'status': 400, 'msg': self.fake_err_msg, 'lp_updates': []}
         self.async_run_with_timeout(self.wait_for_rcv(topic, msg, msg_key='data'), timeout=10)
         self.assertTrue(self.is_msg_received(topic, msg, msg_key='data'))
 
