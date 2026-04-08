@@ -165,6 +165,17 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         cash_quantity_quantum = self.get_order_price_quantum(trading_pair, cash_quantity)
         return (cash_quantity // cash_quantity_quantum) * cash_quantity_quantum
 
+    def _in_flight_close_order_for_trading_pair(self, trading_pair: str) -> Optional[InFlightOrder]:
+        for tracked_order in self.in_flight_orders.values():
+            if tracked_order.trading_pair != trading_pair:
+                continue
+            if tracked_order.position != PositionAction.CLOSE:
+                continue
+            if tracked_order.is_done or not tracked_order.is_open:
+                continue
+            return tracked_order
+        return None
+
     async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
         """
         Fetches prices for all trading pairs from EvedEx.
@@ -296,6 +307,14 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             position_action: PositionAction = PositionAction.NIL,
             **kwargs,
     ) -> Tuple[str, float]:
+        if self._position_mode == PositionMode.ONEWAY and position_action == PositionAction.OPEN:
+            conflicting_close_order = self._in_flight_close_order_for_trading_pair(trading_pair)
+            if conflicting_close_order is not None:
+                raise ValueError(
+                    f"Cannot place OPEN order for {trading_pair} while CLOSE order "
+                    f"{conflicting_close_order.client_order_id} is still in flight."
+                )
+
         symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
 
         # Generate Evedex-compatible order ID
