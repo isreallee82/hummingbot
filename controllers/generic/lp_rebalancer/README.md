@@ -629,7 +629,7 @@ Enable debug logging to see decision details:
 
 ```python
 # In logs/logs_*.log
-LPRebalancer - INFO - Creating position: side=1, pool_price=100.0, bounds=[95.0, 99.9], limits=[94.05, 100.90]
+LPRebalancer - INFO - Creating position: side=BUY, pool_price=100.0, bounds=[95.0, 99.9], limits=[94.05, 100.90]
 LPRebalancer - INFO - Autoswap: SELL 0.5 SOL for ~50 USDC
 LPRebalancer - INFO - Swap completed successfully, proceeding to LP position
 ```

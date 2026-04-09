@@ -72,7 +72,7 @@ class LPExecutorConfig(ExecutorConfigBase):
     quote_amount: Decimal = Decimal("0")
 
     # Position side: TradeType.BUY (quote only), TradeType.SELL (base only), TradeType.RANGE (50/50)
-    side: TradeType = TradeType.RANGE
+    side: TradeType
 
     # Limit prices: close position when price exceeds these limits
     # Works like grid executor - closes when price goes beyond the limit

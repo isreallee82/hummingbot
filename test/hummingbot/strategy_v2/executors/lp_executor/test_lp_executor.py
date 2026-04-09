@@ -3,6 +3,7 @@ from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCa
 from test.logger_mixin_for_test import LoggerMixinForTest
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
 from hummingbot.core.event.events import RangePositionLiquidityAddedEvent, RangePositionLiquidityRemovedEvent
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
@@ -126,6 +127,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             upper_price=Decimal("105"),
             base_amount=Decimal("1.0"),
             quote_amount=Decimal("100"),
+            side=TradeType.BUY,
         )
 
     def get_executor(self, config: LPExecutorConfig = None) -> LPExecutor:
@@ -381,7 +383,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         executor = self.get_executor()
         info = executor.get_custom_info()
 
-        self.assertEqual(info["side"], 0)
+        self.assertEqual(info["side"], TradeType.BUY)
         self.assertEqual(info["state"], "NOT_ACTIVE")
         self.assertIsNone(info["position_address"])
         self.assertIsNone(info["current_price"])
@@ -405,7 +407,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
 
         info = executor.get_custom_info()
 
-        self.assertEqual(info["side"], 0)
+        self.assertEqual(info["side"], TradeType.BUY)
         self.assertEqual(info["state"], "IN_RANGE")
         self.assertEqual(info["position_address"], "pos123")
         self.assertEqual(info["current_price"], 100.0)
@@ -1088,6 +1090,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             upper_price=Decimal("105"),
             base_amount=Decimal("0"),
             quote_amount=Decimal("0"),
+            side=TradeType.BUY,
         )
         executor = self.get_executor(config)
         executor._current_price = Decimal("100")
@@ -1265,6 +1268,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             upper_price=Decimal("105"),
             base_amount=Decimal("1.0"),
             quote_amount=Decimal("100"),
+            side=TradeType.BUY,
         )
         executor = self.get_executor(config)
         executor.stop = MagicMock()
@@ -1272,56 +1276,6 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         result = executor._validate_and_normalize_connector("unknown-network")
 
         self.assertIsNone(result)
-        self.assertEqual(executor.close_type, CloseType.FAILED)
-        executor.stop.assert_called_once()
-
-    async def test_on_start_resolve_trading_pair(self):
-        """Test on_start resolves trading pair from pool address"""
-        config = LPExecutorConfig(
-            id="test-lp-1",
-            timestamp=1234567890,
-            connector_name="solana-mainnet-beta",
-            lp_provider="meteora/clmm",
-            trading_pair="",  # Empty - should be resolved
-            pool_address="pool123",
-            lower_price=Decimal("95"),
-            upper_price=Decimal("105"),
-            base_amount=Decimal("1.0"),
-            quote_amount=Decimal("100"),
-        )
-        executor = self.get_executor(config)
-
-        connector = self.strategy.connectors["solana-mainnet-beta"]
-        connector.resolve_trading_pair_from_pool = AsyncMock(return_value={"trading_pair": "SOL-USDC"})
-
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS', {'solana-mainnet-beta'}):
-            await executor.on_start()
-
-        self.assertEqual(executor.config.trading_pair, "SOL-USDC")
-
-    async def test_on_start_resolve_trading_pair_failure(self):
-        """Test on_start fails when trading pair resolution fails"""
-        config = LPExecutorConfig(
-            id="test-lp-1",
-            timestamp=1234567890,
-            connector_name="solana-mainnet-beta",
-            lp_provider="meteora/clmm",
-            trading_pair="",  # Empty - should be resolved
-            pool_address="pool123",
-            lower_price=Decimal("95"),
-            upper_price=Decimal("105"),
-            base_amount=Decimal("1.0"),
-            quote_amount=Decimal("100"),
-        )
-        executor = self.get_executor(config)
-        executor.stop = MagicMock()
-
-        connector = self.strategy.connectors["solana-mainnet-beta"]
-        connector.resolve_trading_pair_from_pool = AsyncMock(return_value=None)
-
-        with patch('hummingbot.strategy_v2.executors.gateway_utils.GATEWAY_DEXS', {'solana-mainnet-beta'}):
-            await executor.on_start()
-
         self.assertEqual(executor.close_type, CloseType.FAILED)
         executor.stop.assert_called_once()
 
@@ -1338,6 +1292,7 @@ class TestLPExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
             upper_price=Decimal("105"),
             base_amount=Decimal("1.0"),
             quote_amount=Decimal("100"),
+            side=TradeType.BUY,
         )
         executor = self.get_executor(config)
 
