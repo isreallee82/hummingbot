@@ -575,6 +575,70 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         self.exchange._update_positions.assert_awaited_once()
         self.exchange._api_post.assert_not_called()
 
+    def test_place_open_order_rejects_when_refresh_is_temporarily_flat_but_close_order_is_not_terminal(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+        position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.SHORT,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("62000"),
+            amount=Decimal("-1"),
+            leverage=Decimal("5"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.SHORT)
+        self.exchange._perpetual_trading.set_position(position_key, position)
+        self.exchange.start_tracking_order(
+            order_id="OID_CLOSE",
+            exchange_order_id="EX_CLOSE",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.MARKET,
+            trade_type=TradeType.BUY,
+            price=Decimal("62000"),
+            amount=Decimal("1"),
+            position_action=PositionAction.CLOSE,
+        )
+        self.exchange._begin_position_transition(self.trading_pair, "OID_CLOSE")
+
+        async def refresh_positions():
+            self.exchange._perpetual_trading.remove_position(position_key)
+            self.exchange._reconcile_position_transitions()
+
+        self.exchange._update_positions = AsyncMock(side_effect=refresh_positions)
+        self.exchange._api_post = AsyncMock()
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=2)
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_market_order = MagicMock(return_value="0xsig")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Position transition in progress for BTC-USDT. Close order OID_CLOSE is awaiting flat-position confirmation.",
+        ):
+            self.async_run_with_timeout(
+                self.exchange._place_order(
+                    order_id="OID_OPEN_BLOCKED_BY_ACTIVE_CLOSE",
+                    trading_pair=self.trading_pair,
+                    amount=Decimal("1"),
+                    trade_type=TradeType.BUY,
+                    order_type=OrderType.MARKET,
+                    price=Decimal("62000"),
+                    position_action=PositionAction.OPEN,
+                )
+            )
+
+        self.exchange._update_positions.assert_awaited_once()
+        self.assertEqual("OID_CLOSE", self.exchange._position_transition_order_id(self.trading_pair))
+        self.exchange._api_post.assert_not_called()
+
     def test_place_open_order_allows_after_transition_refresh_confirms_flat_position(self):
         self.exchange._trading_rules[self.trading_pair] = TradingRule(
             trading_pair=self.trading_pair,
@@ -595,9 +659,22 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         )
         position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.SHORT)
         self.exchange._perpetual_trading.set_position(position_key, position)
+        self.exchange.start_tracking_order(
+            order_id="OID_CLOSE",
+            exchange_order_id="EX_CLOSE",
+            trading_pair=self.trading_pair,
+            order_type=OrderType.MARKET,
+            trade_type=TradeType.BUY,
+            price=Decimal("62000"),
+            amount=Decimal("1"),
+            position_action=PositionAction.CLOSE,
+        )
         self.exchange._begin_position_transition(self.trading_pair, "OID_CLOSE")
 
         async def refresh_positions():
+            tracked_close_order = self.exchange._order_tracker.fetch_tracked_order("OID_CLOSE")
+            tracked_close_order.current_state = OrderState.FILLED
+            self.exchange._order_tracker.stop_tracking_order("OID_CLOSE")
             self.exchange._perpetual_trading.remove_position(position_key)
             self.exchange._reconcile_position_transitions()
 

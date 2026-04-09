@@ -226,6 +226,32 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
     def _position_transition_order_id(self, trading_pair: str) -> Optional[str]:
         return self._position_transition_order_ids.get(trading_pair)
 
+    def _position_transition_order(self, trading_pair: str) -> Optional[InFlightOrder]:
+        order_id = self._position_transition_order_id(trading_pair)
+        if order_id is None:
+            return None
+        return self._order_tracker.fetch_order(client_order_id=order_id)
+
+    def _is_position_transition_pending(self, trading_pair: str) -> bool:
+        transition_order_id = self._position_transition_order_id(trading_pair)
+        if transition_order_id is None:
+            return False
+
+        tracked_close_order = self._position_transition_order(trading_pair)
+        if tracked_close_order is not None and not tracked_close_order.is_done:
+            return True
+
+        return self._active_position_for_trading_pair(trading_pair) is not None
+
+    def _position_transition_clear_reason(self, trading_pair: str) -> str:
+        tracked_close_order = self._position_transition_order(trading_pair)
+        if tracked_close_order is None:
+            return "close order is no longer tracked and position refresh confirmed the pair is flat"
+        return (
+            f"close order {tracked_close_order.client_order_id} reached terminal state "
+            f"{tracked_close_order.current_state.name} and position refresh confirmed the pair is flat"
+        )
+
     async def _refresh_position_transition_state(self, trading_pair: str, reason: str):
         if self._position_transition_order_id(trading_pair) is None:
             return
@@ -242,10 +268,10 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
 
     def _reconcile_position_transitions(self):
         for trading_pair in list(self._position_transition_order_ids.keys()):
-            if self._active_position_for_trading_pair(trading_pair) is None:
+            if not self._is_position_transition_pending(trading_pair):
                 self._clear_position_transition(
                     trading_pair=trading_pair,
-                    reason="position refresh confirmed the pair is flat",
+                    reason=self._position_transition_clear_reason(trading_pair),
                 )
 
     async def get_all_pairs_prices(self) -> List[Dict[str, str]]:
