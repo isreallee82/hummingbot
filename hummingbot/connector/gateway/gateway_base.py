@@ -18,7 +18,7 @@ from hummingbot.core.data_type.cancellation_result import CancellationResult
 from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState, OrderUpdate, TradeFeeBase, TradeUpdate
 from hummingbot.core.data_type.limit_order import LimitOrder
-from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
+from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount, TradeFeeSchema
 from hummingbot.core.event.events import MarketEvent, MarketTransactionFailureEvent
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
 from hummingbot.core.network_iterator import NetworkStatus
@@ -152,6 +152,18 @@ class GatewayBase(ConnectorBase):
     @property
     def budget_checker(self) -> BudgetChecker:
         return self._budget_checker
+
+    def trade_fee_schema(self) -> TradeFeeSchema:
+        """
+        Return a default fee schema for Gateway connectors.
+
+        Gateway connectors use network names (e.g., 'solana-mainnet-beta') which are not
+        in AllConnectorSettings, so we can't use TradeFeeSchemaLoader. Instead, return
+        a default schema with zero fees - actual fees are tracked via flat_fees in events.
+        """
+        if self._trade_fee_schema is None:
+            self._trade_fee_schema = TradeFeeSchema()
+        return self._trade_fee_schema
 
     @property
     def connector_name(self):
@@ -507,8 +519,12 @@ class GatewayBase(ConnectorBase):
             await self.get_chain_info()
         local_asset_names = set(self._account_balances.keys())
         remote_asset_names = set()
-        token_list = list(self._tokens)
-        if self._native_currency:
+        # Derive tokens from current trading pairs (not just init-time _tokens)
+        tokens = set()
+        for trading_pair in self._trading_pairs:
+            tokens.update(set(trading_pair.split("_")[0].split("-")))
+        token_list = list(tokens)
+        if self._native_currency and self._native_currency not in tokens:
             token_list.append(self._native_currency)
         resp_json: Dict[str, Any] = await self._get_gateway_instance().get_balances(
             chain=self.chain,
@@ -728,22 +744,28 @@ class GatewayBase(ConnectorBase):
                              is_approval: bool = False,
                              order_type: OrderType = OrderType.AMM_SWAP):
         """
-        Starts tracking an order by simply adding it into _in_flight_orders dictionary in ClientOrderTracker.
+        Starts tracking an order by adding it to ClientOrderTracker and emitting OrderCreated event.
         """
-        self._order_tracker.start_tracking_order(
-            GatewayInFlightOrder(
-                client_order_id=order_id,
-                exchange_order_id=exchange_order_id,
-                trading_pair=trading_pair,
-                order_type=order_type,
-                trade_type=trade_type,
-                price=price,
-                amount=amount,
-                gas_price=gas_price,
-                creation_timestamp=self.current_timestamp,
-                initial_state=OrderState.PENDING_APPROVAL if is_approval else OrderState.PENDING_CREATE
-            )
+        order = GatewayInFlightOrder(
+            client_order_id=order_id,
+            exchange_order_id=exchange_order_id,
+            trading_pair=trading_pair,
+            order_type=order_type,
+            trade_type=trade_type,
+            price=price,
+            amount=amount,
+            gas_price=gas_price,
+            creation_timestamp=self.current_timestamp,
+            initial_state=OrderState.PENDING_APPROVAL if is_approval else OrderState.PENDING_CREATE
         )
+        self._order_tracker.start_tracking_order(order)
+
+        # Emit OrderCreated event immediately for non-approval orders
+        # This ensures the order exists in external systems (e.g., database) before fill events
+        if not is_approval:
+            self._order_tracker._trigger_created_event(order)
+            # Transition to OPEN state to prevent duplicate OrderCreated from process_order_update
+            order.current_state = OrderState.OPEN
 
     def stop_tracking_order(self, order_id: str):
         """
@@ -907,45 +929,6 @@ class GatewayBase(ConnectorBase):
             }
         )
         self._order_tracker.process_order_update(order_update)
-
-    def get_balance(self, currency: str) -> Decimal:
-        """
-        Override the parent method to ensure we have fresh balances.
-        Forces a balance update if the balance is not available.
-
-        :param currency: The currency (token) name
-        :return: A balance for the given currency (token)
-        """
-        # If we don't have this currency in our balances, trigger an update
-        if currency not in self._account_balances:
-            # Schedule an async balance update
-            safe_ensure_future(self._update_single_balance(currency))
-            # Return 0 for now, will be updated async
-            return s_decimal_0
-
-        return self._account_balances.get(currency, s_decimal_0)
-
-    async def _update_single_balance(self, currency: str):
-        """
-        Update balance for a single currency.
-
-        :param currency: The currency (token) to update
-        """
-        try:
-            resp_json: Dict[str, Any] = await self._get_gateway_instance().get_balances(
-                chain=self.chain,
-                network=self.network,
-                address=self.address,
-                token_symbols=[currency]
-            )
-
-            if "balances" in resp_json and currency in resp_json["balances"]:
-                balance = Decimal(str(resp_json["balances"][currency]))
-                self._account_available_balances[currency] = balance
-                self._account_balances[currency] = balance
-                self.logger().debug(f"Updated balance for {currency}: {balance}")
-        except Exception as e:
-            self.logger().error(f"Error updating balance for {currency}: {str(e)}", exc_info=True)
 
     async def get_balance_by_address(self, token_address: str) -> Decimal:
         """

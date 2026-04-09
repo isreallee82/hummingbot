@@ -394,8 +394,8 @@ class Gateway(GatewayBase):
             f"Processing trade update for {order_id}: fill_amount={fill_base_amount}, "
             f"fill_price={executed_price}, trade_id={transaction_hash}"
         )
-        self._order_tracker.process_trade_update(trade_update)
 
+        # Process order update to mark order as FILLED (triggers OrderCompleted event)
         order_update = OrderUpdate(
             client_order_id=order_id,
             exchange_order_id=transaction_hash,
@@ -404,6 +404,9 @@ class Gateway(GatewayBase):
             new_state=OrderState.FILLED,
         )
         self._order_tracker.process_order_update(order_update)
+
+        # Process trade update (triggers OrderFilled event with fill details)
+        self._order_tracker.process_trade_update(trade_update)
 
     # ==================== LP OPERATIONS ====================
 

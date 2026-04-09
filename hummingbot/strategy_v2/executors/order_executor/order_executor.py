@@ -405,4 +405,9 @@ class OrderExecutor(ExecutorBase):
 
         :return: The cumulative fees in quote currency.
         """
-        return Decimal("0")
+        total = Decimal("0")
+        if self._order:
+            total += self._order.cum_fees_quote
+        for order in self._partial_filled_orders:
+            total += order.cum_fees_quote
+        return total
