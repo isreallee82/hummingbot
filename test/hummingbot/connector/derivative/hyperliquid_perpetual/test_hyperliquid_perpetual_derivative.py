@@ -269,10 +269,8 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
     @aioresponses()
     def test_update_balances(self, mock_api):
         account_response = self.balance_request_mock_response_for_base_and_quote
-        spot_response = self.spot_balance_request_mock_response
         url = self._configure_balance_response(
             response=account_response,
-            spot_response=spot_response,
             mock_api=mock_api,
         )
 
@@ -285,10 +283,9 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         self.assertEqual(Decimal("13104.514502"), total_balances[self.quote_asset])
 
         request_calls = self._all_executed_requests(api_mock=mock_api, url=url)
-        self.assertEqual(2, len(request_calls))
+        self.assertEqual(1, len(request_calls))
         request_payloads = [json.loads(request_call.kwargs["data"]) for request_call in request_calls]
         self.assertEqual(CONSTANTS.USER_STATE_TYPE, request_payloads[0]["type"])
-        self.assertEqual(CONSTANTS.SPOT_USER_STATE_TYPE, request_payloads[1]["type"])
 
     @aioresponses()
     def test_update_balances_uses_spot_balances_when_withdrawable_is_zero(self, mock_api):
@@ -309,12 +306,39 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         available_balances = self.exchange.available_balances
         total_balances = self.exchange.get_all_balances()
 
-        self.assertEqual(Decimal("14.625485"), available_balances["USDC"])
-        self.assertEqual(Decimal("14.625485"), total_balances["USDC"])
-        self.assertEqual(Decimal("2000"), available_balances["PURR"])
-        self.assertEqual(Decimal("2000"), total_balances["PURR"])
+        self.assertEqual(Decimal("14.625485"), available_balances[self.quote_asset])
+        self.assertEqual(Decimal("14.625485"), total_balances[self.quote_asset])
+        self.assertNotIn("PURR", available_balances)
+        self.assertNotIn("PURR", total_balances)
         self.assertNotIn("OLD", available_balances)
         self.assertNotIn("OLD", total_balances)
+
+        request_calls = self._all_executed_requests(api_mock=mock_api, url=self.balance_url)
+        self.assertEqual(2, len(request_calls))
+        request_payloads = [json.loads(request_call.kwargs["data"]) for request_call in request_calls]
+        self.assertEqual(CONSTANTS.USER_STATE_TYPE, request_payloads[0]["type"])
+        self.assertEqual(CONSTANTS.SPOT_USER_STATE_TYPE, request_payloads[1]["type"])
+
+    @aioresponses()
+    def test_update_balances_removes_stale_quote_when_spot_usdc_is_missing(self, mock_api):
+        account_response = deepcopy(self.balance_request_mock_response_for_base_and_quote)
+        account_response["withdrawable"] = "0.0"
+        spot_response = {"balances": [{"coin": "PURR", "hold": "0", "total": "2000"}]}
+        self.exchange._account_balances = {self.quote_asset: Decimal("10"), "OLD": Decimal("5")}
+        self.exchange._account_available_balances = {self.quote_asset: Decimal("8"), "OLD": Decimal("4")}
+
+        self._configure_balance_response(
+            response=account_response,
+            spot_response=spot_response,
+            mock_api=mock_api,
+        )
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        self.assertNotIn(self.quote_asset, self.exchange.available_balances)
+        self.assertNotIn(self.quote_asset, self.exchange.get_all_balances())
+        self.assertNotIn("OLD", self.exchange.available_balances)
+        self.assertNotIn("OLD", self.exchange.get_all_balances())
 
     def configure_failed_set_position_mode(
             self,
@@ -1573,8 +1597,8 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
     def _configure_balance_response(
             self,
             response,
-            spot_response,
             mock_api: aioresponses,
+            spot_response=None,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
 
         url = self.balance_url
@@ -1583,10 +1607,11 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
             regex_url,
             body=json.dumps(response),
             callback=callback)
-        mock_api.post(
-            regex_url,
-            body=json.dumps(spot_response),
-            callback=callback)
+        if spot_response is not None:
+            mock_api.post(
+                regex_url,
+                body=json.dumps(spot_response),
+                callback=callback)
         return url
 
     @aioresponses()

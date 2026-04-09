@@ -1064,36 +1064,38 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
         Under unified account or portfolio margin, use spot balances endpoint instead for trading account balance across spot and perps.
         """
 
+        quote = CONSTANTS.CURRENCY
         account_info = await self._api_post(path_url=CONSTANTS.ACCOUNT_INFO_URL,
                                             data={"type": CONSTANTS.USER_STATE_TYPE,
                                                   "user": self.hyperliquid_perpetual_address},
                                             )
-        spot_account_info = await self._api_post(path_url=CONSTANTS.ACCOUNT_INFO_URL,
-                                                 data={"type": CONSTANTS.SPOT_USER_STATE_TYPE,
-                                                       "user": self.hyperliquid_perpetual_address},
-                                                 )
+
+        local_asset_names = set(self._account_balances.keys()) | set(self._account_available_balances.keys())
+        for asset_name in local_asset_names:
+            if asset_name != quote:
+                self._account_balances.pop(asset_name, None)
+                self._account_available_balances.pop(asset_name, None)
 
         if Decimal(account_info.get("withdrawable", "0")) == Decimal("0"):
-            local_asset_names = set(self._account_balances.keys())
-            remote_asset_names = set()
+            spot_account_info = await self._api_post(path_url=CONSTANTS.ACCOUNT_INFO_URL,
+                                                     data={"type": CONSTANTS.SPOT_USER_STATE_TYPE,
+                                                           "user": self.hyperliquid_perpetual_address},
+                                                     )
 
-            balances = spot_account_info["balances"]
-            for balance_entry in balances:
-                asset_name = balance_entry["coin"]
-                free_balance = Decimal(balance_entry["total"]) - Decimal(balance_entry["hold"])
-                total_balance = Decimal(balance_entry["total"])
-                if asset_name.upper() == "USDC":
-                    quote = CONSTANTS.CURRENCY
-                    self._account_available_balances[quote] = free_balance
-                    self._account_balances[quote] = total_balance
-                    remote_asset_names.add(asset_name)
-
-            asset_names_to_remove = local_asset_names.difference(remote_asset_names)
-            for asset_name in asset_names_to_remove:
-                del self._account_available_balances[asset_name]
-                del self._account_balances[asset_name]
+            usdc_balance = next(
+                (balance_entry for balance_entry in spot_account_info["balances"]
+                 if balance_entry["coin"].upper() == "USDC"),
+                None,
+            )
+            if usdc_balance is None:
+                self._account_balances.pop(quote, None)
+                self._account_available_balances.pop(quote, None)
+            else:
+                total_balance = Decimal(usdc_balance["total"])
+                free_balance = total_balance - Decimal(usdc_balance["hold"])
+                self._account_balances[quote] = total_balance
+                self._account_available_balances[quote] = free_balance
         else:
-            quote = CONSTANTS.CURRENCY
             self._account_balances[quote] = Decimal(account_info["crossMarginSummary"]["accountValue"])
             self._account_available_balances[quote] = Decimal(account_info["withdrawable"])
 
