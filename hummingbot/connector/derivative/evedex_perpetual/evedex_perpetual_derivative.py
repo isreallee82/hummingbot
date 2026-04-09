@@ -37,6 +37,13 @@ from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFa
 epm_logger = None
 
 
+class EvedexAlreadyClosedPositionError(ValueError):
+    def __init__(self, trading_pair: str, reference_price: Decimal):
+        super().__init__(f"Position already closed for {trading_pair}.")
+        self.trading_pair = trading_pair
+        self.reference_price = reference_price
+
+
 class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
     web_utils = web_utils
     SHORT_POLL_INTERVAL = 5.0
@@ -209,6 +216,96 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
         if position is not None and position.amount != Decimal("0"):
             return position
         return None
+
+    def _position_size_for_trading_pair(self, trading_pair: str) -> Decimal:
+        position = self._active_position_for_trading_pair(trading_pair)
+        return abs(position.amount) if position is not None else Decimal("0")
+
+    def _reference_price_for_close(self, trading_pair: str, trade_type: TradeType, price: Decimal) -> Decimal:
+        if price is not None and price != s_decimal_NaN and not price.is_nan():
+            return price
+        try:
+            return self.get_price(trading_pair, trade_type is TradeType.BUY)
+        except Exception:
+            return Decimal("0")
+
+    async def _reconcile_market_close_amount(
+        self,
+        order_id: str,
+        trading_pair: str,
+        requested_amount: Decimal,
+        trade_type: TradeType,
+        price: Decimal,
+    ) -> Decimal:
+        live_position_amount = self._position_size_for_trading_pair(trading_pair)
+        refresh_succeeded = False
+        try:
+            await self._update_positions()
+            refresh_succeeded = True
+            live_position_amount = self._position_size_for_trading_pair(trading_pair)
+        except Exception:
+            self.logger().warning(
+                f"Failed to refresh positions before placing Evedex market close order {order_id} for {trading_pair}. "
+                f"Falling back to local position amount {live_position_amount}.",
+                exc_info=True,
+            )
+
+        if live_position_amount <= Decimal("0"):
+            if not refresh_succeeded:
+                return requested_amount
+            raise EvedexAlreadyClosedPositionError(
+                trading_pair=trading_pair,
+                reference_price=self._reference_price_for_close(
+                    trading_pair=trading_pair,
+                    trade_type=trade_type,
+                    price=price,
+                ),
+            )
+
+        reconciled_amount = min(requested_amount, live_position_amount)
+        if reconciled_amount < requested_amount:
+            self.logger().info(
+                f"Clamping Evedex market close order {order_id} for {trading_pair} from "
+                f"{requested_amount} to live position size {reconciled_amount}."
+            )
+
+        return reconciled_amount
+
+    def _mark_close_order_as_filled_without_exchange(
+        self,
+        order_id: str,
+        trading_pair: str,
+        reference_price: Decimal,
+    ):
+        tracked_order = self._order_tracker.fetch_order(client_order_id=order_id)
+        if tracked_order is None:
+            return
+
+        if reference_price > Decimal("0"):
+            tracked_order.price = reference_price
+        synthetic_exchange_order_id = tracked_order.exchange_order_id or f"already-closed-{order_id}"
+        tracked_order.update_exchange_order_id(synthetic_exchange_order_id)
+        tracked_order.executed_amount_base = tracked_order.amount
+        if tracked_order.price is not None and tracked_order.price != s_decimal_NaN and not tracked_order.price.is_nan():
+            tracked_order.executed_amount_quote = tracked_order.amount * tracked_order.price
+        else:
+            tracked_order.executed_amount_quote = Decimal("0")
+        tracked_order.check_filled_condition()
+
+        self._order_tracker.process_order_update(OrderUpdate(
+            trading_pair=trading_pair,
+            update_timestamp=self.current_timestamp,
+            new_state=OrderState.FILLED,
+            client_order_id=order_id,
+            exchange_order_id=synthetic_exchange_order_id,
+        ))
+        self._schedule_balance_update(reason=f"already-flat position close order {order_id}")
+        self._schedule_position_update(reason=f"already-flat position close order {order_id}")
+        if self._position_transition_order_id(trading_pair) == order_id:
+            self._clear_position_transition(
+                trading_pair=trading_pair,
+                reason="close order was synthesized as filled because the live position was already flat",
+            )
 
     def _begin_position_transition(self, trading_pair: str, order_id: str):
         self._position_transition_order_ids[trading_pair] = order_id
@@ -439,6 +536,16 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             "chainId": chain_id,
         }
         if position_action == PositionAction.CLOSE and order_type == OrderType.MARKET:
+            amount = await self._reconcile_market_close_amount(
+                order_id=order_id,
+                trading_pair=trading_pair,
+                requested_amount=amount,
+                trade_type=trade_type,
+                price=price,
+            )
+            tracked_order = self._order_tracker.fetch_order(client_order_id=order_id)
+            if tracked_order is not None:
+                tracked_order.amount = amount
             path_url = CONSTANTS.CLOSE_POSITION_PATH_URL.format(instrument=symbol)
             limit_id = CONSTANTS.CLOSE_POSITION_PATH_URL
             api_params = {
@@ -542,8 +649,24 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
             if (CONSTANTS.TOO_MANY_QUANTITY_ERROR.lower() in error_description.lower() or
                     CONSTANTS.UNKNOWN_POSITION_ERROR.lower() in error_description.lower()):
                 self.logger().error(f"Position error detected, refreshing positions: {error_description}")
-                # Schedule position refresh
-                safe_ensure_future(self._update_positions())
+                refresh_succeeded = False
+                try:
+                    await self._update_positions()
+                    refresh_succeeded = True
+                except Exception:
+                    self.logger().warning(
+                        f"Failed to refresh positions after position error for {trading_pair}.",
+                        exc_info=True,
+                    )
+                if refresh_succeeded and self._position_size_for_trading_pair(trading_pair) <= Decimal("0"):
+                    raise EvedexAlreadyClosedPositionError(
+                        trading_pair=trading_pair,
+                        reference_price=self._reference_price_for_close(
+                            trading_pair=trading_pair,
+                            trade_type=trade_type,
+                            price=price,
+                        ),
+                    )
                 raise ValueError(f"Position error for {trading_pair}: {error_description}")
 
             if "503" in error_description:
@@ -553,6 +676,41 @@ class EvedexPerpetualDerivative(PerpetualDerivativePyBase):
                 raise
 
         return exchange_order_id, transact_time
+
+    def _on_order_failure(
+        self,
+        order_id: str,
+        trading_pair: str,
+        amount: Decimal,
+        trade_type: TradeType,
+        order_type: OrderType,
+        price: Optional[Decimal],
+        exception: Exception,
+        **kwargs,
+    ):
+        position_action = kwargs.get("position_action")
+        if position_action == PositionAction.CLOSE and isinstance(exception, EvedexAlreadyClosedPositionError):
+            self.logger().info(
+                f"Treating Evedex close order {order_id} for {trading_pair} as filled because the live position "
+                f"is already flat."
+            )
+            self._mark_close_order_as_filled_without_exchange(
+                order_id=order_id,
+                trading_pair=trading_pair,
+                reference_price=exception.reference_price,
+            )
+            return
+
+        super()._on_order_failure(
+            order_id=order_id,
+            trading_pair=trading_pair,
+            amount=amount,
+            trade_type=trade_type,
+            order_type=order_type,
+            price=price,
+            exception=exception,
+            **kwargs,
+        )
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         trade_updates = []

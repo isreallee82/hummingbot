@@ -527,6 +527,43 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
         )
         self.exchange._schedule_position_update.assert_called_once()
 
+    def test_create_market_close_order_marks_filled_when_position_is_already_flat(self):
+        self.exchange._trading_rules[self.trading_pair] = TradingRule(
+            trading_pair=self.trading_pair,
+            min_order_size=Decimal("0.001"),
+            min_price_increment=Decimal("0.01"),
+            min_base_amount_increment=Decimal("0.001"),
+            min_notional_size=Decimal("1"),
+            buy_order_collateral_token="USDT",
+            sell_order_collateral_token="USDT",
+        )
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=2)
+        self.exchange.get_price = MagicMock(return_value=Decimal("62000"))
+        self.exchange._update_positions = AsyncMock()
+        self.exchange._api_post = AsyncMock()
+
+        self.async_run_with_timeout(
+            self.exchange._create_order(
+                trade_type=TradeType.SELL,
+                order_id="OID_CREATE_CLOSE_FLAT",
+                trading_pair=self.trading_pair,
+                amount=Decimal("1"),
+                order_type=OrderType.MARKET,
+                price=Decimal("NaN"),
+                position_action=PositionAction.CLOSE,
+            )
+        )
+        self.async_run_with_timeout(asyncio.sleep(0))
+
+        cached_order = self.exchange._order_tracker.fetch_cached_order("OID_CREATE_CLOSE_FLAT")
+        self.assertIsNotNone(cached_order)
+        self.assertEqual(OrderState.FILLED, cached_order.current_state)
+        self.assertEqual(Decimal("1"), cached_order.executed_amount_base)
+        self.assertEqual(Decimal("62000"), cached_order.price)
+        self.exchange._api_post.assert_not_called()
+        self.assertIsNone(self.exchange._position_transition_order_id(self.trading_pair))
+
     def test_place_open_order_rejects_while_position_transition_pending(self):
         self.exchange._trading_rules[self.trading_pair] = TradingRule(
             trading_pair=self.trading_pair,
@@ -574,6 +611,57 @@ class EvedexPerpetualDerivativeUnitTest(IsolatedAsyncioWrapperTestCase):
 
         self.exchange._update_positions.assert_awaited_once()
         self.exchange._api_post.assert_not_called()
+
+    def test_place_market_close_order_clamps_amount_to_live_position(self):
+        self.exchange.start_tracking_order(
+            order_id="OID_CLOSE_CLAMPED",
+            exchange_order_id=None,
+            trading_pair=self.trading_pair,
+            order_type=OrderType.MARKET,
+            trade_type=TradeType.SELL,
+            price=Decimal("NaN"),
+            amount=Decimal("13.4"),
+            position_action=PositionAction.CLOSE,
+        )
+        position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.LONG,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("62000"),
+            amount=Decimal("13.3"),
+            leverage=Decimal("5"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
+        self.exchange._perpetual_trading.set_position(position_key, position)
+        self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
+        self.exchange.get_leverage = MagicMock(return_value=2)
+        self.exchange._update_positions = AsyncMock()
+        self.exchange._api_post = AsyncMock(return_value={"id": "ex_close_clamped", "createdAt": 456})
+        self.exchange._auth = MagicMock()
+        self.exchange._auth.wallet_address = "0xabc"
+        self.exchange._auth.sign_position_close = MagicMock(return_value="0xsig")
+
+        exchange_order_id, transact_time = self.async_run_with_timeout(
+            self.exchange._place_order(
+                order_id="OID_CLOSE_CLAMPED",
+                trading_pair=self.trading_pair,
+                amount=Decimal("13.4"),
+                trade_type=TradeType.SELL,
+                order_type=OrderType.MARKET,
+                price=Decimal("NaN"),
+                position_action=PositionAction.CLOSE,
+            )
+        )
+
+        self.assertEqual("ex_close_clamped", exchange_order_id)
+        self.assertEqual(456, transact_time)
+        tracked_order = self.exchange._order_tracker.fetch_tracked_order("OID_CLOSE_CLAMPED")
+        self.assertEqual(Decimal("13.3"), tracked_order.amount)
+        self.exchange._update_positions.assert_awaited_once()
+        self.exchange._auth.sign_position_close.assert_called_once()
+        self.exchange._api_post.assert_awaited_once()
+        api_post_kwargs = self.exchange._api_post.await_args.kwargs
+        self.assertEqual("13.3", api_post_kwargs["data"]["quantity"])
 
     def test_place_open_order_rejects_when_refresh_is_temporarily_flat_but_close_order_is_not_terminal(self):
         self.exchange._trading_rules[self.trading_pair] = TradingRule(
@@ -2288,6 +2376,16 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         """Test that 'Too many quantity' error triggers position refresh and raises ValueError."""
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
         self.exchange.get_leverage = MagicMock(return_value=1)
+        position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.LONG,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("10"),
+            amount=Decimal("1"),
+            leverage=Decimal("1"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
+        self.exchange._perpetual_trading.set_position(position_key, position)
         self.exchange._update_positions = AsyncMock()
         self.exchange._api_post = AsyncMock(side_effect=IOError("400 Too many quantity"))
         self.exchange._auth = MagicMock()
@@ -2313,6 +2411,16 @@ class EvedexPerpetualWebSocketTests(IsolatedAsyncioWrapperTestCase):
         """Test that 'Unknown position' error triggers position refresh and raises ValueError."""
         self.exchange.exchange_symbol_associated_to_pair = AsyncMock(return_value=self.ex_trading_pair)
         self.exchange.get_leverage = MagicMock(return_value=1)
+        position = Position(
+            trading_pair=self.trading_pair,
+            position_side=PositionSide.LONG,
+            unrealized_pnl=Decimal("0"),
+            entry_price=Decimal("10"),
+            amount=Decimal("1"),
+            leverage=Decimal("1"),
+        )
+        position_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
+        self.exchange._perpetual_trading.set_position(position_key, position)
         self.exchange._update_positions = AsyncMock()
         self.exchange._api_post = AsyncMock(side_effect=IOError("400 Unknown position"))
         self.exchange._auth = MagicMock()
