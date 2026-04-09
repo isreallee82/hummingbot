@@ -59,8 +59,8 @@ class LPExecutorConfig(ExecutorConfigBase):
     # Pool identification (required)
     pool_address: str
 
-    # Optional - resolved from pool_address if not provided
-    trading_pair: Optional[str] = None
+    # Trading pair for the pool (required) - e.g., "SOL-USDC"
+    trading_pair: str
 
     # Position price bounds
     lower_price: Decimal

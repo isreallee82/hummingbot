@@ -110,25 +110,6 @@ class LPExecutor(ExecutorBase):
                     "Close-out swaps will not be available."
                 )
 
-        # Resolve trading_pair from pool_address if not provided
-        if not self.config.trading_pair:
-            connector = self.connectors.get(self.config.connector_name)
-            if connector:
-                result = await connector.resolve_trading_pair_from_pool(
-                    self.config.pool_address,
-                    dex_name=self.lp_dex_name,
-                    trading_type=self.lp_trading_type,
-                )
-                if result and result.get("trading_pair"):
-                    # Update config with resolved trading pair
-                    object.__setattr__(self.config, 'trading_pair', result["trading_pair"])
-                    self.logger().info(f"Resolved trading pair from pool: {self.config.trading_pair}")
-                else:
-                    self.logger().error(f"Failed to resolve trading pair from pool {self.config.pool_address}")
-                    self.close_type = CloseType.FAILED
-                    self.stop()
-                    return
-
     async def control_task(self):
         """Main control loop - simple state machine with direct await operations"""
         current_time = self._strategy.current_timestamp
