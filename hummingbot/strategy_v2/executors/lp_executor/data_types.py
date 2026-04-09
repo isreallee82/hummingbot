@@ -4,6 +4,7 @@ from typing import Dict, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
+from hummingbot.core.data_type.common import TradeType
 from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
 from hummingbot.strategy_v2.models.executors import TrackedOrder
 
@@ -70,8 +71,8 @@ class LPExecutorConfig(ExecutorConfigBase):
     base_amount: Decimal = Decimal("0")
     quote_amount: Decimal = Decimal("0")
 
-    # Position side: 0=BOTH, 1=BUY (quote only), 2=SELL (base only)
-    side: int = 0
+    # Position side: TradeType.BUY (quote only), TradeType.SELL (base only), TradeType.RANGE (50/50)
+    side: TradeType = TradeType.RANGE
 
     # Limit prices: close position when price exceeds these limits
     # Works like grid executor - closes when price goes beyond the limit

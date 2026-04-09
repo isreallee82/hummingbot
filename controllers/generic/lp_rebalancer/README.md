@@ -26,7 +26,7 @@ LP Rebalancer maintains a single LP position and automatically rebalances it whe
 - **Automatic rebalancing** via LP executor limit prices (no timer needed)
 - **Configurable BUY and SELL price zones** (can overlap)
 - **Autoswap** to automatically swap tokens when balance is insufficient
-- **Supports initial BOTH, BUY, or SELL sided positions**
+- **Supports initial RANGE, BUY, or SELL sided positions**
 - **Position tracking** via position_hold for cumulative P&L
 
 ### Use Cases
@@ -135,14 +135,14 @@ controller_name: lp_rebalancer         # Must match controller class
 controller_type: generic               # Controller category
 
 # Network and Provider (NEW ARCHITECTURE)
-connector_name: solana-mainnet-beta    # Network identifier (NOT dex/type)
+connector_name: solana-mainnet-beta    # Network identifier
 lp_provider: meteora/clmm              # LP provider: "dex/trading_type"
 trading_pair: SOL-USDC                 # Trading pair
 pool_address: 'HTvjz...'               # Pool address on DEX
 
 # Position sizing
 total_amount_quote: '50'               # Total value in quote currency
-side: 1                                # Initial side: 0=BOTH, 1=BUY, 2=SELL
+side: 1                                # Initial side: 1=BUY, 2=SELL, 3=RANGE
 position_width_pct: '0.5'              # Position width as percentage (0.5 = 0.5%)
 position_offset_pct: '0.1'             # Offset from price (positive=out-of-range, negative=in-range)
 
@@ -172,7 +172,7 @@ strategy_type: 0                       # Connector-specific (Meteora strategy ty
 | `trading_pair` | string | "" | Trading pair (e.g., "SOL-USDC") |
 | `pool_address` | string | "" | Pool address on the DEX |
 | `total_amount_quote` | decimal | 50 | Total position value in quote currency |
-| `side` | int | 1 | Initial side: 0=BOTH, 1=BUY, 2=SELL |
+| `side` | TradeType | BUY | Initial side: BUY, SELL, or RANGE (50/50 split) |
 | `position_width_pct` | decimal | 0.5 | Position width as percentage |
 | `position_offset_pct` | decimal | 0.01 | Offset from price. Positive=out-of-range. Negative=in-range |
 | `rebalance_threshold_pct` | decimal | 1 | Price % beyond position bounds that triggers auto-close |
@@ -241,34 +241,34 @@ Based on `side` and `total_amount_quote`:
 
 | Side | Name | base_amount | quote_amount | Description |
 |------|------|-------------|--------------|-------------|
-| 0 | BOTH | `(total/2) / price` | `total/2` | Double-sided, 50/50 split |
 | 1 | BUY | `0` | `total` | Quote-only, positioned below price |
 | 2 | SELL | `total / price` | `0` | Base-only, positioned above price |
+| 3 | RANGE | `(total/2) / price` | `total/2` | Double-sided, 50/50 split |
 
 ### Bounds Calculation
 
-**Side=0 (BOTH)** - Initial only, centered on current price:
+**Side=BUY** - Below current price:
+```
+upper = min(current_price, buy_price_max) * (1 - offset)
+lower = upper * (1 - position_width_pct)
+```
+
+**Side=SELL** - Above current price:
+```
+lower = max(current_price, sell_price_min) * (1 + offset)
+upper = lower * (1 + position_width_pct)
+```
+
+**Side=RANGE** - Centered on current price (50/50 split):
 ```
 half_width = position_width_pct / 2
 lower = current_price * (1 - half_width)
 upper = current_price * (1 + half_width)
 ```
 
-**Side=1 (BUY)** - Below current price:
-```
-upper = min(current_price, buy_price_max) * (1 - offset)
-lower = upper * (1 - position_width_pct)
-```
-
-**Side=2 (SELL)** - Above current price:
-```
-lower = max(current_price, sell_price_min) * (1 + offset)
-upper = lower * (1 + position_width_pct)
-```
-
 ### Effect of Position Offset
 
-| Offset | Side=1 (BUY) | Side=2 (SELL) | Tokens Needed |
+| Offset | Side=BUY | Side=SELL | Tokens Needed |
 |--------|--------------|---------------|---------------|
 | +0.5% | upper below price (out-of-range) | lower above price (out-of-range) | Single |
 | 0% | upper at price (edge of range) | lower at price (edge of range) | Single |
@@ -458,7 +458,7 @@ LPExecutorConfig(
     upper_price=Decimal("105.0"),
     base_amount=Decimal("0"),               # 0 for BUY side
     quote_amount=Decimal("50"),             # All in quote for BUY
-    side=1,                                 # BUY
+    side=TradeType.BUY,
     # Auto-close when price exceeds these limits
     upper_limit_price=Decimal("106.05"),    # upper × (1 + threshold)
     lower_limit_price=Decimal("94.05"),     # lower × (1 - threshold)
