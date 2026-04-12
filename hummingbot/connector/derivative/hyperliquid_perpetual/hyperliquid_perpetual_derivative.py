@@ -68,6 +68,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
         self._exchange_info_dex_to_symbol = bidict({})
         self._dex_markets: List[Dict] = []  # Store HIP-3 DEX market info separately
         self._is_hip3_market: Dict[str, bool] = {}  # Track which coins are HIP-3
+        self._user_abstraction_mode: Optional[str] = None
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @property
@@ -1006,7 +1007,8 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                 exchange_symbol = await self.exchange_symbol_associated_to_pair(
                     trading_pair=trading_pair
                 )
-            except KeyError:
+            except KeyError as e:
+                self.logger().error(f"Trading pair {trading_pair} not found in symbol map: {e}")
                 # Trading pair not in symbol map yet, try to extract from trading pair directly
                 exchange_symbol = trading_pair.split("-")[0]
 
@@ -1076,7 +1078,9 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                 self._account_balances.pop(asset_name, None)
                 self._account_available_balances.pop(asset_name, None)
 
-        if Decimal(account_info.get("withdrawable", "0")) == Decimal("0"):
+        use_spot_balances = await self._uses_spot_balances()
+
+        if use_spot_balances:
             spot_account_info = await self._api_post(path_url=CONSTANTS.ACCOUNT_INFO_URL,
                                                      data={"type": CONSTANTS.SPOT_USER_STATE_TYPE,
                                                            "user": self.hyperliquid_perpetual_address},
@@ -1098,6 +1102,29 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
         else:
             self._account_balances[quote] = Decimal(account_info["crossMarginSummary"]["accountValue"])
             self._account_available_balances[quote] = Decimal(account_info["withdrawable"])
+
+    async def _uses_spot_balances(self) -> bool:
+        abstraction_mode = await self._get_user_abstraction_mode()
+        if abstraction_mode in CONSTANTS.SPOT_BALANCE_ABSTRACTION_MODES:
+            return True
+        return False
+
+    async def _get_user_abstraction_mode(self) -> Optional[str]:
+        try:
+            abstraction_mode = await self._api_post(
+                path_url=CONSTANTS.ACCOUNT_INFO_URL,
+                data={
+                    "type": CONSTANTS.USER_ABSTRACTION_TYPE,
+                    "user": self.hyperliquid_perpetual_address,
+                },
+            )
+        except Exception:
+            self.logger().debug("Failed to fetch Hyperliquid user abstraction mode.", exc_info=True)
+            abstraction_mode = None
+
+        if isinstance(abstraction_mode, str):
+            self._user_abstraction_mode = abstraction_mode
+        return self._user_abstraction_mode
 
     async def _update_positions(self):
         all_positions = []

@@ -271,6 +271,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         account_response = self.balance_request_mock_response_for_base_and_quote
         url = self._configure_balance_response(
             response=account_response,
+            abstraction_response="default",
             mock_api=mock_api,
         )
 
@@ -283,12 +284,28 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         self.assertEqual(Decimal("13104.514502"), total_balances[self.quote_asset])
 
         request_calls = self._all_executed_requests(api_mock=mock_api, url=url)
-        self.assertEqual(1, len(request_calls))
+        self.assertEqual(2, len(request_calls))
         request_payloads = [json.loads(request_call.kwargs["data"]) for request_call in request_calls]
         self.assertEqual(CONSTANTS.USER_STATE_TYPE, request_payloads[0]["type"])
+        self.assertEqual(CONSTANTS.USER_ABSTRACTION_TYPE, request_payloads[1]["type"])
+
+    def test_get_user_abstraction_mode_refreshes_without_restart(self):
+        api_post_mock = AsyncMock(side_effect=["default", "unifiedAccount"])
+        self.exchange._api_post = api_post_mock
+
+        first_mode = self.async_run_with_timeout(self.exchange._get_user_abstraction_mode())
+        second_mode = self.async_run_with_timeout(self.exchange._get_user_abstraction_mode())
+
+        self.assertEqual("default", first_mode)
+        self.assertEqual("unifiedAccount", second_mode)
+        self.assertEqual("unifiedAccount", self.exchange._user_abstraction_mode)
+        self.assertEqual(2, api_post_mock.await_count)
+        request_payloads = [call.kwargs["data"] for call in api_post_mock.await_args_list]
+        self.assertEqual(CONSTANTS.USER_ABSTRACTION_TYPE, request_payloads[0]["type"])
+        self.assertEqual(CONSTANTS.USER_ABSTRACTION_TYPE, request_payloads[1]["type"])
 
     @aioresponses()
-    def test_update_balances_uses_spot_balances_when_withdrawable_is_zero(self, mock_api):
+    def test_update_balances_uses_spot_balances_for_unified_account(self, mock_api):
         account_response = deepcopy(self.balance_request_mock_response_for_base_and_quote)
         account_response["withdrawable"] = "0.0"
         spot_response = self.spot_balance_request_mock_response
@@ -297,6 +314,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
 
         self._configure_balance_response(
             response=account_response,
+            abstraction_response="unifiedAccount",
             spot_response=spot_response,
             mock_api=mock_api,
         )
@@ -314,10 +332,50 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         self.assertNotIn("OLD", total_balances)
 
         request_calls = self._all_executed_requests(api_mock=mock_api, url=self.balance_url)
-        self.assertEqual(2, len(request_calls))
+        self.assertEqual(3, len(request_calls))
         request_payloads = [json.loads(request_call.kwargs["data"]) for request_call in request_calls]
         self.assertEqual(CONSTANTS.USER_STATE_TYPE, request_payloads[0]["type"])
-        self.assertEqual(CONSTANTS.SPOT_USER_STATE_TYPE, request_payloads[1]["type"])
+        self.assertEqual(CONSTANTS.USER_ABSTRACTION_TYPE, request_payloads[1]["type"])
+        self.assertEqual(CONSTANTS.SPOT_USER_STATE_TYPE, request_payloads[2]["type"])
+
+    @aioresponses()
+    def test_update_balances_uses_spot_balances_for_unified_account_with_non_zero_withdrawable(self, mock_api):
+        account_response = deepcopy(self.balance_request_mock_response_for_base_and_quote)
+        account_response["crossMarginSummary"]["accountValue"] = "8.6"
+        account_response["withdrawable"] = "8.6"
+        spot_response = {
+            "balances": [
+                {
+                    "coin": "USDC",
+                    "token": 0,
+                    "hold": "1.5",
+                    "total": "300.0",
+                    "entryNtl": "0.0",
+                }
+            ]
+        }
+
+        self._configure_balance_response(
+            response=account_response,
+            abstraction_response="unifiedAccount",
+            spot_response=spot_response,
+            mock_api=mock_api,
+        )
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        available_balances = self.exchange.available_balances
+        total_balances = self.exchange.get_all_balances()
+
+        self.assertEqual(Decimal("298.5"), available_balances[self.quote_asset])
+        self.assertEqual(Decimal("300.0"), total_balances[self.quote_asset])
+
+        request_calls = self._all_executed_requests(api_mock=mock_api, url=self.balance_url)
+        self.assertEqual(3, len(request_calls))
+        request_payloads = [json.loads(request_call.kwargs["data"]) for request_call in request_calls]
+        self.assertEqual(CONSTANTS.USER_STATE_TYPE, request_payloads[0]["type"])
+        self.assertEqual(CONSTANTS.USER_ABSTRACTION_TYPE, request_payloads[1]["type"])
+        self.assertEqual(CONSTANTS.SPOT_USER_STATE_TYPE, request_payloads[2]["type"])
 
     @aioresponses()
     def test_update_balances_removes_stale_quote_when_spot_usdc_is_missing(self, mock_api):
@@ -329,6 +387,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
 
         self._configure_balance_response(
             response=account_response,
+            abstraction_response="unifiedAccount",
             spot_response=spot_response,
             mock_api=mock_api,
         )
@@ -1598,6 +1657,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
             self,
             response,
             mock_api: aioresponses,
+            abstraction_response=None,
             spot_response=None,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
 
@@ -1607,6 +1667,11 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
             regex_url,
             body=json.dumps(response),
             callback=callback)
+        if abstraction_response is not None:
+            mock_api.post(
+                regex_url,
+                body=json.dumps(abstraction_response),
+                callback=callback)
         if spot_response is not None:
             mock_api.post(
                 regex_url,

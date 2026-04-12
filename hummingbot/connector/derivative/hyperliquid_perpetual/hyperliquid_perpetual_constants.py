@@ -35,6 +35,9 @@ ORDER_STATUS_TYPE = "orderStatus"
 
 USER_STATE_TYPE = "clearinghouseState"
 SPOT_USER_STATE_TYPE = "spotClearinghouseState"
+USER_ABSTRACTION_TYPE = "userAbstraction"
+
+SPOT_BALANCE_ABSTRACTION_MODES = {"unifiedAccount", "portfolioMargin"}
 
 # yes
 TICKER_PRICE_CHANGE_URL = "/info"
