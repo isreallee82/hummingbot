@@ -139,9 +139,7 @@ class ArbitrageExecutor(ExecutorBase):
             return Decimal("0")
 
     def get_cum_fees_quote(self) -> Decimal:
-        buy_exchange = self.connectors.get(self.buying_market.connector_name)
-        sell_exchange = self.connectors.get(self.selling_market.connector_name)
-        return self.buy_order.get_cum_fees_quote(exchange=buy_exchange) + self.sell_order.get_cum_fees_quote(exchange=sell_exchange)
+        return self.buy_order.cum_fees_quote + self.sell_order.cum_fees_quote
 
     @property
     def buy_order(self) -> TrackedOrder:

@@ -252,8 +252,7 @@ class TWAPExecutor(ExecutorBase):
         """
         This method is responsible for calculating the cumulative fees in quote asset
         """
-        exchange = self.connectors.get(self.config.connector_name)
-        return sum([order.get_cum_fees_quote(exchange=exchange) for order in self._order_plan.values() if order])
+        return sum([order.cum_fees_quote for order in self._order_plan.values() if order])
 
     def get_net_pnl_quote(self) -> Decimal:
         """

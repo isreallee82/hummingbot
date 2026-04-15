@@ -439,8 +439,7 @@ class GridExecutor(ExecutorBase):
                 1 + self.config.safe_extra_spread) if level.side == TradeType.BUY else self.current_close_quote * (
                 1 - self.config.safe_extra_spread)
         if level.active_open_order.fee_asset == self.config.trading_pair.split("-")[0] and self.config.deduct_base_fees:
-            exchange = self.connectors.get(self.config.connector_name)
-            amount = level.active_open_order.executed_amount_base - level.active_open_order.get_cum_fees_base(exchange=exchange)
+            amount = level.active_open_order.executed_amount_base - level.active_open_order.cum_fees_base
             self._open_fee_in_base = True
         else:
             amount = level.active_open_order.executed_amount_base
@@ -829,14 +828,13 @@ class GridExecutor(ExecutorBase):
             self.position_break_even_price = sum(
                 [level.active_open_order.order.price * level.active_open_order.order.amount
                  for level in open_filled_levels]) / executed_amount_base
-            exchange = self.connectors.get(self.config.connector_name)
             if self._open_fee_in_base:
-                executed_amount_base -= sum([level.active_open_order.get_cum_fees_base(exchange=exchange) for level in open_filled_levels])
+                executed_amount_base -= sum([level.active_open_order.cum_fees_base for level in open_filled_levels])
             close_order_size_base = self._close_order.executed_amount_base if self._close_order and self._close_order.is_done else Decimal(
                 "0")
             self.position_size_base = executed_amount_base - close_order_size_base
             self.position_size_quote = self.position_size_base * self.position_break_even_price
-            self.position_fees_quote = Decimal(sum([level.active_open_order.get_cum_fees_quote(exchange=exchange) for level in open_filled_levels]))
+            self.position_fees_quote = Decimal(sum([level.active_open_order.cum_fees_quote for level in open_filled_levels]))
             self.position_pnl_quote = side_multiplier * ((self.mid_price - self.position_break_even_price) / self.position_break_even_price) * self.position_size_quote - self.position_fees_quote
             self.position_pnl_pct = self.position_pnl_quote / self.position_size_quote if self.position_size_quote > 0 else Decimal(
                 "0")

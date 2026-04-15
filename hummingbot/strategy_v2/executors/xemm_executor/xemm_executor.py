@@ -330,9 +330,7 @@ class XEMMExecutor(ExecutorBase):
 
     def get_cum_fees_quote(self) -> Decimal:
         if self.is_closed and self.maker_order and self.taker_order:
-            maker_exchange = self.connectors.get(self.maker_connector)
-            taker_exchange = self.connectors.get(self.taker_connector)
-            return self.maker_order.get_cum_fees_quote(exchange=maker_exchange) + self.taker_order.get_cum_fees_quote(exchange=taker_exchange)
+            return self.maker_order.cum_fees_quote + self.taker_order.cum_fees_quote
         else:
             return Decimal("0")
 

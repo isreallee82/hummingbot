@@ -216,9 +216,8 @@ class DCAExecutor(ExecutorBase):
         """
         This method is responsible for calculating the cumulative fees in quote asset
         """
-        exchange = self.connectors.get(self.config.connector_name)
         all_orders = self._open_orders + self._close_orders
-        return sum([order.get_cum_fees_quote(exchange=exchange) for order in all_orders])
+        return sum([order.cum_fees_quote for order in all_orders])
 
     async def on_start(self):
         await super().on_start()
