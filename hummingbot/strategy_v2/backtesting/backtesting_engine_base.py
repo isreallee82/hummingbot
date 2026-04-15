@@ -371,7 +371,13 @@ class BacktestingEngineBase:
         elif isinstance(config, PositionExecutorConfig):
             return self.position_executor_simulator.simulate(df, config, trade_cost)
         elif isinstance(config, GridExecutorConfig):
-            return self.grid_executor_simulator.simulate(df, config, trade_cost)
+            trading_rules = None
+            try:
+                trading_rules = self.backtesting_data_provider.get_trading_rules(
+                    config.connector_name, config.trading_pair)
+            except (KeyError, AttributeError):
+                pass
+            return self.grid_executor_simulator.simulate(df, config, trade_cost, trading_rules)
         return None
 
     @staticmethod

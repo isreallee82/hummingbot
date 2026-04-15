@@ -1,5 +1,6 @@
+import math
 from decimal import Decimal
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 from pydantic import Field
@@ -17,6 +18,7 @@ class GridExecutorSimulation(ExecutorSimulation):
     grid_level_prices: List[float] = Field(default_factory=list)
     grid_tp_prices: List[float] = Field(default_factory=list)
     grid_side: str = "BUY"
+    grid_limit_price: Optional[float] = None
 
     def get_custom_info(self, last_entry: pd.Series) -> dict:
         base = super().get_custom_info(last_entry)
@@ -24,23 +26,50 @@ class GridExecutorSimulation(ExecutorSimulation):
         base["grid_level_prices"] = self.grid_level_prices
         base["grid_tp_prices"] = self.grid_tp_prices
         base["grid_side"] = self.grid_side
+        base["grid_limit_price"] = self.grid_limit_price
         return base
 
 
 class GridExecutorSimulator(ExecutorSimulatorBase):
 
     @staticmethod
-    def _generate_grid_levels(config: GridExecutorConfig, mid_price: Decimal) -> List[GridLevel]:
-        """Generate grid levels mirroring the real GridExecutor._generate_grid_levels logic."""
-        min_notional = max(config.min_order_amount_quote, Decimal("5"))
+    def _generate_grid_levels(config: GridExecutorConfig, mid_price: Decimal,
+                              trading_rules=None) -> List[GridLevel]:
+        """Generate grid levels mirroring the real GridExecutor._generate_grid_levels logic.
+
+        When trading_rules is provided, uses exchange-specific min_notional_size,
+        min_base_amount_increment, and min_price_increment for accurate quantization.
+        """
+        if trading_rules is not None:
+            min_notional = max(config.min_order_amount_quote, trading_rules.min_notional_size)
+            min_base_increment = trading_rules.min_base_amount_increment
+        else:
+            min_notional = max(config.min_order_amount_quote, Decimal("5"))
+            min_base_increment = None
+
         min_notional_with_margin = min_notional * Decimal("1.05")
 
-        min_base_amount = min_notional_with_margin / mid_price
-
-        grid_range = (config.end_price - config.start_price) / config.start_price
-        min_step_size = config.min_spread_between_orders
+        if min_base_increment is not None:
+            min_base_amount = max(
+                min_notional_with_margin / mid_price,
+                min_base_increment * Decimal(str(math.ceil(float(min_notional) / float(min_base_increment * mid_price))))
+            )
+            min_base_amount = Decimal(
+                str(math.ceil(float(min_base_amount) / float(min_base_increment)))) * min_base_increment
+        else:
+            min_base_amount = min_notional_with_margin / mid_price
 
         min_quote_amount = min_base_amount * mid_price
+
+        grid_range = (config.end_price - config.start_price) / config.start_price
+        if trading_rules is not None:
+            min_step_size = max(
+                config.min_spread_between_orders,
+                trading_rules.min_price_increment / mid_price
+            )
+        else:
+            min_step_size = config.min_spread_between_orders
+
         max_possible_levels = int(config.total_amount_quote / min_quote_amount)
 
         if max_possible_levels == 0:
@@ -49,11 +78,18 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
         else:
             max_levels_by_step = int(grid_range / min_step_size) if min_step_size > 0 else max_possible_levels
             n_levels = min(max_possible_levels, max_levels_by_step)
-            quote_amount_per_level = config.total_amount_quote / n_levels
-            # Ensure minimum notional is met
-            if quote_amount_per_level < min_quote_amount:
-                quote_amount_per_level = min_quote_amount
-            n_levels = min(n_levels, int(config.total_amount_quote / quote_amount_per_level))
+            if min_base_increment is not None:
+                base_amount_per_level = max(
+                    min_base_amount,
+                    Decimal(str(math.floor(float(config.total_amount_quote / (mid_price * n_levels)) /
+                                           float(min_base_increment)))) * min_base_increment
+                )
+                quote_amount_per_level = base_amount_per_level * mid_price
+            else:
+                quote_amount_per_level = config.total_amount_quote / n_levels
+                if quote_amount_per_level < min_quote_amount:
+                    quote_amount_per_level = min_quote_amount
+            n_levels = min(n_levels, int(float(config.total_amount_quote) / float(quote_amount_per_level)))
 
         n_levels = max(1, n_levels)
 
@@ -81,7 +117,8 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
             )
         return grid_levels
 
-    def simulate(self, df: pd.DataFrame, config: GridExecutorConfig, trade_cost: float) -> ExecutorSimulation:
+    def simulate(self, df: pd.DataFrame, config: GridExecutorConfig, trade_cost: float,
+                 trading_rules=None) -> ExecutorSimulation:
         """
         Simulate grid execution on historical OHLCV data.
 
@@ -94,6 +131,7 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
         :param df: DataFrame with columns [timestamp, open, high, low, close] indexed by timestamp.
         :param config: GridExecutorConfig.
         :param trade_cost: Trading cost as a fraction (e.g. 0.0006 = 0.06%).
+        :param trading_rules: Optional TradingRule from the exchange connector for accurate quantization.
         :return: ExecutorSimulation with per-row evolving PnL.
         """
         side_multiplier = 1 if config.side == TradeType.BUY else -1
@@ -112,12 +150,13 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
             return GridExecutorSimulation(config=config, executor_simulation=df_filtered, close_type=CloseType.TIME_LIMIT)
 
         initial_mid_price = Decimal(str(df_filtered.iloc[0]['close']))
-        grid_levels = self._generate_grid_levels(config, initial_mid_price)
+        grid_levels = self._generate_grid_levels(config, initial_mid_price, trading_rules)
 
         if not grid_levels:
             return GridExecutorSimulation(config=config, executor_simulation=df_filtered, close_type=CloseType.TIME_LIMIT)
 
         stop_loss = float(config.triple_barrier_config.stop_loss) if config.triple_barrier_config.stop_loss else None
+        limit_price = float(config.limit_price) if config.limit_price else None
         global_close_type = CloseType.TIME_LIMIT
 
         # Track per-level completed round-trip trades (entry fill -> tp fill)
@@ -176,6 +215,18 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
                 global_close_type = CloseType.TAKE_PROFIT
                 close_row_idx = row_idx
                 terminated = True
+
+            # --- Check limit price condition ---
+            if not terminated and limit_price is not None:
+                limit_hit = False
+                if config.side == TradeType.BUY:
+                    limit_hit = close_price <= limit_price
+                else:
+                    limit_hit = close_price >= limit_price
+                if limit_hit:
+                    global_close_type = CloseType.POSITION_HOLD if config.keep_position else CloseType.STOP_LOSS
+                    close_row_idx = row_idx
+                    terminated = True
 
             # --- Process TP fills first (so levels can recycle within the same bar) ---
             levels_to_deactivate = []
@@ -259,9 +310,15 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
                 active_amount_quote += amount_quote
                 weighted_entry_sum += entry_price * amount_quote
 
-            total_pnl = total_realized_pnl + unrealized_pnl
-            total_amount = total_realized_amount + active_amount_quote
-            total_fees = total_realized_fees + (trade_cost * active_amount_quote * 2)
+            # For POSITION_HOLD, only report realized PnL (active positions are held, not closed)
+            if terminated and global_close_type == CloseType.POSITION_HOLD:
+                total_pnl = total_realized_pnl
+                total_amount = total_realized_amount
+                total_fees = total_realized_fees
+            else:
+                total_pnl = total_realized_pnl + unrealized_pnl
+                total_amount = total_realized_amount + active_amount_quote
+                total_fees = total_realized_fees + (trade_cost * active_amount_quote * 2)
 
             net_pnl_quote_arr[row_idx] = total_pnl
             filled_amount_quote_arr[row_idx] = total_amount
@@ -314,4 +371,5 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
             grid_level_prices=level_prices,
             grid_tp_prices=tp_prices,
             grid_side=config.side.name,
+            grid_limit_price=limit_price,
         )

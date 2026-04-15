@@ -93,7 +93,10 @@ async def main(days: float, show_chart: bool, output_path: str | None,
             end_price = round(ref * (1 + half), 6)
         print(f"  Auto grid bounds from price {ref:.4f}: {start_price} -> {end_price}")
     if limit_price is None:
-        limit_price = round(start_price * 0.99, 6)
+        if side == "BUY":
+            limit_price = round(start_price * 0.99, 6)
+        else:
+            limit_price = round(end_price * 1.01, 6)
 
     config = build_config(connector, trading_pair, total_amount_quote,
                           start_price, end_price, limit_price,

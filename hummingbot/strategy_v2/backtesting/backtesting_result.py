@@ -504,17 +504,54 @@ class BacktestingResult:
                     row=row, col=col,
                 )
 
+            # --- Limit price line ---
+            grid_limit_price = executor.custom_info.get("grid_limit_price")
+            if grid_limit_price is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[start_dt, end_dt], y=[grid_limit_price, grid_limit_price],
+                        mode="lines",
+                        line=dict(color="rgba(239,83,80,0.7)", width=1.5, dash="dashdot"),
+                        showlegend=first_executor,
+                        legendgroup="limit_price",
+                        name="Limit Price",
+                        hoverinfo="y",
+                    ),
+                    row=row, col=col,
+                )
+
+            # --- Executor boundary marker (vertical line at start) ---
+            exec_idx = grid_executors.index(executor) + 1
+            y_min = min(level_prices) if level_prices else 0
+            y_max = max(tp_prices) if tp_prices else (max(level_prices) if level_prices else 0)
+            fig.add_trace(
+                go.Scatter(
+                    x=[start_dt, start_dt], y=[y_min, y_max],
+                    mode="lines+text",
+                    line=dict(color="rgba(255,255,255,0.3)", width=1, dash="dot"),
+                    text=[f"#{exec_idx}", ""],
+                    textposition="top center",
+                    textfont=dict(size=9, color="rgba(255,255,255,0.6)"),
+                    showlegend=(first_executor),
+                    legendgroup="exec_boundary",
+                    name="Executor Start",
+                    hovertext=f"Executor #{exec_idx} start",
+                    hoverinfo="text",
+                ),
+                row=row, col=col,
+            )
+
             # --- Collect fill markers ---
             for ev in fill_events:
                 dt = pd.to_datetime(ev["timestamp"], unit="s")
                 if ev["side"] == "entry":
                     all_entry_x.append(dt)
                     all_entry_y.append(ev["price"])
-                    all_entry_text.append(f"L{ev['level_idx']} entry ${ev['amount_quote']:.1f}")
+                    all_entry_text.append(f"E#{exec_idx} L{ev['level_idx']} entry ${ev['amount_quote']:.1f}")
                 else:
                     all_tp_x.append(dt)
                     all_tp_y.append(ev["price"])
-                    all_tp_text.append(f"L{ev['level_idx']} TP ${ev['amount_quote']:.1f}")
+                    all_tp_text.append(f"E#{exec_idx} L{ev['level_idx']} TP ${ev['amount_quote']:.1f}")
 
             first_executor = False
 

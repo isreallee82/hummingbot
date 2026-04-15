@@ -37,7 +37,7 @@ def build_config(connector: str, trading_pair: str, total_amount_quote: int):
         "trading_pair": trading_pair,
         "total_amount_quote": total_amount_quote,
         "leverage": 1,
-        "portfolio_allocation": "0.01",
+        "portfolio_allocation": "0.02",
         "target_base_pct": "0.5",
         "min_base_pct": "0.3",
         "max_base_pct": "0.7",
