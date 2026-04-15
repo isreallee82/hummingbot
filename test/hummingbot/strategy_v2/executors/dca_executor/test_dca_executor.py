@@ -32,6 +32,7 @@ class TestDCAExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
         strategy = MagicMock(spec=StrategyV2Base)
         type(strategy).market_info = PropertyMock(return_value=market_info)
         type(strategy).trading_pair = PropertyMock(return_value="ETH-USDT")
+        type(strategy).current_timestamp = PropertyMock(return_value=123)
         strategy.buy.side_effect = ["OID-BUY-1", "OID-BUY-2", "OID-BUY-3"]
         strategy.sell.side_effect = ["OID-SELL-1", "OID-SELL-2", "OID-SELL-3"]
         strategy.cancel.return_value = None
@@ -486,7 +487,7 @@ class TestDCAExecutor(IsolatedAsyncioWrapperTestCase, LoggerMixinForTest):
     @patch.object(DCAExecutor, "get_price")
     async def test_barrier_race_condition_only_one_close_order(self, get_price_mock):
         """When stop loss triggers, subsequent barriers should not also trigger."""
-        get_price_mock.side_effect = [Decimal("105"), Decimal("95"), Decimal("50"), Decimal("50")]
+        get_price_mock.side_effect = [Decimal("105"), Decimal("50"), Decimal("50")]
         config = DCAExecutorConfig(id="test", timestamp=123, side=TradeType.BUY, connector_name="binance",
                                    trading_pair="ETH-USDT",
                                    amounts_quote=[Decimal(10)],
