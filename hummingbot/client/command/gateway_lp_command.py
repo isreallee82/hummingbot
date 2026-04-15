@@ -350,7 +350,7 @@ class GatewayLPCommand:
 
                 # Fetch and display pool info
                 pool_result = await LPCommandUtils.fetch_and_display_pool_info(
-                    self, lp_connector, user_trading_pair, is_clmm
+                    self, lp_connector, user_trading_pair, dex_name, trading_type
                 )
                 if not pool_result:
                     return
@@ -488,7 +488,7 @@ class GatewayLPCommand:
 
                 # 7. Get and display pool info
                 self.notify(f"\nFetching pool information for {user_trading_pair}...")
-                pool_info = await lp_connector.get_pool_info(user_trading_pair)
+                pool_info = await lp_connector.get_pool_info(user_trading_pair, dex_name, trading_type)
 
                 if not pool_info:
                     self.notify(f"Error: Could not find pool for {user_trading_pair}")
@@ -911,7 +911,7 @@ class GatewayLPCommand:
 
                     # Fetch and display pool info
                     pool_result = await LPCommandUtils.fetch_and_display_pool_info(
-                        self, lp_connector, user_trading_pair, is_clmm
+                        self, lp_connector, user_trading_pair, dex_name, trading_type
                     )
                     if not pool_result:
                         return
@@ -1191,9 +1191,8 @@ class GatewayLPCommand:
                             return
 
                     # Fetch and display pool info
-                    is_clmm = True  # collect-fees is only for CLMM
                     pool_result = await LPCommandUtils.fetch_and_display_pool_info(
-                        self, lp_connector, user_trading_pair, is_clmm
+                        self, lp_connector, user_trading_pair, dex_name, trading_type
                     )
                     if not pool_result:
                         return

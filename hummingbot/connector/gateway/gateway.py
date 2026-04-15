@@ -682,6 +682,33 @@ class Gateway(GatewayBase):
             )
             return None
 
+    async def get_pool_info(
+        self,
+        trading_pair: str,
+        dex_name: str,
+        trading_type: str = "clmm"
+    ) -> Optional[Union[AMMPoolInfo, CLMMPoolInfo]]:
+        """
+        Get pool information for a trading pair.
+
+        :param trading_pair: Trading pair (e.g., "SOL-USDC")
+        :param dex_name: DEX protocol name (e.g., "orca", "meteora")
+        :param trading_type: Trading type (e.g., "clmm", "amm"). Defaults to "clmm".
+        :return: Pool info object or None if not found
+        """
+        try:
+            pool_address = await self.get_pool_address(trading_pair, dex_name, trading_type)
+            if not pool_address:
+                return None
+
+            return await self.get_pool_info_by_address(pool_address, dex_name, trading_type)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.logger().error(f"Error getting pool info for {trading_pair}: {e}")
+            return None
+
     async def resolve_trading_pair_from_pool(
         self,
         pool_address: str,

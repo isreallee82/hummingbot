@@ -792,7 +792,8 @@ class MarketDataProvider:
         try:
             tasks = [self._safe_get_last_traded_price(connector, trading_pair) for trading_pair in trading_pairs]
             prices = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
-            return {pair: Decimal(rate) for pair, rate in zip(trading_pairs, prices)}
+            # Filter out None values (failed price fetches) to avoid setting invalid prices
+            return {pair: rate for pair, rate in zip(trading_pairs, prices) if rate is not None}
         except Exception as e:
             logging.error(f"Error getting last traded prices in connector {connector} for trading pairs {trading_pairs}: {e}")
             return {}
@@ -800,9 +801,11 @@ class MarketDataProvider:
     async def _safe_get_last_traded_price(self, connector, trading_pair):
         try:
             last_traded = await connector._get_last_traded_price(trading_pair=trading_pair)
-            return Decimal(last_traded)
+            price = Decimal(last_traded)
+            # Return None for zero or negative prices - these are invalid
+            return price if price > Decimal("0") else None
         except Exception:
             logging.exception(
                 f"Error getting last traded price in connector {connector} for trading pair {trading_pair}."
             )
-            return Decimal(0)
+            return None
