@@ -71,14 +71,22 @@ class ExecutorSimulation(BaseModel):
             custom_info={}
         )
 
+    @property
+    def fill_timestamp(self) -> float:
+        if not hasattr(self, '_fill_timestamp'):
+            filled = self.executor_simulation[self.executor_simulation['filled_amount_quote'] > 0]
+            self._fill_timestamp = float(filled.index[0]) if len(filled) > 0 else None
+        return self._fill_timestamp
+
     def get_custom_info(self, last_entry: pd.Series) -> dict:
         current_position_average_price = last_entry['current_position_average_price'] if "current_position_average_price" in last_entry else None
+        is_trading = last_entry['filled_amount_quote'] > 0
         return {
             "close_price": last_entry['close'],
             "level_id": self.config.level_id,
             "side": self.config.side,
             "current_position_average_price": current_position_average_price,
-            "open_order_last_update": self.config.timestamp,
+            "open_order_last_update": self.fill_timestamp if is_trading else float(last_entry.name),
         }
 
 
