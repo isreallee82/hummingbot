@@ -139,7 +139,9 @@ class ArbitrageExecutor(ExecutorBase):
             return Decimal("0")
 
     def get_cum_fees_quote(self) -> Decimal:
-        return self.buy_order.cum_fees_quote + self.sell_order.cum_fees_quote
+        buy_exchange = self.connectors.get(self.buying_market.connector_name)
+        sell_exchange = self.connectors.get(self.selling_market.connector_name)
+        return self.buy_order.get_cum_fees_quote(exchange=buy_exchange) + self.sell_order.get_cum_fees_quote(exchange=sell_exchange)
 
     @property
     def buy_order(self) -> TrackedOrder:
@@ -179,7 +181,7 @@ class ArbitrageExecutor(ExecutorBase):
                 self.check_order_status()
 
     def early_stop(self, keep_position: bool = False):
-        self.close_type = CloseType.EARLY_STOP
+        self.close_type = CloseType.POSITION_HOLD if keep_position else CloseType.EARLY_STOP
         self.stop()
 
     def check_order_status(self):

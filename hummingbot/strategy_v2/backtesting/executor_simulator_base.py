@@ -5,6 +5,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
+from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType
@@ -12,7 +13,7 @@ from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
 
 class ExecutorSimulation(BaseModel):
-    config: Union[PositionExecutorConfig, DCAExecutorConfig]
+    config: Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig]
     executor_simulation: pd.DataFrame
     close_type: CloseType
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -76,7 +77,8 @@ class ExecutorSimulation(BaseModel):
             "close_price": last_entry['close'],
             "level_id": self.config.level_id,
             "side": self.config.side,
-            "current_position_average_price": current_position_average_price
+            "current_position_average_price": current_position_average_price,
+            "open_order_last_update": self.config.timestamp,
         }
 
 

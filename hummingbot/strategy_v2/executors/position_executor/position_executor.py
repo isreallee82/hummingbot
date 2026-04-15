@@ -94,7 +94,8 @@ class PositionExecutor(ExecutorBase):
         """
         if self._open_order:
             if self._open_order.fee_asset == self.config.trading_pair.split("-")[0]:
-                open_filled_amount = self._open_order.executed_amount_base - self._open_order.cum_fees_base
+                exchange = self.connectors.get(self.config.connector_name)
+                open_filled_amount = self._open_order.executed_amount_base - self._open_order.get_cum_fees_base(exchange=exchange)
             else:
                 open_filled_amount = self._open_order.executed_amount_base
             return self.connectors[self.config.connector_name].quantize_order_amount(
@@ -248,8 +249,11 @@ class PositionExecutor(ExecutorBase):
 
         :return: The cumulative fees in quote asset.
         """
+        exchange = self.connectors.get(self.config.connector_name)
         orders = [self._open_order, self._close_order]
-        return sum([order.cum_fees_quote for order in orders if order])
+        if self._take_profit_limit_order and self._take_profit_limit_order != self._close_order:
+            orders.append(self._take_profit_limit_order)
+        return sum([order.get_cum_fees_quote(exchange=exchange) for order in orders if order])
 
     def get_net_pnl_pct(self) -> Decimal:
         """
@@ -464,8 +468,14 @@ class PositionExecutor(ExecutorBase):
         if self._open_order and self._open_order.is_filled and self.open_filled_amount >= self.trading_rules.min_order_size \
                 and self.open_filled_amount_quote >= self.trading_rules.min_notional_size:
             self.control_stop_loss()
+            if self.status != RunnableStatus.RUNNING:
+                return
             self.control_trailing_stop()
+            if self.status != RunnableStatus.RUNNING:
+                return
             self.control_take_profit()
+            if self.status != RunnableStatus.RUNNING:
+                return
         self.control_time_limit()
 
     def place_close_order_and_cancel_open_orders(self, close_type: CloseType, price: Decimal = Decimal("NaN")):

@@ -216,8 +216,9 @@ class DCAExecutor(ExecutorBase):
         """
         This method is responsible for calculating the cumulative fees in quote asset
         """
+        exchange = self.connectors.get(self.config.connector_name)
         all_orders = self._open_orders + self._close_orders
-        return sum([order.cum_fees_quote for order in all_orders])
+        return sum([order.get_cum_fees_quote(exchange=exchange) for order in all_orders])
 
     async def on_start(self):
         await super().on_start()
@@ -305,8 +306,14 @@ class DCAExecutor(ExecutorBase):
         This method is responsible for controlling the active executors
         """
         self.control_stop_loss()
+        if self.status != RunnableStatus.RUNNING:
+            return
         self.control_trailing_stop()
+        if self.status != RunnableStatus.RUNNING:
+            return
         self.control_take_profit()
+        if self.status != RunnableStatus.RUNNING:
+            return
         self.control_time_limit()
 
     def control_time_limit(self):
@@ -491,6 +498,7 @@ class DCAExecutor(ExecutorBase):
         if open_order:
             self._failed_orders.append(open_order)
             self._open_orders.remove(open_order)
+            self._current_retries += 1
             self.logger().error(f"Order {event.order_id} failed.")
         close_order = next((order for order in self._close_orders if order.order_id == event.order_id), None)
         if close_order:
