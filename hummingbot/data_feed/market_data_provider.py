@@ -114,38 +114,34 @@ class MarketDataProvider:
                 non_gateway_connectors = {}
 
                 for connector, connector_pairs in self._rates_required.items():
-                    # Detect gateway connectors: either new format (contains "/") or old format (contains "gateway")
-                    is_gateway = "/" in connector or "gateway" in connector
+                    # Gateway connectors use network format: "chain-network" (e.g., "solana-mainnet-beta")
+                    # Check if first part matches a known gateway chain
+                    chain = connector.split("-")[0] if "-" in connector else None
+                    is_gateway = chain in self.gateway_price_provider_by_chain
 
                     if is_gateway:
                         gateway_client = GatewayHttpClient.get_instance()
+                        # Parse network from connector (e.g., "solana-mainnet-beta" -> network="mainnet-beta")
+                        network = connector[len(chain) + 1:]  # Everything after "chain-"
+
+                        # Get default dex for this chain (e.g., "jupiter/router")
+                        dex_connector = self.gateway_price_provider_by_chain[chain]
+                        # Parse dex_name and trading_type
+                        if "/" in dex_connector:
+                            dex_name, trading_type = dex_connector.split("/", 1)
+                        else:
+                            dex_name = dex_connector
+                            trading_type = "router"
 
                         for connector_pair in connector_pairs:
                             try:
                                 base, quote = connector_pair.trading_pair.split("-")
 
-                                # Parse connector format to extract chain/network
-                                if "/" in connector:
-                                    # New format: "jupiter/router" or "uniswap/amm"
-                                    # Need to get chain/network from the connector instance or Gateway
-                                    chain, network, error = await gateway_client.get_connector_chain_network(connector)
-                                    if error:
-                                        self.logger().warning(f"Failed to get chain/network for {connector}: {error}")
-                                        continue
-                                    connector_name = connector  # Use the connector as-is for new format
-                                else:
-                                    # Old format: "gateway_chain-network"
-                                    gateway, chain_network = connector.split("_", 1)
-                                    chain, network = chain_network.split("-", 1)
-                                    connector_name = self.gateway_price_provider_by_chain.get(chain)
-                                    if not connector_name:
-                                        self.logger().warning(f"No gateway price provider found for chain {chain}")
-                                        continue
-
                                 task = gateway_client.get_price(
                                     chain=chain,
                                     network=network,
-                                    connector=connector_name,
+                                    dex=dex_name,
+                                    trading_type=trading_type,
                                     base_asset=base,
                                     quote_asset=quote,
                                     amount=Decimal("1"),

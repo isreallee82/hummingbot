@@ -617,11 +617,12 @@ class GatewayLPCommand:
                 if is_clmm:
                     # For CLMM, use quote_position
                     quote_result = await self._get_gateway_instance().clmm_quote_position(
-                        connector=dex_type,
                         network=network,
                         pool_address=pool_info.address,
                         lower_price=lower_price,
                         upper_price=upper_price,
+                        dex=dex_name,
+                        trading_type=trading_type,
                         base_token_amount=base_amount,
                         quote_token_amount=quote_amount,
                         slippage_pct=slippage_pct
@@ -652,11 +653,12 @@ class GatewayLPCommand:
 
                     # Get quote for AMM
                     quote_result = await self._get_gateway_instance().amm_quote_liquidity(
-                        connector=dex_type,
                         network=network,
                         pool_address=pool_info.address,
                         base_token_amount=base_amount,
                         quote_token_amount=quote_amount,
+                        dex=dex_name,
+                        trading_type=trading_type,
                         slippage_pct=slippage_pct
                     )
 
@@ -1319,10 +1321,11 @@ class GatewayLPCommand:
                     try:
                         # Call gateway to collect fees
                         result = await self._get_gateway_instance().clmm_collect_fees(
-                            connector=dex_type,
                             network=network,
                             wallet_address=wallet_address,
-                            position_address=selected_position.address
+                            position_address=selected_position.address,
+                            dex=dex_name,
+                            trading_type=trading_type
                         )
 
                         if result.get("signature"):
