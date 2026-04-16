@@ -26,10 +26,6 @@ from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 
 class MarketDataProvider:
     _logger: Optional[HummingbotLogger] = None
-    gateway_price_provider_by_chain: Dict = {
-        "ethereum": "uniswap/router",
-        "solana": "jupiter/router",
-    }
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -115,22 +111,19 @@ class MarketDataProvider:
 
                 for connector, connector_pairs in self._rates_required.items():
                     # Gateway connectors use network format: "chain-network" (e.g., "solana-mainnet-beta")
-                    # Check if first part matches a known gateway chain
-                    chain = connector.split("-")[0] if "-" in connector else None
-                    is_gateway = chain in self.gateway_price_provider_by_chain
+                    # Try to get swap provider from Gateway config to detect gateway connectors
+                    gateway_client = GatewayHttpClient.get_instance()
+                    swap_provider = await gateway_client.get_default_swap_provider(connector)
 
-                    if is_gateway:
-                        gateway_client = GatewayHttpClient.get_instance()
-                        # Parse network from connector (e.g., "solana-mainnet-beta" -> network="mainnet-beta")
-                        network = connector[len(chain) + 1:]  # Everything after "chain-"
+                    if swap_provider:
+                        # Parse chain from connector (e.g., "solana-mainnet-beta" -> chain="solana")
+                        chain = connector.split("-")[0]
 
-                        # Get default dex for this chain (e.g., "jupiter/router")
-                        dex_connector = self.gateway_price_provider_by_chain[chain]
-                        # Parse dex_name and trading_type
-                        if "/" in dex_connector:
-                            dex_name, trading_type = dex_connector.split("/", 1)
+                        # Parse dex_name and trading_type from swap_provider (e.g., "jupiter/router")
+                        if "/" in swap_provider:
+                            dex_name, trading_type = swap_provider.split("/", 1)
                         else:
-                            dex_name = dex_connector
+                            dex_name = swap_provider
                             trading_type = "router"
 
                         for connector_pair in connector_pairs:
@@ -139,7 +132,7 @@ class MarketDataProvider:
 
                                 task = gateway_client.get_price(
                                     chain=chain,
-                                    network=network,
+                                    network=connector,
                                     dex=dex_name,
                                     trading_type=trading_type,
                                     base_asset=base,
