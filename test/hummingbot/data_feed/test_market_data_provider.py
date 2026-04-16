@@ -197,9 +197,10 @@ class TestMarketDataProvider(IsolatedAsyncioWrapperTestCase):
         connector._get_last_traded_price.return_value = 100
         result = await self.provider._safe_get_last_traded_prices(connector, ["BTC-USDT"])
         self.assertEqual(result, {"BTC-USDT": 100})
+        # When price fetch fails, the pair should be excluded (not set to 0) to avoid division by zero in rate oracle
         connector._get_last_traded_price.side_effect = Exception("Error")
         result = await self.provider._safe_get_last_traded_prices(connector, ["BTC-USDT"])
-        self.assertEqual(result, {"BTC-USDT": Decimal("0")})
+        self.assertEqual(result, {})
 
     def test_remove_rate_sources(self):
         # Test removing regular connector rate sources
