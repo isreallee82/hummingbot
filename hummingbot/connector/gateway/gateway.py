@@ -197,10 +197,12 @@ class Gateway(GatewayBase):
         base, quote = trading_pair.split("-")
         side: TradeType = TradeType.BUY if is_buy else TradeType.SELL
 
-        if not dex_name:
-            raise ValueError("dex_name is required for swap operations on unified Gateway connector")
+        # Use connector's swap_provider from network config, or override with provided dex_name
+        effective_dex_name = dex_name or self._swap_provider
+        if not effective_dex_name:
+            raise ValueError("No swap provider configured for this network. Set swapProvider in Gateway network config.")
 
-        dex, trading_type = self._parse_dex_name(dex_name)
+        dex, trading_type = self._parse_dex_name(effective_dex_name)
 
         try:
             resp: Dict[str, Any] = await self._get_gateway_instance().quote_swap(
