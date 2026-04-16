@@ -16,6 +16,7 @@ from hummingbot.strategy_v2.backtesting.backtesting_data_provider import Backtes
 from hummingbot.strategy_v2.backtesting.executor_simulator_base import ExecutorSimulation
 from hummingbot.strategy_v2.backtesting.executors_simulator.dca_executor_simulator import DCAExecutorSimulator
 from hummingbot.strategy_v2.backtesting.executors_simulator.grid_executor_simulator import GridExecutorSimulator
+from hummingbot.strategy_v2.backtesting.executors_simulator.order_executor_simulator import OrderExecutorSimulator
 from hummingbot.strategy_v2.backtesting.executors_simulator.position_executor_simulator import PositionExecutorSimulator
 from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
@@ -25,6 +26,7 @@ from hummingbot.strategy_v2.controllers.market_making_controller_base import Mar
 from hummingbot.strategy_v2.executors.data_types import PositionSummary
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
 from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
+from hummingbot.strategy_v2.executors.order_executor.data_types import OrderExecutorConfig
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
@@ -119,6 +121,7 @@ class BacktestingEngineBase:
         self.position_executor_simulator = PositionExecutorSimulator()
         self.dca_executor_simulator = DCAExecutorSimulator()
         self.grid_executor_simulator = GridExecutorSimulator()
+        self.order_executor_simulator = OrderExecutorSimulator()
 
     @classmethod
     def load_controller_config(cls,
@@ -352,14 +355,14 @@ class BacktestingEngineBase:
         self.controller.processed_data["features"] = backtesting_candles
         return backtesting_candles
 
-    def simulate_executor(self, config: Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig],
+    def simulate_executor(self, config: Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig, OrderExecutorConfig],
                           df: pd.DataFrame,
                           trade_cost: float) -> Optional[ExecutorSimulation]:
         """
         Simulates the execution of a trading strategy given a configuration.
 
         Args:
-            config (Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig]): The configuration of the executor.
+            config (Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig, OrderExecutorConfig]): The configuration of the executor.
             df (pd.DataFrame): DataFrame containing the market data from the start time.
             trade_cost (float): The cost per trade.
 
@@ -378,12 +381,16 @@ class BacktestingEngineBase:
             except (KeyError, AttributeError):
                 pass
             return self.grid_executor_simulator.simulate(df, config, trade_cost, trading_rules)
+        elif isinstance(config, OrderExecutorConfig):
+            return self.order_executor_simulator.simulate(df, config, trade_cost)
         return None
 
     @staticmethod
-    def _get_executor_max_timestamp(config: Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig],
+    def _get_executor_max_timestamp(config: Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig, OrderExecutorConfig],
                                     last_index: float) -> float:
-        if isinstance(config, PositionExecutorConfig):
+        if isinstance(config, OrderExecutorConfig):
+            return last_index
+        elif isinstance(config, PositionExecutorConfig):
             tl = config.triple_barrier_config.time_limit
         elif isinstance(config, DCAExecutorConfig):
             tl = config.time_limit

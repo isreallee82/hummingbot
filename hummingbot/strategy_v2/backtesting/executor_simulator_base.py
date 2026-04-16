@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
 from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
+from hummingbot.strategy_v2.executors.order_executor.data_types import OrderExecutorConfig
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType
@@ -13,7 +14,7 @@ from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
 
 class ExecutorSimulation(BaseModel):
-    config: Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig]
+    config: Union[PositionExecutorConfig, DCAExecutorConfig, GridExecutorConfig, OrderExecutorConfig]
     executor_simulation: pd.DataFrame
     close_type: CloseType
     model_config = ConfigDict(arbitrary_types_allowed=True)
