@@ -262,12 +262,8 @@ class GatewayLPCommand:
         :param trading_pair: Optional trading pair (e.g., 'SOL-USDC') to skip prompt
         """
         try:
-            # 1. Validate dex_type and get chain/network info
-            if "/" not in dex_type:
-                self.notify(f"Error: Invalid DEX type format '{dex_type}'. Use format like 'orca/clmm'")
-                return
-
-            chain, network, error = await self._get_gateway_instance().get_connector_chain_network(
+            # 1. Validate dex_type and get chain/network/dex info
+            dex_name, trading_type, chain, network, error = await self._get_gateway_instance().get_dex_info(
                 dex_type
             )
             if error:
@@ -282,16 +278,8 @@ class GatewayLPCommand:
                 self.notify(f"Error: {error}")
                 return
 
-            # 3. Determine pool type and parse dex/trading_type
-            connector_type = get_connector_type(dex_type)
-            is_clmm = connector_type == ConnectorType.CLMM
-
-            # Parse dex_name and trading_type from dex_type (e.g., "orca/clmm" -> dex_name="orca", trading_type="clmm")
-            if "/" in dex_type:
-                dex_name, trading_type = dex_type.split("/", 1)
-            else:
-                dex_name = dex_type
-                trading_type = "clmm" if is_clmm else "amm"
+            # 3. Determine pool type
+            is_clmm = trading_type == "clmm"
 
             self.notify(f"\n=== Liquidity Positions on {dex_type} ===")
             self.notify(f"Chain: {chain}")
@@ -406,12 +394,8 @@ class GatewayLPCommand:
         :param trading_pair: Optional trading pair (e.g., 'SOL-USDC') to skip prompt
         """
         try:
-            # 1. Validate dex_type and get chain/network info
-            if "/" not in dex_type:
-                self.notify(f"Error: Invalid DEX type format '{dex_type}'. Use format like 'orca/clmm'")
-                return
-
-            chain, network, error = await self._get_gateway_instance().get_connector_chain_network(
+            # 1. Validate dex_type and get chain/network/dex info
+            dex_name, trading_type, chain, network, error = await self._get_gateway_instance().get_dex_info(
                 dex_type
             )
             if error:
@@ -426,16 +410,8 @@ class GatewayLPCommand:
                 self.notify(f"Error: {error}")
                 return
 
-            # 3. Determine pool type and parse dex/trading_type
-            connector_type = get_connector_type(dex_type)
-            is_clmm = connector_type == ConnectorType.CLMM
-
-            # Parse dex_name and trading_type from dex_type (e.g., "orca/clmm" -> dex_name="orca", trading_type="clmm")
-            if "/" in dex_type:
-                dex_name, trading_type = dex_type.split("/", 1)
-            else:
-                dex_name = dex_type
-                trading_type = "clmm" if is_clmm else "amm"
+            # 3. Determine pool type
+            is_clmm = trading_type == "clmm"
 
             self.notify(f"\n=== Add Liquidity to {dex_type} ===")
             self.notify(f"Chain: {chain}")
@@ -829,12 +805,8 @@ class GatewayLPCommand:
         :param trading_pair: Optional trading pair (e.g., 'SOL-USDC') to skip prompt
         """
         try:
-            # 1. Validate dex_type and get chain/network info
-            if "/" not in dex_type:
-                self.notify(f"Error: Invalid DEX type format '{dex_type}'. Use format like 'orca/clmm'")
-                return
-
-            chain, network, error = await self._get_gateway_instance().get_connector_chain_network(
+            # 1. Validate dex_type and get chain/network/dex info
+            dex_name, trading_type, chain, network, error = await self._get_gateway_instance().get_dex_info(
                 dex_type
             )
             if error:
@@ -849,16 +821,8 @@ class GatewayLPCommand:
                 self.notify(f"Error: {error}")
                 return
 
-            # 3. Determine pool type and parse dex/trading_type
-            connector_type = get_connector_type(dex_type)
-            is_clmm = connector_type == ConnectorType.CLMM
-
-            # Parse dex_name and trading_type from dex_type (e.g., "orca/clmm" -> dex_name="orca", trading_type="clmm")
-            if "/" in dex_type:
-                dex_name, trading_type = dex_type.split("/", 1)
-            else:
-                dex_name = dex_type
-                trading_type = "clmm" if is_clmm else "amm"
+            # 3. Determine pool type
+            is_clmm = trading_type == "clmm"
 
             self.notify(f"\n=== Remove Liquidity from {dex_type} ===")
             self.notify(f"Chain: {chain}")
@@ -1111,12 +1075,8 @@ class GatewayLPCommand:
         :param trading_pair: Optional trading pair (e.g., 'SOL-USDC') to skip prompt
         """
         try:
-            # 1. Validate dex_type and get chain/network info
-            if "/" not in dex_type:
-                self.notify(f"Error: Invalid DEX type format '{dex_type}'. Use format like 'orca/clmm'")
-                return
-
-            chain, network, error = await self._get_gateway_instance().get_connector_chain_network(
+            # 1. Validate dex_type and get chain/network/dex info
+            dex_name, trading_type, chain, network, error = await self._get_gateway_instance().get_dex_info(
                 dex_type
             )
             if error:
@@ -1124,8 +1084,7 @@ class GatewayLPCommand:
                 return
 
             # 2. Check if dex_type supports fee collection
-            connector_type = get_connector_type(dex_type)
-            if connector_type != ConnectorType.CLMM:
+            if trading_type != "clmm":
                 self.notify("Fee collection is only available for concentrated liquidity positions")
                 return
 
@@ -1145,9 +1104,6 @@ class GatewayLPCommand:
             # 4. Create LP connector instance to fetch positions
             # connector_name is the network identifier (e.g., 'solana-mainnet-beta')
             network_connector = f"{chain}-{network}"
-            # Parse dex_name from dex_type (e.g., "orca/clmm" -> "orca")
-            dex_name = dex_type.split("/")[0] if "/" in dex_type else dex_type
-            trading_type = dex_type.split("/")[1] if "/" in dex_type else "clmm"
 
             lp_connector = Gateway(
                 connector_name=network_connector,

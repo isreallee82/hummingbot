@@ -116,25 +116,13 @@ class MarketDataProvider:
                     swap_provider = await gateway_client.get_default_swap_provider(connector)
 
                     if swap_provider:
-                        # Parse chain from connector (e.g., "solana-mainnet-beta" -> chain="solana")
-                        chain = connector.split("-")[0]
-
-                        # Parse dex_name and trading_type from swap_provider (e.g., "jupiter/router")
-                        if "/" in swap_provider:
-                            dex_name, trading_type = swap_provider.split("/", 1)
-                        else:
-                            dex_name = swap_provider
-                            trading_type = "router"
-
+                        # Gateway connector - get_price will auto-fetch dex/trading_type from network config
                         for connector_pair in connector_pairs:
                             try:
                                 base, quote = connector_pair.trading_pair.split("-")
 
                                 task = gateway_client.get_price(
-                                    chain=chain,
                                     network=connector,
-                                    dex=dex_name,
-                                    trading_type=trading_type,
                                     base_asset=base,
                                     quote_asset=quote,
                                     amount=Decimal("1"),

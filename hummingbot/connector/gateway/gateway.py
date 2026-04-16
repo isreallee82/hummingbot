@@ -291,20 +291,16 @@ class Gateway(GatewayBase):
                                       price=price,
                                       amount=amount)
 
-        # Extract optional parameters - fall back to network's configured swap provider
-        dex_name = kwargs.get("dex_name") or self._swap_provider
+        # Extract optional parameters
         quote_id = kwargs.get("quote_id")
         pool_address = kwargs.get("pool_address")
         slippage_pct = kwargs.get("slippage_pct")
         max_retries = kwargs.get("max_retries", 10)
 
-        if not dex_name:
-            raise ValueError(
-                f"dex_name is required for swap operations. No default swap provider configured for {self.network}. "
-                "Either pass dex_name explicitly or configure swapProvider in Gateway network config."
-            )
+        if not self._swap_provider:
+            raise ValueError(f"No swap provider configured for {self.network}.")
 
-        dex, trading_type = self._parse_dex_name(dex_name)
+        dex, trading_type = self._parse_dex_name(self._swap_provider)
 
         async def execute_gateway_swap() -> Dict[str, Any]:
             if quote_id:

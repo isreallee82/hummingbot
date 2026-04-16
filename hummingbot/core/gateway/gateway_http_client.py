@@ -756,15 +756,41 @@ class GatewayHttpClient:
     # AMM and CLMM Methods
     # ============================================
 
+    @staticmethod
+    def _parse_network(network: str) -> str:
+        """
+        Parse network string to extract just the network portion for API calls.
+
+        Full format "solana-mainnet-beta" -> "mainnet-beta"
+        Short format "mainnet-beta" -> "mainnet-beta"
+        """
+        # If network contains chain prefix (e.g., "solana-mainnet-beta"), extract network portion
+        if "-" in network:
+            parts = network.split("-", 1)
+            if len(parts) == 2 and parts[0].lower() in ("solana", "ethereum"):
+                return parts[1]
+        return network
+
+    @staticmethod
+    def _parse_swap_provider(swap_provider: str) -> tuple:
+        """
+        Parse swap provider string into dex and trading_type.
+
+        "jupiter/router" -> ("jupiter", "router")
+        """
+        if "/" not in swap_provider:
+            raise ValueError(f"Invalid swap provider format '{swap_provider}' - expected 'dex/trading_type'")
+        return swap_provider.split("/", 1)
+
     async def quote_swap(
         self,
         network: str,
-        dex: str,
-        trading_type: str,
         base_asset: str,
         quote_asset: str,
         amount: Decimal,
         side: TradeType,
+        dex: Optional[str] = None,
+        trading_type: Optional[str] = None,
         slippage_pct: Optional[Decimal] = None,
         pool_address: Optional[str] = None,
         fail_silently: bool = False,
@@ -772,13 +798,13 @@ class GatewayHttpClient:
         """
         Get a swap quote from the specified DEX.
 
-        :param network: Network name (e.g., "mainnet-beta")
-        :param dex: DEX protocol name (e.g., "jupiter", "orca", "raydium")
-        :param trading_type: Trading type (e.g., "router", "clmm", "amm")
+        :param network: Network name - accepts both full format (e.g., "solana-mainnet-beta") or short format (e.g., "mainnet-beta")
         :param base_asset: Base token symbol
         :param quote_asset: Quote token symbol
         :param amount: Amount to swap
         :param side: Trade side (BUY or SELL)
+        :param dex: DEX protocol name (e.g., "jupiter", "orca", "raydium"). If not provided, uses network's default swap provider.
+        :param trading_type: Trading type (e.g., "router", "clmm", "amm"). If not provided, uses network's default swap provider.
         :param slippage_pct: Optional slippage percentage
         :param pool_address: Pool address for CLMM/AMM swaps
         :param fail_silently: Whether to fail silently on error
@@ -787,8 +813,18 @@ class GatewayHttpClient:
         if side not in [TradeType.BUY, TradeType.SELL]:
             raise ValueError("Only BUY and SELL prices are supported.")
 
+        # If dex/trading_type not provided, get from network's default swap provider
+        if not dex or not trading_type:
+            swap_provider = await self.get_default_swap_provider(network)
+            if not swap_provider:
+                raise ValueError(f"No swap provider configured for network {network}")
+            dex, trading_type = self._parse_swap_provider(swap_provider)
+
+        # Parse network to extract just the network portion for API call
+        api_network = self._parse_network(network)
+
         request_payload = {
-            "network": network,
+            "network": api_network,
             "baseToken": base_asset,
             "quoteToken": quote_asset,
             "amount": float(amount),
@@ -808,40 +844,38 @@ class GatewayHttpClient:
 
     async def get_price(
         self,
-        chain: str,
         network: str,
-        dex: str,
-        trading_type: str,
         base_asset: str,
         quote_asset: str,
         amount: Decimal,
         side: TradeType,
+        dex: Optional[str] = None,
+        trading_type: Optional[str] = None,
         fail_silently: bool = False,
         pool_address: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Wrapper for quote_swap.
 
-        :param chain: Chain name (e.g., "solana") - kept for compatibility but not used
-        :param network: Network name (e.g., "mainnet-beta")
-        :param dex: DEX protocol name (e.g., "jupiter", "orca", "raydium")
-        :param trading_type: Trading type (e.g., "router", "clmm", "amm")
+        :param network: Network name (e.g., "solana-mainnet-beta")
         :param base_asset: Base token symbol
         :param quote_asset: Quote token symbol
         :param amount: Amount to swap
         :param side: Trade side (BUY or SELL)
+        :param dex: DEX protocol name (e.g., "jupiter", "orca", "raydium"). If not provided, uses network's default swap provider.
+        :param trading_type: Trading type (e.g., "router", "clmm", "amm"). If not provided, uses network's default swap provider.
         :param fail_silently: Whether to fail silently on error
         :param pool_address: Pool address for CLMM/AMM swaps
         """
         try:
             response = await self.quote_swap(
                 network=network,
-                dex=dex,
-                trading_type=trading_type,
                 base_asset=base_asset,
                 quote_asset=quote_asset,
                 amount=amount,
                 side=side,
+                dex=dex,
+                trading_type=trading_type,
                 pool_address=pool_address
             )
             return response
@@ -855,46 +889,55 @@ class GatewayHttpClient:
 
     async def execute_swap(
         self,
-        dex: str,
-        trading_type: str,
+        network: str,
         base_asset: str,
         quote_asset: str,
         side: TradeType,
         amount: Decimal,
+        dex: Optional[str] = None,
+        trading_type: Optional[str] = None,
         slippage_pct: Optional[Decimal] = None,
         pool_address: Optional[str] = None,
-        network: Optional[str] = None,
         wallet_address: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Execute a swap on the specified DEX.
 
-        :param dex: DEX protocol name (e.g., "jupiter", "orca", "raydium")
-        :param trading_type: Trading type (e.g., "router", "clmm", "amm")
+        :param network: Network name (e.g., "solana-mainnet-beta")
         :param base_asset: Base token symbol
         :param quote_asset: Quote token symbol
         :param side: Trade side (BUY or SELL)
         :param amount: Amount to swap
+        :param dex: DEX protocol name (e.g., "jupiter", "orca", "raydium"). If not provided, uses network's default swap provider.
+        :param trading_type: Trading type (e.g., "router", "clmm", "amm"). If not provided, uses network's default swap provider.
         :param slippage_pct: Optional slippage percentage
         :param pool_address: Pool address for CLMM/AMM swaps
-        :param network: Network name (e.g., "mainnet-beta")
         :param wallet_address: Wallet address to execute the swap
         """
         if side not in [TradeType.BUY, TradeType.SELL]:
             raise ValueError("Only BUY and SELL prices are supported.")
+
+        # If dex/trading_type not provided, get from network's default swap provider
+        if not dex or not trading_type:
+            swap_provider = await self.get_default_swap_provider(network)
+            if not swap_provider:
+                raise ValueError(f"No swap provider configured for network {network}")
+            dex, trading_type = self._parse_swap_provider(swap_provider)
+
+        # Parse network to extract just the network portion for API call
+        api_network = self._parse_network(network)
 
         request_payload: Dict[str, Any] = {
             "baseToken": base_asset,
             "quoteToken": quote_asset,
             "amount": float(amount),
             "side": side.name,
+            "network": api_network,
         }
         if slippage_pct is not None:
             request_payload["slippagePct"] = float(slippage_pct)
         if pool_address is not None:
             request_payload["poolAddress"] = pool_address
-        if network is not None:
-            request_payload["network"] = network
         if wallet_address is not None:
             request_payload["walletAddress"] = wallet_address
         return await self.api_request(
@@ -1673,75 +1716,81 @@ class GatewayHttpClient:
         connector: str
     ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
-        Get chain and network for a connector.
+        Get chain and network for a network-format connector.
 
-        Supports two formats:
-        1. Network format: 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
-        2. DEX format: 'dex/type' (e.g., 'uniswap/amm', 'jupiter/router')
-
-        :param connector: Connector name
+        :param connector: Network connector in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
         :return: Tuple of (chain, network, error_message)
         """
         try:
-            # Check if it's a network-style connector (chain-network format)
-            # These are registered in GATEWAY_DEXS from chains endpoint
-            if '/' not in connector and '-' in connector:
-                # Network format: try to parse chain-network
-                # Get chains to validate
-                chains_resp = await self.get_chains(fail_silently=True)
-                if chains_resp and "chains" in chains_resp:
-                    for chain_info in chains_resp["chains"]:
-                        chain_name = chain_info["chain"]
-                        for network in chain_info.get("networks", []):
-                            network_connector = f"{chain_name}-{network}"
-                            if connector == network_connector:
-                                return chain_name, network, None
+            if '-' not in connector:
+                return None, None, f"Invalid network format '{connector}'. Use format like 'solana-mainnet-beta'"
 
-                # If not found in chains, try parsing directly
-                # Format: chain-network (e.g., solana-mainnet-beta, ethereum-mainnet)
-                # Split only on first dash for chains without dash in name
-                parts = connector.split('-', 1)
-                if len(parts) == 2:
-                    return parts[0], parts[1], None
+            # Try to find in chains config first
+            chains_resp = await self.get_chains(fail_silently=True)
+            if chains_resp and "chains" in chains_resp:
+                for chain_info in chains_resp["chains"]:
+                    chain_name = chain_info["chain"]
+                    for network in chain_info.get("networks", []):
+                        network_connector = f"{chain_name}-{network}"
+                        if connector == network_connector:
+                            return chain_name, network, None
 
-                return None, None, f"Could not parse network connector format: {connector}"
+            # Fallback: parse directly using GATEWAY_CHAINS
+            parts = connector.split('-', 1)
+            if len(parts) == 2 and parts[0].lower() in [c.lower() for c in GATEWAY_CHAINS]:
+                return parts[0], parts[1], None
 
-            # DEX format: parse connector format - allow for more than 2 parts but only use first 2
-            connector_parts = connector.split('/')
-            if len(connector_parts) < 2:
-                return None, None, "Invalid connector format. Use format like 'uniswap/amm', 'jupiter/router', or 'solana-mainnet-beta'"
+            return None, None, f"Unknown network '{connector}'"
 
-            connector_name = connector_parts[0]
+        except Exception as e:
+            return None, None, f"Error parsing network: {str(e)}"
 
-            # Get all connectors to find chain info
+    async def get_dex_info(
+        self,
+        dex_connector: str
+    ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """
+        Get DEX info including chain and network for a DEX-format connector.
+
+        :param dex_connector: DEX connector in format 'dex/trading_type' (e.g., 'orca/clmm', 'jupiter/router')
+        :return: Tuple of (dex_name, trading_type, chain, network, error_message)
+        """
+        try:
+            if '/' not in dex_connector:
+                return None, None, None, None, f"Invalid DEX format '{dex_connector}'. Use format like 'orca/clmm'"
+
+            # Parse dex_name and trading_type
+            dex_name, trading_type = dex_connector.split('/', 1)
+
+            # Get connector info to find chain
             connectors_resp = await self.get_connectors()
             if "error" in connectors_resp:
-                return None, None, f"Error getting connectors: {connectors_resp['error']}"
+                return None, None, None, None, f"Error getting connectors: {connectors_resp['error']}"
 
             # Find the connector info
             connector_info = None
             for conn in connectors_resp.get("connectors", []):
-                if conn.get("name") == connector_name:
+                if conn.get("name") == dex_name:
                     connector_info = conn
                     break
 
             if not connector_info:
-                return None, None, f"Connector '{connector_name}' not found"
+                return None, None, None, None, f"DEX '{dex_name}' not found"
 
             # Get chain from connector info
             chain = connector_info.get("chain")
             if not chain:
-                return None, None, f"Could not determine chain for connector '{connector_name}'"
+                return None, None, None, None, f"Could not determine chain for DEX '{dex_name}'"
 
             # Get default network for the chain
             network = await self.get_default_network_for_chain(chain)
             if not network:
-                return None, None, f"Could not get default network for chain '{chain}'"
+                return None, None, None, None, f"Could not get default network for chain '{chain}'"
 
-            return chain, network, None
+            return dex_name, trading_type, chain, network, None
 
         except Exception as e:
-            return None, None, f"Error getting connector info: {str(e)}"
+            return None, None, None, None, f"Error getting DEX info: {str(e)}"
 
     async def get_available_tokens(
         self,

@@ -82,14 +82,13 @@ class GatewayPoolCommand:
     ):
         """View pool information."""
         try:
-            # Parse connector format (e.g., "uniswap/amm" -> dex_name="uniswap", trading_type="amm")
-            if "/" not in connector:
-                self.notify(f"Error: Invalid connector format '{connector}'. Use format like 'uniswap/amm'")
+            # Get DEX info (dex_name, trading_type, chain, network)
+            dex_name, trading_type, chain, network, error = await self._get_gateway_instance().get_dex_info(
+                connector
+            )
+            if error:
+                self.notify(f"Error: {error}")
                 return
-
-            connector_parts = connector.split("/")
-            dex_name = connector_parts[0]
-            trading_type = connector_parts[1]
 
             # Parse trading pair
             if "-" not in trading_pair:
@@ -98,15 +97,6 @@ class GatewayPoolCommand:
 
             # Capitalize the trading pair
             trading_pair = trading_pair.upper()
-
-            # Get chain and network from connector
-            chain, network, error = await self._get_gateway_instance().get_connector_chain_network(
-                connector
-            )
-
-            if error:
-                self.notify(error)
-                return
 
             self.notify(f"\nFetching pool information for {trading_pair} on {connector}...")
 
@@ -142,14 +132,13 @@ class GatewayPoolCommand:
     ):
         """Direct mode to add a pool with just the address."""
         try:
-            # Parse connector format (e.g., "uniswap/amm" -> dex_name="uniswap", trading_type="amm")
-            if "/" not in connector:
-                self.notify(f"Error: Invalid connector format '{connector}'. Use format like 'uniswap/amm'")
+            # Get DEX info (dex_name, trading_type, chain, network)
+            dex_name, trading_type, chain, network, error = await self._get_gateway_instance().get_dex_info(
+                connector
+            )
+            if error:
+                self.notify(f"Error: {error}")
                 return
-
-            connector_parts = connector.split("/")
-            dex_name = connector_parts[0]
-            trading_type = connector_parts[1]
 
             # Parse trading pair
             if "-" not in trading_pair:
@@ -158,15 +147,6 @@ class GatewayPoolCommand:
 
             # Capitalize the trading pair
             trading_pair = trading_pair.upper()
-
-            # Get chain and network from connector
-            chain, network, error = await self._get_gateway_instance().get_connector_chain_network(
-                connector
-            )
-
-            if error:
-                self.notify(error)
-                return
 
             self.notify(f"\nAdding pool for {trading_pair} on {connector}")
             self.notify(f"Chain: {chain}")
@@ -302,14 +282,13 @@ class GatewayPoolCommand:
     ):
         """Interactive flow to add a pool."""
         try:
-            # Parse connector format
-            if "/" not in connector:
-                self.notify(f"Error: Invalid connector format '{connector}'. Use format like 'uniswap/amm'")
+            # Get DEX info (dex_name, trading_type, chain, network)
+            dex_name, trading_type, chain, network, error = await self._get_gateway_instance().get_dex_info(
+                connector
+            )
+            if error:
+                self.notify(f"Error: {error}")
                 return
-
-            connector_parts = connector.split("/")
-            dex_name = connector_parts[0]
-            trading_type = connector_parts[1]
 
             # Parse trading pair
             if "-" not in trading_pair:
@@ -318,15 +297,6 @@ class GatewayPoolCommand:
 
             # Capitalize the trading pair
             trading_pair = trading_pair.upper()
-
-            # Get chain and network from connector
-            chain, network, error = await self._get_gateway_instance().get_connector_chain_network(
-                connector
-            )
-
-            if error:
-                self.notify(error)
-                return
 
             self.notify(f"\n=== Add Pool for {trading_pair} on {connector} ===")
             self.notify(f"Chain: {chain}")
