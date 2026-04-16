@@ -1212,7 +1212,6 @@ class Gateway(GatewayBase):
                     wallet_address=self.address,
                     dex=dex_name,
                     trading_type=trading_type,
-                    pool_address=None
                 )
             else:
                 if not pool_address:
