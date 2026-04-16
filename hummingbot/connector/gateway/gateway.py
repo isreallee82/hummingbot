@@ -179,7 +179,6 @@ class Gateway(GatewayBase):
             trading_pair: str,
             is_buy: bool,
             amount: Decimal,
-            dex_name: Optional[str] = None,
             slippage_pct: Optional[Decimal] = None,
             pool_address: Optional[str] = None
     ) -> Optional[Decimal]:
@@ -189,7 +188,6 @@ class Gateway(GatewayBase):
         :param trading_pair: The market trading pair
         :param is_buy: True for an intention to buy, False for an intention to sell
         :param amount: The amount required (in base token unit)
-        :param dex_name: DEX protocol name (e.g., "jupiter", "orca")
         :param slippage_pct: Maximum allowed slippage percentage
         :param pool_address: Optional specific pool address
         :return: The quote price.
@@ -197,12 +195,10 @@ class Gateway(GatewayBase):
         base, quote = trading_pair.split("-")
         side: TradeType = TradeType.BUY if is_buy else TradeType.SELL
 
-        # Use connector's swap_provider from network config, or override with provided dex_name
-        effective_dex_name = dex_name or self._swap_provider
-        if not effective_dex_name:
+        if not self._swap_provider:
             raise ValueError("No swap provider configured for this network. Set swapProvider in Gateway network config.")
 
-        dex, trading_type = self._parse_dex_name(effective_dex_name)
+        dex, trading_type = self._parse_dex_name(self._swap_provider)
 
         try:
             resp: Dict[str, Any] = await self._get_gateway_instance().quote_swap(
@@ -232,12 +228,11 @@ class Gateway(GatewayBase):
             trading_pair: str,
             is_buy: bool,
             amount: Decimal,
-            dex_name: Optional[str] = None,
     ) -> Decimal:
         """
         Retrieves the price required for an order of a given amount.
         """
-        return await self.get_quote_price(trading_pair, is_buy, amount, dex_name=dex_name)
+        return await self.get_quote_price(trading_pair, is_buy, amount)
 
     def buy(self, trading_pair: str, amount: Decimal, order_type: OrderType, price: Decimal, **kwargs) -> str:
         """
