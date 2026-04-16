@@ -167,7 +167,7 @@ class BacktestingEngineBase:
                               controller_config: ControllerConfigBase,
                               start: int, end: int,
                               backtesting_resolution: str = "1m",
-                              trade_cost=0.0006):
+                              trade_cost=0.0002):
         # Generate unique ID if not set to avoid race conditions
         if not controller_config.id or controller_config.id.strip() == "":
             from hummingbot.strategy_v2.utils.common import generate_unique_id
@@ -486,6 +486,7 @@ class BacktestingEngineBase:
             non_hold_mask = executors_df["close_type"] != CloseType.POSITION_HOLD
             non_hold_executors = executors_df[non_hold_mask]
             executor_pnl = non_hold_executors["net_pnl_quote"].sum()
+            total_fees_quote = float(executors_df["cum_fees_quote"].sum())
 
             # Position hold PnL (realized from netting + unrealized from net position)
             position_realized_pnl = 0.0
@@ -573,6 +574,7 @@ class BacktestingEngineBase:
                 "loss_signals": int(loss_signals.shape[0]),
                 "unrealized_pnl_quote": float(unrealized_pnl_quote),
                 "position_realized_pnl_quote": float(position_realized_pnl),
+                "total_fees_quote": total_fees_quote,
             }
         return {
             "net_pnl": 0,
@@ -595,4 +597,5 @@ class BacktestingEngineBase:
             "loss_signals": 0,
             "unrealized_pnl_quote": 0,
             "position_realized_pnl_quote": 0,
+            "total_fees_quote": 0,
         }

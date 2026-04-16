@@ -130,7 +130,7 @@ class GridExecutorSimulator(ExecutorSimulatorBase):
 
         :param df: DataFrame with columns [timestamp, open, high, low, close] indexed by timestamp.
         :param config: GridExecutorConfig.
-        :param trade_cost: Trading cost as a fraction (e.g. 0.0006 = 0.06%).
+        :param trade_cost: Trading cost as a fraction (e.g. 0.0002 = 0.02%).
         :param trading_rules: Optional TradingRule from the exchange connector for accurate quantization.
         :return: ExecutorSimulation with per-row evolving PnL.
         """

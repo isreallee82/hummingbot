@@ -74,7 +74,7 @@ async def main(days: float, show_chart: bool, output_path: str | None,
     result = await engine.run_backtesting(
         config, start_ts, end_ts,
         backtesting_resolution=resolution,
-        trade_cost=0.000,
+        trade_cost=0.0002,
     )
     elapsed = time.perf_counter() - t0
 

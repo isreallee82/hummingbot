@@ -39,6 +39,7 @@ class BacktestingResult:
         total_executors = results["total_executors"]
         accuracy_long = results["accuracy_long"]
         accuracy_short = results["accuracy_short"]
+        total_fees = results.get("total_fees_quote", 0)
         unrealized_pnl = results.get("unrealized_pnl_quote", 0)
         position_realized_pnl = results.get("position_realized_pnl_quote", 0)
         close_types = results.get("close_types", {})
@@ -52,6 +53,7 @@ class BacktestingResult:
         position_hold = close_types.get("POSITION_HOLD", 0)
         return (
             f"Net PNL: ${net_pnl_quote:.2f} ({net_pnl_pct * 100:.2f}%) | "
+            f"Total Fees: ${total_fees:.2f} | "
             f"Unrealized PNL: ${unrealized_pnl:.2f} | "
             f"Position Realized PNL: ${position_realized_pnl:.2f} | "
             f"Max Drawdown: ${max_drawdown:.2f} ({max_drawdown_pct * 100:.2f}%)\n"
