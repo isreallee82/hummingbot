@@ -45,7 +45,7 @@ NON_RETRYABLE_ERROR_CODES = {
     "INSUFFICIENT_BALANCE",   # Not enough funds
     "SLIPPAGE_EXCEEDED",      # Price moved beyond tolerance
     "INVALID_PARAMS",         # Bad request parameters
-    "NO_ROUTE_FOUND",         # No swap route available (can retry with flipped direction)
+    "NO_ROUTE_FOUND",         # No swap route available for this direction
 }
 
 # The only retryable error code
@@ -98,7 +98,7 @@ class GatewayBase(ConnectorBase):
                  network: Optional[str] = None,
                  address: Optional[str] = None,
                  balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
-                 trading_pairs: List[str] = [],
+                 trading_pairs: Optional[List[str]] = None,
                  trading_required: bool = True,
                  gateway_config: Optional["GatewayConfigMap"] = None
                  ):
@@ -111,7 +111,6 @@ class GatewayBase(ConnectorBase):
         :param trading_required: Whether actual trading is needed. Useful for some functionalities or commands like the balance command
         """
         self._connector_name = connector_name
-        self._name = f"{connector_name}_{chain}_{network}"
         # Temporarily set chain/network/address - will be populated in start_network if not provided
         self._chain = chain
         self._network = network
@@ -121,7 +120,7 @@ class GatewayBase(ConnectorBase):
         super().__init__(balance_asset_limit)
         self._budget_checker = BudgetChecker(exchange=self)
         self._gateway_config = gateway_config
-        self._trading_pairs = trading_pairs
+        self._trading_pairs = trading_pairs or []
         self._tokens = set()
         [self._tokens.update(set(trading_pair.split("_")[0].split("-"))) for trading_pair in trading_pairs]
         self._trading_required = trading_required
@@ -429,7 +428,7 @@ class GatewayBase(ConnectorBase):
         Gets the gas estimates for the connector.
         """
         try:
-            response: Dict[Any] = await self._get_gateway_instance().estimate_gas(
+            response: Dict[str, Any] = await self._get_gateway_instance().estimate_gas(
                 chain=self.chain, network=self.network
             )
 

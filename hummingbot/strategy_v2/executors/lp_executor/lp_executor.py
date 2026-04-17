@@ -17,6 +17,9 @@ from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorCo
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
+# Default native currency fallback when connector doesn't have _native_currency set
+DEFAULT_NATIVE_CURRENCY = "SOL"
+
 
 class LPExecutor(ExecutorBase):
     """
@@ -58,6 +61,8 @@ class LPExecutor(ExecutorBase):
         self._current_price: Optional[Decimal] = None  # Updated from pool_info or position_info
         # Position tracking - store LP position for position aggregation when keep_position=True
         self._held_position_orders: List[Dict] = []
+        # Swap tracking for close-out flow
+        self._swap_not_found_count: int = 0
         # Parse lp_provider into dex_name and trading_type for gateway calls
         self.lp_dex_name, self.lp_trading_type = parse_provider(
             config.lp_provider, default_trading_type="clmm"
@@ -102,7 +107,7 @@ class LPExecutor(ExecutorBase):
             gateway = GatewayHttpClient.get_instance()
             default_provider = await gateway.get_default_swap_provider(self.config.connector_name)
             if default_provider:
-                object.__setattr__(self.config, 'swap_provider', default_provider)
+                self.config = self.config.model_copy(update={'swap_provider': default_provider})
                 self.logger().info(f"Using network default swap provider: {default_provider}")
             else:
                 self.logger().warning(
@@ -353,7 +358,7 @@ class LPExecutor(ExecutorBase):
             # Trigger event for database recording (lphistory command)
             # Note: mid_price is the current MARKET price, not the position range midpoint
             # Create trade_fee with tx_fee in native currency for proper tracking
-            native_currency = getattr(connector, '_native_currency', 'SOL') or 'SOL'
+            native_currency = getattr(connector, '_native_currency', DEFAULT_NATIVE_CURRENCY) or DEFAULT_NATIVE_CURRENCY
             trade_fee = TradeFeeBase.new_spot_fee(
                 fee_schema=connector.trade_fee_schema(),
                 trade_type=TradeType.RANGE,
@@ -483,9 +488,9 @@ class LPExecutor(ExecutorBase):
 
             # Trigger event for database recording (lphistory command)
             # Note: mid_price is the current MARKET price, not the position range midpoint
-            current_price = Decimal(str(self._pool_info.price)) if self._pool_info else Decimal("0")
+            current_price = self._current_price if self._current_price else Decimal("0")
             # Create trade_fee with close tx_fee in native currency for proper tracking
-            native_currency = getattr(connector, '_native_currency', 'SOL') or 'SOL'
+            native_currency = getattr(connector, '_native_currency', DEFAULT_NATIVE_CURRENCY) or DEFAULT_NATIVE_CURRENCY
             trade_fee = TradeFeeBase.new_spot_fee(
                 fee_schema=connector.trade_fee_schema(),
                 trade_type=TradeType.RANGE,
@@ -572,7 +577,7 @@ class LPExecutor(ExecutorBase):
             order = connector.get_order(self.lp_position_state.active_swap_order.order_id)
             if order is None:
                 # Order not found - might have completed or failed
-                self._swap_not_found_count = getattr(self, '_swap_not_found_count', 0) + 1
+                self._swap_not_found_count += 1
                 if self._swap_not_found_count >= 3:
                     self.logger().warning(
                         f"Swap order {self.lp_position_state.active_swap_order.order_id} not found after "
@@ -653,7 +658,7 @@ class LPExecutor(ExecutorBase):
         # Generate a synthetic order_id for this event
         order_id = connector.create_market_order_id(TradeType.RANGE, self.config.trading_pair)
         # Note: mid_price is the current MARKET price, not the position range midpoint
-        current_price = Decimal(str(self._pool_info.price)) if self._pool_info else Decimal("0")
+        current_price = self._current_price if self._current_price else Decimal("0")
 
         self.logger().info(
             f"Emitting synthetic close event for already-closed position: "
@@ -663,7 +668,7 @@ class LPExecutor(ExecutorBase):
         )
 
         # For synthetic events, we don't have the actual close tx_fee, so use 0
-        native_currency = getattr(connector, '_native_currency', 'SOL') or 'SOL'
+        native_currency = getattr(connector, '_native_currency', DEFAULT_NATIVE_CURRENCY) or DEFAULT_NATIVE_CURRENCY
         trade_fee = TradeFeeBase.new_spot_fee(
             fee_schema=connector.trade_fee_schema(),
             trade_type=TradeType.RANGE,
@@ -881,7 +886,7 @@ class LPExecutor(ExecutorBase):
         Returns Decimal("1") if rate is not available.
         """
         connector = self.connectors.get(self.config.connector_name)
-        native_currency = getattr(connector, '_native_currency', 'SOL') or 'SOL'
+        native_currency = getattr(connector, '_native_currency', DEFAULT_NATIVE_CURRENCY) or DEFAULT_NATIVE_CURRENCY
         _, quote_token = split_hb_trading_pair(self.config.trading_pair)
 
         # If native currency is the quote token, no conversion needed

@@ -93,6 +93,18 @@ class LPRebalancerConfig(ControllerConfigBase):
         description="Extra % to swap beyond deficit to account for slippage (e.g., 0.01 = 0.01%)"
     )
 
+    # Native currency buffer for transaction fees (chain-specific)
+    native_currency: str = Field(
+        default="SOL",
+        json_schema_extra={"is_updatable": True},
+        description="Native currency symbol for the chain (e.g., SOL, ETH). Used for transaction fee buffer."
+    )
+    native_currency_buffer: Decimal = Field(
+        default=Decimal("0.1"),
+        json_schema_extra={"is_updatable": True},
+        description="Buffer amount of native currency to reserve for transaction fees and rent (e.g., 0.1 for Solana, 0.01 for Ethereum)"
+    )
+
     @field_validator("sell_price_min", "sell_price_max", "buy_price_min", "buy_price_max", mode="before")
     @classmethod
     def validate_price_limits(cls, v):
@@ -209,7 +221,7 @@ class LPRebalancer(ControllerBase):
 
         # Order executor tracking (for autoswap feature)
         self._swap_executor_id: Optional[str] = None
-        self._pending_swap_side: Optional[int] = None  # LP side to create after swap completes
+        self._pending_swap_side: Optional[TradeType] = None  # LP side to create after swap completes
 
         # Track if initial position has been created (after that, always use side 1 or 2)
         self._initial_position_created: bool = False
@@ -265,7 +277,7 @@ class LPRebalancer(ControllerBase):
             return True
         return swap_executor.is_done
 
-    def _check_autoswap_needed(self, side: int, current_price: Decimal) -> Optional[OrderExecutorConfig]:
+    def _check_autoswap_needed(self, side: TradeType, current_price: Decimal) -> Optional[OrderExecutorConfig]:
         """
         Check if autoswap is needed and return order config if so.
 
@@ -310,12 +322,13 @@ class LPRebalancer(ControllerBase):
         base_deficit = base_amt - base_balance
         quote_deficit = quote_amt - quote_balance
 
-        # Add 0.1 SOL buffer for rent and transaction fees when SOL is involved
-        sol_buffer = Decimal("0.1")
-        if self._base_token.upper() == "SOL":
-            base_deficit += sol_buffer
-        if self._quote_token.upper() == "SOL":
-            quote_deficit += sol_buffer
+        # Add native currency buffer for rent and transaction fees when native currency is involved
+        native_currency = self.config.native_currency.upper()
+        native_buffer = self.config.native_currency_buffer
+        if self._base_token.upper() == native_currency:
+            base_deficit += native_buffer
+        if self._quote_token.upper() == native_currency:
+            quote_deficit += native_buffer
 
         self.logger().info(
             f"Autoswap check: need base={base_amt:.6f}, have={base_balance:.6f}, deficit={base_deficit:.6f} | "
