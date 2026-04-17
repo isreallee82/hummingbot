@@ -244,16 +244,16 @@ class GatewayBase(ConnectorBase):
         This buffer reserves native currency for rent and transaction fees when
         calculating swap amounts. Values are chain-specific:
         - SOL: 0.1 (~$15 at typical prices, covers rent + multiple txs)
-        - ETH: 0.01 (~$25 at typical prices)
-        - Others: 0.01 (conservative default)
+        - ETH: 0.005 (~$12 at typical prices)
+        - Others: 0.005 (conservative default)
         """
         native = (self._native_currency or "").upper()
         if native == "SOL":
             return Decimal("0.1")
         elif native == "ETH":
-            return Decimal("0.01")
+            return Decimal("0.005")
         else:
-            return Decimal("0.01")
+            return Decimal("0.005")
 
     @network_transaction_fee.setter
     def network_transaction_fee(self, new_fee: TokenAmount):

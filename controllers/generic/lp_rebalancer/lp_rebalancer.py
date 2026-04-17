@@ -314,7 +314,7 @@ class LPRebalancer(ControllerBase):
         # Get native currency and buffer from connector (chain-specific values)
         connector = self.market_data_provider.get_connector(self.config.connector_name)
         native_currency = (getattr(connector, 'native_currency', None) or "").upper()
-        native_buffer = getattr(connector, 'get_native_currency_buffer', lambda: Decimal("0.01"))()
+        native_buffer = getattr(connector, 'get_native_currency_buffer', lambda: Decimal("0.005"))()
         if native_currency and self._base_token.upper() == native_currency:
             base_deficit += native_buffer
         if native_currency and self._quote_token.upper() == native_currency:
