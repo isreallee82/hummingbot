@@ -122,7 +122,7 @@ class GatewayBase(ConnectorBase):
         self._gateway_config = gateway_config
         self._trading_pairs = trading_pairs or []
         self._tokens = set()
-        [self._tokens.update(set(trading_pair.split("_")[0].split("-"))) for trading_pair in trading_pairs]
+        [self._tokens.update(set(trading_pair.split("_")[0].split("-"))) for trading_pair in self._trading_pairs]
         self._trading_required = trading_required
         self._last_poll_timestamp = 0.0
         self._last_balance_poll_timestamp = 0.0
