@@ -93,18 +93,6 @@ class LPRebalancerConfig(ControllerConfigBase):
         description="Extra % to swap beyond deficit to account for slippage (e.g., 0.01 = 0.01%)"
     )
 
-    # Native currency buffer for transaction fees (chain-specific)
-    native_currency: str = Field(
-        default="SOL",
-        json_schema_extra={"is_updatable": True},
-        description="Native currency symbol for the chain (e.g., SOL, ETH). Used for transaction fee buffer."
-    )
-    native_currency_buffer: Decimal = Field(
-        default=Decimal("0.1"),
-        json_schema_extra={"is_updatable": True},
-        description="Buffer amount of native currency to reserve for transaction fees and rent (e.g., 0.1 for Solana, 0.01 for Ethereum)"
-    )
-
     @field_validator("sell_price_min", "sell_price_max", "buy_price_min", "buy_price_max", mode="before")
     @classmethod
     def validate_price_limits(cls, v):
@@ -323,11 +311,13 @@ class LPRebalancer(ControllerBase):
         quote_deficit = quote_amt - quote_balance
 
         # Add native currency buffer for rent and transaction fees when native currency is involved
-        native_currency = self.config.native_currency.upper()
-        native_buffer = self.config.native_currency_buffer
-        if self._base_token.upper() == native_currency:
+        # Get native currency and buffer from connector (chain-specific values)
+        connector = self.market_data_provider.get_connector(self.config.connector_name)
+        native_currency = (getattr(connector, 'native_currency', None) or "").upper()
+        native_buffer = getattr(connector, 'get_native_currency_buffer', lambda: Decimal("0.01"))()
+        if native_currency and self._base_token.upper() == native_currency:
             base_deficit += native_buffer
-        if self._quote_token.upper() == native_currency:
+        if native_currency and self._quote_token.upper() == native_currency:
             quote_deficit += native_buffer
 
         self.logger().info(
