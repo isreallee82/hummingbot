@@ -127,13 +127,6 @@ class OrderExecutor(ExecutorBase):
             self.stop()
         await self._sleep(5.0)
 
-    def evaluate_max_retries(self):
-        """
-        Evaluate if the maximum number of retries has been reached.
-        """
-        if self._current_retries > self._max_retries:
-            self.stop()
-
     def place_open_order(self):
         """
         Place the order based on the execution strategy.
