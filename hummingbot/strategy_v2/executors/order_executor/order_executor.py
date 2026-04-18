@@ -43,7 +43,7 @@ class OrderExecutor(ExecutorBase):
         :param max_retries: The maximum number of retries for the OrderExecutor, defaults to 10.
         """
         super().__init__(strategy=strategy, config=config, connectors=[config.connector_name],
-                         update_interval=update_interval)
+                         update_interval=update_interval, max_retries=max_retries)
         self.config: OrderExecutorConfig = config
 
         # Order tracking
@@ -51,8 +51,6 @@ class OrderExecutor(ExecutorBase):
         self._failed_orders: list[TrackedOrder] = []
         self._canceled_orders: list[TrackedOrder] = []
         self._partial_filled_orders: list[TrackedOrder] = []
-        self._current_retries = 0
-        self._max_retries = max_retries
 
     @property
     def current_market_price(self) -> Decimal:
@@ -115,7 +113,6 @@ class OrderExecutor(ExecutorBase):
             self.control_order()
         elif self.status == RunnableStatus.SHUTTING_DOWN:
             await self.control_shutdown_process()
-        self.evaluate_max_retries()
 
     def control_order(self):
         """
@@ -172,13 +169,6 @@ class OrderExecutor(ExecutorBase):
                 self.close_type = CloseType.EARLY_STOP
             self.stop()
         await self._sleep(5.0)
-
-    def evaluate_max_retries(self):
-        """
-        Evaluate if the maximum number of retries has been reached.
-        """
-        if self._current_retries > self._max_retries:
-            self.stop()
 
     def place_open_order(self):
         """
