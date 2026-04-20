@@ -13,6 +13,7 @@ from hummingbot.client.config.config_helpers import (
 )
 from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.gateway.common_types import Chain
 from hummingbot.core.data_type.common import GroupedSetDict, LazyDict, PriceType, TradeType
 from hummingbot.core.data_type.order_book_query_result import OrderBookQueryResult
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
@@ -111,9 +112,14 @@ class MarketDataProvider:
 
                 for connector, connector_pairs in self._rates_required.items():
                     # Gateway connectors use network format: "chain-network" (e.g., "solana-mainnet-beta")
-                    # Try to get swap provider from Gateway config to detect gateway connectors
-                    gateway_client = GatewayHttpClient.get_instance()
-                    swap_provider = await gateway_client.get_default_swap_provider(connector)
+                    # Only query Gateway for connectors that start with known chain names
+                    known_chains = tuple(c.chain for c in Chain)
+                    is_gateway_network = connector.startswith(known_chains)
+
+                    swap_provider = None
+                    if is_gateway_network:
+                        gateway_client = GatewayHttpClient.get_instance()
+                        swap_provider = await gateway_client.get_default_swap_provider(connector)
 
                     if swap_provider:
                         # Gateway connector - get_price will auto-fetch dex/trading_type from network config
