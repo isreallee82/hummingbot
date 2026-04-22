@@ -3295,6 +3295,40 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         # The method sets the internal _trading_pair_symbol_map via _set_trading_pair_symbol_map
         # We can verify by checking that the exchange has the symbol map set (non-None)
         self.assertIsNotNone(self.exchange.trading_pair_symbol_map)
+        self.assertEqual("XYZ_XYZ100-USD", self.exchange.trading_pair_symbol_map["xyz:XYZ100"])
+
+    def test_underscored_hip3_trading_pair_helpers(self):
+        exchange_symbol = self.exchange._exchange_symbol_from_hip3_trading_pair("XYZ_XYZ100-USDC")
+        usdc_exchange_symbol = self.exchange._exchange_symbol_from_hip3_trading_pair("XYZ_AMZN-USDC")
+        legacy_exchange_symbol = self.exchange._exchange_symbol_from_hip3_trading_pair("XYZ:XYZ100-USD")
+        trading_pair = self.exchange._hb_trading_pair_from_hip3_symbol("xyz:XYZ100", "USD")
+
+        self.assertEqual("xyz:XYZ100", exchange_symbol)
+        self.assertEqual("xyz:AMZN", usdc_exchange_symbol)
+        self.assertEqual("xyz:XYZ100", legacy_exchange_symbol)
+        self.assertEqual("XYZ_XYZ100-USD", trading_pair)
+
+    @aioresponses()
+    def test_get_last_traded_price_for_underscored_hip3_market(self, mock_api):
+        """Test _get_last_traded_price accepts DEX_COIN-QUOTE HIP-3 aliases."""
+        self._simulate_trading_rules_initialized()
+
+        hip3_trading_pair = "XYZ_XYZ100-USDC"
+        hip3_symbol = "xyz:XYZ100"
+        self.exchange._is_hip3_market[hip3_symbol] = True
+
+        url = web_utils.public_rest_url(CONSTANTS.TICKER_PRICE_CHANGE_URL)
+        response = [
+            {"universe": [{"name": hip3_symbol}]},
+            [{"markPx": "25349.0"}]
+        ]
+        mock_api.post(url, body=json.dumps(response))
+
+        price = self.async_run_with_timeout(
+            self.exchange._get_last_traded_price(hip3_trading_pair)
+        )
+
+        self.assertEqual(25349.0, price)
 
     @aioresponses()
     def test_get_last_traded_price_hip3_with_dex_param(self, mock_api):
@@ -3304,7 +3338,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         url = web_utils.public_rest_url(CONSTANTS.TICKER_PRICE_CHANGE_URL)
 
         hip3_symbol = "xyz:XYZ100"
-        hip3_trading_pair = "XYZ_AAPL-USD"
+        hip3_trading_pair = "XYZ_XYZ100-USDC"
 
         # Setup HIP-3 market
         self.exchange._is_hip3_market[hip3_symbol] = True
@@ -3335,7 +3369,7 @@ class HyperliquidPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Perpe
         url = web_utils.public_rest_url(CONSTANTS.TICKER_PRICE_CHANGE_URL)
 
         hip3_symbol = "xyz:UNKNOWN"
-        hip3_trading_pair = "XYZ_UNKNOWN-USD"
+        hip3_trading_pair = "XYZ_UNKNOWN-USDC"
 
         # Setup HIP-3 market
         self.exchange._is_hip3_market[hip3_symbol] = True

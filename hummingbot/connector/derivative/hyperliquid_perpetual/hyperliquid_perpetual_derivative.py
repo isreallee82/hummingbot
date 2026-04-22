@@ -71,6 +71,56 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
         self._user_abstraction_mode: Optional[str] = None
         super().__init__(balance_asset_limit, rate_limits_share_pct)
 
+    @staticmethod
+    def _hb_trading_pair_from_hip3_symbol(exchange_symbol: str, quote: str) -> str:
+        dex_name, coin = exchange_symbol.split(":", 1)
+        return combine_to_hb_trading_pair(f"{dex_name.upper()}_{coin}", quote).upper()
+
+    @staticmethod
+    def _exchange_symbol_from_hip3_trading_pair(trading_pair: str) -> Optional[str]:
+        if "-" not in trading_pair:
+            return None
+
+        base, _ = trading_pair.rsplit("-", 1)
+        if ":" in base:
+            dex_name, coin = base.split(":", 1)
+            return f"{dex_name.lower()}:{coin}"
+        if "_" in base:
+            dex_name, coin = base.split("_", 1)
+            return f"{dex_name.lower()}:{coin}"
+        return None
+
+    @classmethod
+    def _canonicalize_hip3_trading_pair(cls, trading_pair: str) -> str:
+        exchange_symbol = cls._exchange_symbol_from_hip3_trading_pair(trading_pair)
+        if exchange_symbol is None:
+            return trading_pair
+        _, quote = trading_pair.rsplit("-", 1)
+        return cls._hb_trading_pair_from_hip3_symbol(exchange_symbol, quote)
+
+    async def exchange_symbol_associated_to_pair(self, trading_pair: str) -> str:
+        try:
+            return await super().exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+        except KeyError:
+            normalized_trading_pair = self._canonicalize_hip3_trading_pair(trading_pair)
+            exchange_symbol = self._exchange_symbol_from_hip3_trading_pair(trading_pair)
+            if normalized_trading_pair != trading_pair:
+                try:
+                    return await super().exchange_symbol_associated_to_pair(trading_pair=normalized_trading_pair)
+                except KeyError:
+                    pass
+            if exchange_symbol is not None:
+                return exchange_symbol
+            raise
+
+    async def trading_pair_associated_to_exchange_symbol(self, symbol: str) -> str:
+        try:
+            return await super().trading_pair_associated_to_exchange_symbol(symbol=symbol)
+        except KeyError:
+            if ":" in symbol:
+                return self._hb_trading_pair_from_hip3_symbol(symbol, CONSTANTS.CURRENCY)
+            raise
+
     @property
     def name(self) -> str:
         # Note: domain here refers to the entire exchange name. i.e. hyperliquid_perpetual or hyperliquid_perpetual_testnet
@@ -934,7 +984,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
             try:
                 coin_name = dex_info.get("name", "")  # e.g., 'xyz:AAPL'
                 self._is_hip3_market[coin_name] = True
-                quote = "USD"
+                quote = CONSTANTS.CURRENCY
                 trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol=coin_name)
 
                 step_size = Decimal(str(10 ** -dex_info.get("szDecimals")))
@@ -981,36 +1031,24 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                     full_symbol = perp_meta.get("name", "")  # e.g., 'xyz:AAPL'
                     if ':' in full_symbol:
                         self._is_hip3_market[full_symbol] = True
-                        deployer, base = full_symbol.split(':')
                         quote = CONSTANTS.CURRENCY
-                        symbol = f'{deployer.upper()}_{base}'
-                        # quote = "USD" if deployer == "xyz" else 'USDH'
-                        trading_pair = combine_to_hb_trading_pair(full_symbol, quote)
+                        trading_pair = self._hb_trading_pair_from_hip3_symbol(full_symbol, quote)
                         if trading_pair in mapping.inverse:
                             self._resolve_trading_pair_symbols_duplicate(mapping, full_symbol, full_symbol.upper(), quote)
                         else:
-                            mapping[full_symbol] = trading_pair.upper()
+                            mapping[full_symbol] = trading_pair
 
         self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        if ":" in trading_pair:
-            # HIP-3 trading pair - extract base (e.g., "xyz:XYZ100" from "xyz:XYZ100-USD")
-            parts = trading_pair.split("-")
-            if len(parts) >= 2:
-                exchange_symbol = trading_pair.rsplit("-", 1)[0]
-                # Convert to lowercase for the dex name part
-                dex_name, coin = exchange_symbol.split(":")
-                exchange_symbol = f"{dex_name.lower()}:{coin}"
-        else:
-            try:
-                exchange_symbol = await self.exchange_symbol_associated_to_pair(
-                    trading_pair=trading_pair
-                )
-            except KeyError as e:
-                self.logger().error(f"Trading pair {trading_pair} not found in symbol map: {e}")
-                # Trading pair not in symbol map yet, try to extract from trading pair directly
-                exchange_symbol = trading_pair.split("-")[0]
+        try:
+            exchange_symbol = await self.exchange_symbol_associated_to_pair(
+                trading_pair=trading_pair
+            )
+        except KeyError as e:
+            self.logger().error(f"Trading pair {trading_pair} not found in symbol map: {e}")
+            # Trading pair not in symbol map yet, try to extract from trading pair directly
+            exchange_symbol = trading_pair.split("-")[0]
 
         params = {"type": CONSTANTS.ASSET_CONTEXT_TYPE}
         # Detect HIP-3 market by dict lookup OR by ":" in symbol (fallback for early calls)
