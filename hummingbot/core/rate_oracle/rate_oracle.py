@@ -19,16 +19,11 @@ from hummingbot.core.rate_oracle.sources.binance_rate_source import BinanceRateS
 from hummingbot.core.rate_oracle.sources.coin_cap_rate_source import CoinCapRateSource
 from hummingbot.core.rate_oracle.sources.coin_gecko_rate_source import CoinGeckoRateSource
 from hummingbot.core.rate_oracle.sources.coinbase_advanced_trade_rate_source import CoinbaseAdvancedTradeRateSource
-from hummingbot.core.rate_oracle.sources.cube_rate_source import CubeRateSource
 from hummingbot.core.rate_oracle.sources.decibel_perpetual_rate_source import DecibelPerpetualRateSource
-from hummingbot.core.rate_oracle.sources.derive_rate_source import DeriveRateSource
-from hummingbot.core.rate_oracle.sources.dexalot_rate_source import DexalotRateSource
 from hummingbot.core.rate_oracle.sources.evedex_perpetual_rate_source import EvedexPerpetualRateSource
 from hummingbot.core.rate_oracle.sources.gate_io_rate_source import GateIoRateSource
 from hummingbot.core.rate_oracle.sources.hyperliquid_perpetual_rate_source import HyperliquidPerpetualRateSource
 from hummingbot.core.rate_oracle.sources.hyperliquid_rate_source import HyperliquidRateSource
-from hummingbot.core.rate_oracle.sources.kucoin_rate_source import KucoinRateSource
-from hummingbot.core.rate_oracle.sources.mexc_rate_source import MexcRateSource
 from hummingbot.core.rate_oracle.sources.pacifica_perpetual_rate_source import PacificaPerpetualRateSource
 from hummingbot.core.rate_oracle.sources.rate_source_base import RateSourceBase
 from hummingbot.core.rate_oracle.utils import find_rate
@@ -40,17 +35,12 @@ RATE_ORACLE_SOURCES = {
     "binance": BinanceRateSource,
     "coin_gecko": CoinGeckoRateSource,
     "coin_cap": CoinCapRateSource,
-    "kucoin": KucoinRateSource,
     "ascend_ex": AscendExRateSource,
     "gate_io": GateIoRateSource,
     "coinbase_advanced_trade": CoinbaseAdvancedTradeRateSource,
-    "cube": CubeRateSource,
-    "dexalot": DexalotRateSource,
     "hyperliquid": HyperliquidRateSource,
     "hyperliquid_perpetual": HyperliquidPerpetualRateSource,
     "architect_perpetual": ArchitectPerpetualRateSource,
-    "derive": DeriveRateSource,
-    "mexc": MexcRateSource,
     "evedex_perpetual": EvedexPerpetualRateSource,
     "pacifica_perpetual": PacificaPerpetualRateSource,
     "decibel_perpetual": DecibelPerpetualRateSource,

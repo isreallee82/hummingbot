@@ -1,6 +1,6 @@
 from test.hummingbot.data_feed.candles_feed.test_candles_base import TestCandlesBase
 
-import hummingbot.data_feed.candles_feed.okx_spot_candles.constants as CONSTANTS
+import hummingbot.data_feed.candles_feed.ascend_ex_spot_candles.constants as CONSTANTS
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.data_feed.candles_feed.ascend_ex_spot_candles import AscendExSpotCandles
 

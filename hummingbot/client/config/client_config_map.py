@@ -22,8 +22,6 @@ from hummingbot.connector.connector_metrics_collector import (
 from hummingbot.connector.derivative.architect_perpetual import architect_perpetual_constants
 from hummingbot.connector.exchange.binance.binance_utils import BinanceConfigMap
 from hummingbot.connector.exchange.gate_io.gate_io_utils import GateIOConfigMap
-from hummingbot.connector.exchange.kraken.kraken_utils import KrakenConfigMap
-from hummingbot.connector.exchange.kucoin.kucoin_utils import KuCoinConfigMap
 from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle
 from hummingbot.core.rate_oracle.sources.rate_source_base import RateSourceBase
 from hummingbot.core.utils.kill_switch import ActiveKillSwitch, KillSwitch, PassThroughKillSwitch
@@ -198,8 +196,6 @@ class PaperTradeConfigMap(BaseClientModel):
     paper_trade_exchanges: List = Field(
         default=[
             BinanceConfigMap.model_config["title"],
-            KuCoinConfigMap.model_config["title"],
-            KrakenConfigMap.model_config["title"],
             GateIOConfigMap.model_config["title"],
         ],
     )
@@ -470,16 +466,6 @@ class BinanceRateSourceMode(ExchangeRateSourceModeBase):
     model_config = ConfigDict(title="binance")
 
 
-class MexcRateSourceMode(ExchangeRateSourceModeBase):
-    name: str = Field(default="mexc")
-    model_config = ConfigDict(title="mexc")
-
-
-class CubeRateSourceMode(ExchangeRateSourceModeBase):
-    name: str = Field(default="cube")
-    model_config = ConfigDict(title="cube")
-
-
 class CoinGeckoRateSourceMode(RateSourceModeBase):
     name: str = Field(default="coin_gecko")
     extra_tokens: List[str] = Field(
@@ -617,19 +603,9 @@ class CoinCapRateSourceMode(RateSourceModeBase):
         return self
 
 
-class KuCoinRateSourceMode(ExchangeRateSourceModeBase):
-    name: str = Field(default="kucoin")
-    model_config = ConfigDict(title="kucoin")
-
-
 class GateIoRateSourceMode(ExchangeRateSourceModeBase):
     name: str = Field(default="gate_io")
     model_config = ConfigDict(title="gate_io")
-
-
-class DexalotRateSourceMode(ExchangeRateSourceModeBase):
-    name: str = Field(default="dexalot")
-    model_config = ConfigDict(title="dexalot")
 
 
 class EvedexPerpetualRateSourceMode(ExchangeRateSourceModeBase):
@@ -720,28 +696,18 @@ class ArchitectPerpetualRateSourceMode(ExchangeRateSourceModeBase):
         return self
 
 
-class DeriveRateSourceMode(ExchangeRateSourceModeBase):
-    name: str = Field(default="derive")
-    model_config = ConfigDict(title="derive")
-
-
 RATE_SOURCE_MODES = {
     AscendExRateSourceMode.model_config["title"]: AscendExRateSourceMode,
     BinanceRateSourceMode.model_config["title"]: BinanceRateSourceMode,
     CoinGeckoRateSourceMode.model_config["title"]: CoinGeckoRateSourceMode,
     CoinCapRateSourceMode.model_config["title"]: CoinCapRateSourceMode,
-    DexalotRateSourceMode.model_config["title"]: DexalotRateSourceMode,
     EvedexPerpetualRateSourceMode.model_config["title"]: EvedexPerpetualRateSourceMode,
     DecibelPerpetualRateSourceMode.model_config["title"]: DecibelPerpetualRateSourceMode,
-    KuCoinRateSourceMode.model_config["title"]: KuCoinRateSourceMode,
     GateIoRateSourceMode.model_config["title"]: GateIoRateSourceMode,
     CoinbaseAdvancedTradeRateSourceMode.model_config["title"]: CoinbaseAdvancedTradeRateSourceMode,
-    CubeRateSourceMode.model_config["title"]: CubeRateSourceMode,
     HyperliquidRateSourceMode.model_config["title"]: HyperliquidRateSourceMode,
     HyperliquidPerpetualRateSourceMode.model_config["title"]: HyperliquidPerpetualRateSourceMode,
     ArchitectPerpetualRateSourceMode.model_config["title"]: ArchitectPerpetualRateSourceMode,
-    DeriveRateSourceMode.model_config["title"]: DeriveRateSourceMode,
-    MexcRateSourceMode.model_config["title"]: MexcRateSourceMode,
 }
 
 
