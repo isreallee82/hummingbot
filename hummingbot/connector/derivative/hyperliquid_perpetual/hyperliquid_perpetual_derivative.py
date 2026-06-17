@@ -58,6 +58,9 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
         self.hyperliquid_perpetual_secret_key = hyperliquid_perpetual_secret_key
         self._use_vault = use_vault
         self._connection_mode = hyperliquid_perpetual_mode
+        # Verify (once) the key is authorized for the wallet at connect; see
+        # _verify_wallet_authorized_once and HyperliquidPerpetualAuth.verify_wallet_authorized (#7866).
+        self._api_wallet_verified = False
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._domain = domain
@@ -85,7 +88,7 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
             return HyperliquidPerpetualAuth(
                 self.hyperliquid_perpetual_address,
                 self.hyperliquid_perpetual_secret_key,
-                self._use_vault
+                self._use_vault,
             )
         return None
 
@@ -1117,11 +1120,31 @@ class HyperliquidPerpetualDerivative(PerpetualDerivativePyBase):
                 f"Could not resolve the exchange symbols {new_exchange_symbol} and {current_exchange_symbol}")
             mapping.pop(current_exchange_symbol)
 
+    async def _verify_wallet_authorized_once(self):
+        """
+        Confirm (once) that the configured key can trade for the configured wallet,
+        for both connection modes: either the key derives to the wallet (arb_wallet,
+        checked offline) or its address is an approved agent of the wallet
+        (api_wallet, checked via the extraAgents info request). This catches a
+        wrong/unapproved key at connect like every other connector instead of
+        silently "connecting" (#7866). Mode-agnostic, so no connection_mode needed;
+        vault mode is skipped (the supplied address is a vault, not the signer).
+        """
+        if self._use_vault or self._api_wallet_verified:
+            return
+        await HyperliquidPerpetualAuth.verify_wallet_authorized(
+            self.hyperliquid_perpetual_secret_key,
+            self.hyperliquid_perpetual_address,
+            lambda body: self._api_post(path_url=CONSTANTS.EXCHANGE_INFO_URL, data=body),
+        )
+        self._api_wallet_verified = True
+
     async def _update_balances(self):
         """
         Calls the REST API to update total and available balances.
         Under unified account or portfolio margin, use spot balances endpoint instead for trading account balance across spot and perps.
         """
+        await self._verify_wallet_authorized_once()
 
         quote = CONSTANTS.CURRENCY
         account_info = await self._api_post(path_url=CONSTANTS.ACCOUNT_INFO_URL,

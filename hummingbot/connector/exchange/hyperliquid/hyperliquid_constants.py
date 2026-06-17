@@ -41,6 +41,10 @@ ASSET_CONTEXT_TYPE = "spotMetaAndAssetCtxs"
 TRADES_TYPE = "userFills"
 ORDER_STATUS_TYPE = "orderStatus"
 USER_STATE_TYPE = "spotClearinghouseState"
+# Info request that returns a user's approved agent (API) wallets, and the
+# user-facing page to approve them (both surfaced in connect-time key validation).
+EXTRA_AGENTS_INFO_TYPE = "extraAgents"
+API_WALLET_HELP_URL = "https://app.hyperliquid.xyz/API"
 
 # yes
 TICKER_PRICE_CHANGE_URL = "/info"

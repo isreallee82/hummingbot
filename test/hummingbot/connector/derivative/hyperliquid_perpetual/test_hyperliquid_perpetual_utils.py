@@ -90,3 +90,70 @@ class HyperliquidPerpetualUtilsTests(TestCase):
         corrected_address = HyperliquidPerpetualTestnetConfigMap.validate_address("HL:zzz8z8z")
 
         self.assertEqual(corrected_address, "zzz8z8z")
+
+
+class HyperliquidPerpetualKeyValidationTests(TestCase):
+    """
+    Regression coverage for issue #7866: a wrong/random private key reached a
+    "connected" state because the connect flow constructs the connector with
+    trading_required=False, so the auth-class validation never ran. These tests
+    exercise the config-map validation, which DOES run during `connect`.
+    """
+
+    # Address derived from SECRET below.
+    SECRET = "13e56ca9cceebf1f33065c2c5376ab38570a114bc1b003b60d838f92be9d7930"  # noqa: mock
+    GOOD_ADDRESS = "0x836eE2b55d173245832995082a8600709c38D099"  # noqa: mock
+    # Valid hex address that does NOT match SECRET (last hex digit flipped).
+    WRONG_ADDRESS = "0x836eE2b55d173245832995082a8600709c38D098"  # noqa: mock
+
+    def _build(self, **overrides):
+        params = dict(
+            connector="hyperliquid_perpetual",
+            hyperliquid_perpetual_mode="arb_wallet",
+            use_vault=False,
+            hyperliquid_perpetual_address=self.GOOD_ADDRESS,
+            hyperliquid_perpetual_secret_key=self.SECRET,
+        )
+        params.update(overrides)
+        return HyperliquidPerpetualConfigMap(**params)
+
+    def test_random_private_key_rejected_at_connect(self):
+        # nikspz's reproduction: random text as private key in arb_wallet/no-vault.
+        with self.assertRaises(Exception) as ctx:
+            self._build(hyperliquid_perpetual_secret_key="not-a-real-private-key")
+        self.assertIn("private key", str(ctx.exception).lower())
+
+    def test_empty_private_key_rejected(self):
+        with self.assertRaises(Exception) as ctx:
+            self._build(hyperliquid_perpetual_secret_key="")
+        self.assertIn("non-empty", str(ctx.exception).lower())
+
+    def test_valid_key_wrong_address_rejected(self):
+        with self.assertRaises(Exception) as ctx:
+            self._build(hyperliquid_perpetual_address=self.WRONG_ADDRESS)
+        self.assertIn("does not derive", str(ctx.exception).lower())
+
+    def test_matching_key_address_pair_accepted(self):
+        cfg = self._build()
+        self.assertEqual(cfg.hyperliquid_perpetual_secret_key.get_secret_value(), self.SECRET)
+
+    def test_api_wallet_mode_bypasses_address_match(self):
+        # api_wallet (agent) keys by design do not derive to the trading address.
+        cfg = self._build(hyperliquid_perpetual_mode="api_wallet",
+                          hyperliquid_perpetual_address=self.WRONG_ADDRESS)
+        self.assertEqual(cfg.hyperliquid_perpetual_mode, "api_wallet")
+
+    def test_vault_mode_bypasses_address_match(self):
+        cfg = self._build(use_vault=True, hyperliquid_perpetual_address=self.WRONG_ADDRESS)
+        self.assertTrue(cfg.use_vault)
+
+    def test_testnet_random_private_key_rejected(self):
+        with self.assertRaises(Exception) as ctx:
+            HyperliquidPerpetualTestnetConfigMap(
+                connector="hyperliquid_perpetual_testnet",
+                hyperliquid_perpetual_testnet_mode="arb_wallet",
+                use_vault=False,
+                hyperliquid_perpetual_testnet_address=self.GOOD_ADDRESS,
+                hyperliquid_perpetual_testnet_secret_key="garbage",
+            )
+        self.assertIn("private key", str(ctx.exception).lower())

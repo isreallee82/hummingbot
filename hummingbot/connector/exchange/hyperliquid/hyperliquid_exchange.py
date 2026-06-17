@@ -60,6 +60,9 @@ class HyperliquidExchange(ExchangePyBase):
         self.hyperliquid_secret_key = hyperliquid_secret_key
         self._use_vault = use_vault
         self._connection_mode = hyperliquid_mode
+        # Verify (once) the key is authorized for the wallet at connect; see
+        # _verify_wallet_authorized_once and HyperliquidAuth.verify_wallet_authorized (#7866).
+        self._api_wallet_verified = False
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._domain = domain
@@ -83,7 +86,7 @@ class HyperliquidExchange(ExchangePyBase):
             return HyperliquidAuth(
                 self.hyperliquid_address,
                 self.hyperliquid_secret_key,
-                self._use_vault
+                self._use_vault,
             )
         return None
 
@@ -735,10 +738,31 @@ class HyperliquidExchange(ExchangePyBase):
                 tradable_assets.add(quote.upper())
         return tradable_assets
 
+    async def _verify_wallet_authorized_once(self):
+        """
+        Confirm (once) that the configured key can trade for the configured wallet,
+        for both connection modes: either the key derives to the wallet (arb_wallet,
+        checked offline) or its address is an approved agent of the wallet
+        (api_wallet, checked via the extraAgents info request). This catches a
+        wrong/unapproved key at connect like every other connector instead of
+        silently "connecting" (#7866). Mode-agnostic, so no connection_mode needed;
+        vault mode is skipped (the supplied address is a vault, not the signer).
+        """
+        if self._use_vault or self._api_wallet_verified:
+            return
+        await HyperliquidAuth.verify_wallet_authorized(
+            self.hyperliquid_secret_key,
+            self.hyperliquid_address,
+            lambda body: self._api_post(path_url=CONSTANTS.EXCHANGE_INFO_URL, data=body),
+        )
+        self._api_wallet_verified = True
+
     async def _update_balances(self):
         """
         Calls the REST API to update total and available balances.
         """
+        await self._verify_wallet_authorized_once()
+
         local_asset_names = set(self._account_balances.keys())
         remote_asset_names = set()
 

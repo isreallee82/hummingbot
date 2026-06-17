@@ -52,6 +52,10 @@ ORDER_STATUS_TYPE = "orderStatus"
 USER_STATE_TYPE = "clearinghouseState"
 SPOT_USER_STATE_TYPE = "spotClearinghouseState"
 USER_ABSTRACTION_TYPE = "userAbstraction"
+# Info request that returns a user's approved agent (API) wallets, and the
+# user-facing page to approve them (both surfaced in connect-time key validation).
+EXTRA_AGENTS_INFO_TYPE = "extraAgents"
+API_WALLET_HELP_URL = "https://app.hyperliquid.xyz/API"
 
 SPOT_BALANCE_ABSTRACTION_MODES = {"unifiedAccount", "portfolioMargin"}
 
