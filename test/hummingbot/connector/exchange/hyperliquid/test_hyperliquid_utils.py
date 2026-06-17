@@ -92,63 +92,36 @@ class HyperliquidUtilsTests(TestCase):
         self.assertEqual(corrected_address, "zzz8z8z")
 
 
-class HyperliquidKeyValidationTests(TestCase):
+class HyperliquidEncryptedLoadRegressionTests(TestCase):
     """
-    Regression coverage for issue #7866 on the spot connector: connect-time
-    config-map validation of the private key (the connect flow constructs the
-    connector with trading_required=False, so auth-class validation never ran).
+    Regression for the login crash (#7866 follow-up): config-map validation must
+    NOT reject the still-encrypted secret at load time. ``load_connector_config_map_from_file``
+    runs ``model_validate()`` on the raw yml (encrypted SecretStr values) and only
+    decrypts afterwards, so any connect-time key check in the config map crashes
+    ``Security.decrypt_all`` at startup. Key authorization now lives in the
+    connector/auth layer (on the decrypted key), so loading an encrypted config
+    must succeed here.
     """
 
-    SECRET = "13e56ca9cceebf1f33065c2c5376ab38570a114bc1b003b60d838f92be9d7930"  # noqa: mock
-    GOOD_ADDRESS = "0x836eE2b55d173245832995082a8600709c38D099"  # noqa: mock
-    WRONG_ADDRESS = "0x836eE2b55d173245832995082a8600709c38D098"  # noqa: mock
+    # hex of a keystore JSON blob -- exactly the shape sitting in the saved yml.
+    ENCRYPTED_SECRET = '{"crypto": {"cipher": "aes-128-ctr"}, "alias": ""}'.encode().hex()
 
-    def _build(self, **overrides):
-        params = dict(
-            connector="hyperliquid",
-            hyperliquid_mode="arb_wallet",
-            use_vault=False,
-            hyperliquid_address=self.GOOD_ADDRESS,
-            hyperliquid_secret_key=self.SECRET,
-        )
-        params.update(overrides)
-        return HyperliquidConfigMap(**params)
+    def test_model_validate_accepts_encrypted_secret(self):
+        cfg = HyperliquidConfigMap.model_validate({
+            "connector": "hyperliquid",
+            "hyperliquid_mode": "arb_wallet",
+            "use_vault": False,
+            "hyperliquid_address": self.ENCRYPTED_SECRET,
+            "hyperliquid_secret_key": self.ENCRYPTED_SECRET,
+        })
+        self.assertEqual(cfg.hyperliquid_secret_key.get_secret_value(), self.ENCRYPTED_SECRET)
 
-    def test_random_private_key_rejected_at_connect(self):
-        with self.assertRaises(Exception) as ctx:
-            self._build(hyperliquid_secret_key="not-a-real-private-key")
-        self.assertIn("private key", str(ctx.exception).lower())
-
-    def test_empty_private_key_rejected(self):
-        with self.assertRaises(Exception) as ctx:
-            self._build(hyperliquid_secret_key="")
-        self.assertIn("non-empty", str(ctx.exception).lower())
-
-    def test_valid_key_wrong_address_rejected(self):
-        with self.assertRaises(Exception) as ctx:
-            self._build(hyperliquid_address=self.WRONG_ADDRESS)
-        self.assertIn("does not derive", str(ctx.exception).lower())
-
-    def test_matching_key_address_pair_accepted(self):
-        cfg = self._build()
-        self.assertEqual(cfg.hyperliquid_secret_key.get_secret_value(), self.SECRET)
-
-    def test_api_wallet_mode_bypasses_address_match(self):
-        cfg = self._build(hyperliquid_mode="api_wallet",
-                          hyperliquid_address=self.WRONG_ADDRESS)
-        self.assertEqual(cfg.hyperliquid_mode, "api_wallet")
-
-    def test_vault_mode_bypasses_address_match(self):
-        cfg = self._build(use_vault=True, hyperliquid_address=self.WRONG_ADDRESS)
-        self.assertTrue(cfg.use_vault)
-
-    def test_testnet_random_private_key_rejected(self):
-        with self.assertRaises(Exception) as ctx:
-            HyperliquidTestnetConfigMap(
-                connector="hyperliquid_testnet",
-                hyperliquid_testnet_mode="arb_wallet",
-                use_vault=False,
-                hyperliquid_testnet_address=self.GOOD_ADDRESS,
-                hyperliquid_testnet_secret_key="garbage",
-            )
-        self.assertIn("private key", str(ctx.exception).lower())
+    def test_testnet_model_validate_accepts_encrypted_secret(self):
+        cfg = HyperliquidTestnetConfigMap.model_validate({
+            "connector": "hyperliquid_testnet",
+            "hyperliquid_testnet_mode": "arb_wallet",
+            "use_vault": False,
+            "hyperliquid_testnet_address": self.ENCRYPTED_SECRET,
+            "hyperliquid_testnet_secret_key": self.ENCRYPTED_SECRET,
+        })
+        self.assertEqual(cfg.hyperliquid_testnet_secret_key.get_secret_value(), self.ENCRYPTED_SECRET)

@@ -132,6 +132,15 @@ class HyperliquidPerpetualAuthWalletAuthorizationTests(TestCase):
             )
         self.assertIn("Invalid Hyperliquid wallet address", str(ctx.exception))
 
+    def test_malformed_key_rejected(self):
+        async def post_fn(body):
+            raise AssertionError("should not reach the network for a malformed key")
+        with self.assertRaises(ValueError) as ctx:
+            asyncio.get_event_loop().run_until_complete(
+                HyperliquidPerpetualAuth.verify_wallet_authorized("not-a-real-key", self.SIGNER, post_fn)
+            )
+        self.assertIn("private key", str(ctx.exception).lower())
+
 
 class HyperliquidPerpetualWalletGuardTests(TestCase):
     """Wiring: the auth check runs through the connector's connect-time balance refresh, once, both modes."""

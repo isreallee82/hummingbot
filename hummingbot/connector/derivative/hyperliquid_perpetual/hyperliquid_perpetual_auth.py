@@ -56,13 +56,9 @@ class HyperliquidPerpetualAuth(AuthBase):
         approved = {to_checksum_address(a["address"]): a for a in (agents or []) if a.get("address")}
         entry = approved.get(signer_address)
         if entry is None:
-            approved_list = ", ".join(sorted(approved)) or "<none>"
             raise ValueError(
-                f"Hyperliquid private key controls {signer_address}, which is neither the "
-                f"configured wallet address {wallet_address} nor one of its approved agents "
-                f"({approved_list}). Verify the private key matches the wallet you want to "
-                f"trade from; if you use an API/agent wallet, approve it at "
-                f"{CONSTANTS.API_WALLET_HELP_URL} for {wallet_address}."
+                f"Hyperliquid private key is neither the key for wallet {wallet_address} nor "
+                f"one of its approved agents. Check the key, or approve it at {CONSTANTS.API_WALLET_HELP_URL}."
             )
         valid_until = entry.get("validUntil")
         if valid_until is not None and now_ms is not None and valid_until < now_ms:
@@ -86,7 +82,12 @@ class HyperliquidPerpetualAuth(AuthBase):
         parsed JSON; the connector passes a thin wrapper around ``_api_post``. Returns
         the matching agent entry, or an owner sentinel for the arb_wallet case.
         """
-        signer = cls.derive_signer_address(api_secret)
+        try:
+            signer = cls.derive_signer_address(api_secret)
+        except Exception as exc:
+            raise ValueError(
+                "Invalid Hyperliquid private key: not a valid 32-byte hex private key."
+            ) from exc
         if not is_hex_address(wallet_address):
             raise ValueError(
                 f"Invalid Hyperliquid wallet address {wallet_address!r}; "
