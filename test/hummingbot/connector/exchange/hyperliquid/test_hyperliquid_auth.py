@@ -4,8 +4,6 @@ from typing import Awaitable
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
-from hummingbot.client.config.client_config_map import ClientConfigMap
-from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.exchange.hyperliquid import hyperliquid_constants as CONSTANTS
 from hummingbot.connector.exchange.hyperliquid.hyperliquid_auth import HyperliquidAuth
 from hummingbot.connector.exchange.hyperliquid.hyperliquid_exchange import HyperliquidExchange
@@ -13,6 +11,13 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RES
 
 
 class HyperliquidAuthTests(TestCase):
+    # Mode-agnostic key-authorization vectors (#7866): KEY controls SIGNER.
+    KEY = "13e56ca9cceebf1f33065c2c5376ab38570a114bc1b003b60d838f92be9d7930"  # noqa: mock
+    SIGNER = "0x836eE2b55d173245832995082a8600709c38D099"  # address KEY controls
+    MASTER = "0x000000000000000000000000000000000000dEaD"  # an unrelated main wallet
+    FUTURE_MS = 9_999_999_999_000
+    NOW_MS = 1_700_000_000_000
+
     def setUp(self) -> None:
         super().setUp()
         self.api_address = "0x000000000000000000000000000000000000dead"
@@ -138,19 +143,8 @@ class HyperliquidAuthTests(TestCase):
         self.assertIn("s", signature)
         self.assertIn("v", signature)
 
-
-class HyperliquidAuthWalletAuthorizationTests(TestCase):
-    """
-    Mode-agnostic authorization check (#7866): a key is authorized if it derives
-    to the wallet (arb_wallet) or is an approved agent of it (api_wallet).
-    """
-
-    KEY = "13e56ca9cceebf1f33065c2c5376ab38570a114bc1b003b60d838f92be9d7930"  # noqa: mock
-    SIGNER = "0x836eE2b55d173245832995082a8600709c38D099"  # address KEY controls
-    MASTER = "0x000000000000000000000000000000000000dEaD"  # an unrelated main wallet
-    FUTURE_MS = 9_999_999_999_000
-    NOW_MS = 1_700_000_000_000
-
+    # --- Mode-agnostic key authorization (#7866): a key is authorized if it
+    # derives to the wallet (arb_wallet) or is an approved agent of it (api_wallet).
     def _run(self, wallet, agents, now_ms=NOW_MS, expect_post=True):
         async def post_fn(body):
             if not expect_post:
@@ -219,9 +213,7 @@ class HyperliquidExchangeWalletGuardTests(TestCase):
     MASTER = "0x000000000000000000000000000000000000dEaD"
 
     def _connector(self, mode, address, use_vault=False):
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         return HyperliquidExchange(
-            client_config_map,
             hyperliquid_address=address,
             hyperliquid_secret_key=self.KEY,
             hyperliquid_mode=mode,
