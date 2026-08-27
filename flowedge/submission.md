@@ -315,6 +315,79 @@ cd flowedge/diagrams && for f in *.svg; do rsvg-convert -z 2 "$f" -o "${f%.svg}.
 
 ---
 
+### Where each file goes
+
+FlowEdge spans two servers, mirroring Condor's split between reasoning and
+execution. This repo is the source of truth; both deployments are copies of it.
+
+```
+                 CONDOR SERVER                      HUMMINGBOT-API SERVER
+              (reasoning, LLM tick)                  (execution, no LLM)
+        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+        │  agents/flow_edge/           │  REST  │  bots/controllers/           │
+        │    AGENT.md                  │ ─────► │    directional_trading/      │
+        │    routines/                 │        │      flow_edge.py            │
+        │      flow_edge_signal.py     │        │  bots/conf/controllers/      │
+        │    strategies/flowedge_dca/  │        │    flow_edge.yml             │
+        │      strategy.md             │        └──────────────────────────────┘
+        │      learnings.md            │                      │
+        │      sessions/session_N/     │                      ▼
+        └──────────────────────────────┘              exchange connectors
+```
+
+Either half runs alone. The controller needs no LLM and no Condor; the agent needs
+the API server but not the controller — it drives executors directly.
+
+**Controller → `hummingbot-api`**
+
+| From this repo | To the API server |
+|---|---|
+| `controllers/directional_trading/flow_edge.py` | `bots/controllers/directional_trading/flow_edge.py` |
+| `flowedge/conf/conf_directional_trading.flow_edge_hackathon.yml` | `bots/conf/controllers/flow_edge.yml` |
+
+```bash
+cp controllers/directional_trading/flow_edge.py \
+   <hummingbot-api>/bots/controllers/directional_trading/
+cp flowedge/conf/conf_directional_trading.flow_edge_hackathon.yml \
+   <hummingbot-api>/bots/conf/controllers/flow_edge.yml
+```
+
+The API imports it as `bots.controllers.directional_trading.flow_edge`, so the
+filename must stay `flow_edge.py` to match `controller_name: flow_edge` in the
+config. Deploy with the `Deploy V2 Controllers` endpoint, or from Condor with
+`/bots`. Per-instance overrides land in `bots/instances/{bot}/conf/controllers/`.
+
+To run it inside a plain Hummingbot checkout instead, the controller stays at
+`controllers/directional_trading/` and the config goes to `conf/controllers/`.
+
+**Agent → Condor**
+
+| From this repo | To the Condor server |
+|---|---|
+| *(agent files live in the Condor repo)* | `agents/flow_edge/AGENT.md` |
+| | `agents/flow_edge/routines/flow_edge_signal.py` |
+| | `agents/flow_edge/strategies/flowedge_dca/strategy.md` |
+| | `agents/flow_edge/strategies/flowedge_dca/learnings.md` |
+
+The layout is fixed by Condor's loaders, not by preference: `AgentStore` scans
+`agents/*/AGENT.md`, the strategy folder name must equal the slug of its `name:`
+(`FlowEdge DCA` → `flowedge_dca`), and agent-local routines are discovered only at
+`agents/{slug}/routines/`. `sessions/` and `dry_runs/` are created on first run.
+
+Older Condor builds use the pre-refactor layout — `condor/trading_agent/` and a
+single `trading_agents/{slug}/agent.md`. If `condor/agents/` does not exist on your
+checkout, you are on that build and the split above will not be discovered.
+
+**Keeping the two in step.** `test_flow_edge_parity.py` compares the controller
+against the agent routine and fails if they drift. Point it at your Condor checkout:
+
+```bash
+FLOWEDGE_ROUTINE=<condor>/agents/flow_edge/routines/flow_edge_signal.py \
+  python3 -m pytest test/controllers/directional_trading/ -q
+```
+
+---
+
 ## Video Link *
 
 > *YouTube, Vimeo, Google Drive, or Loom link (required)*
