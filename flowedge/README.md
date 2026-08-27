@@ -10,7 +10,8 @@ market conditions.
 |---|---|
 | `../controllers/directional_trading/flow_edge.py` | The Hummingbot V2 controller |
 | `conf/conf_directional_trading.flow_edge_2.yml` | Controller config (`conf/` is gitignored, so the shipping copy lives here — copy it to `conf/controllers/` to run) |
-| `../test/controllers/directional_trading/test_flow_edge.py` | 32 unit tests |
+| `../test/controllers/directional_trading/test_flow_edge.py` | 39 controller unit tests |
+| `../test/controllers/directional_trading/test_flow_edge_parity.py` | 10 parity tests: controller vs Condor routine |
 | `strategy.md` | Strategy description (submission deliverable) |
 
 The Condor agent lives in the Condor repo, not here — see *Condor agent* below.

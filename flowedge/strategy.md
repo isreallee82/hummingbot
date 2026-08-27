@@ -168,9 +168,12 @@ The same signal ships in both forms the rules accept:
   after a `keep_position` close, cross-tick context, and journalled reasoning.
 
 The agent's routine implements ATR, NATR, RSI, EMA and ADX/DI directly rather than
-importing a TA library, and is verified to agree with the controller's `pandas_ta`
-computations to floating-point precision (max observed difference 1.4e-14). The two
-runtimes cannot silently disagree about what the market is doing.
+importing a TA library. A parity suite
+(`test/controllers/directional_trading/test_flow_edge_parity.py`) drives both runtimes
+over identical candles across five volatility regimes and asserts the score, every
+component, both regimes, the gate, the direction, the volatility multiplier, the ladder
+and all three barriers agree — plus a guard that every shared parameter defaults
+identically on both sides. The indicators match `pandas_ta` to 1e-6.
 
 ---
 

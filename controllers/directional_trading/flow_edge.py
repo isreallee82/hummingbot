@@ -221,6 +221,35 @@ class FlowEdgeProConfig(DirectionalTradingControllerConfigBase):
     # ── Fee-aware take profit floor ───────────────────────────────────────
     # A take-profit tighter than the round-trip fee books a loss every time it
     # fills. This is the hard floor applied after volatility scaling.
+    # The base class ships 0.03 / 0.02 / 2700, which is not what FlowEdge
+    # trades. Declare FlowEdge's own so the class defaults, the shipped yml and
+    # the Condor routine all agree — test_shared_parameter_defaults_match in
+    # test_flow_edge_parity.py enforces that they stay agreed.
+    stop_loss: Optional[Decimal] = Field(
+        default=Decimal("0.02"),
+        json_schema_extra={
+            "prompt": "Enter the stop loss at baseline volatility (e.g. 0.02 for 2%): ",
+            "prompt_on_new": True,
+            "is_updatable": True,
+        },
+    )
+    take_profit: Optional[Decimal] = Field(
+        default=Decimal("0.006"),
+        json_schema_extra={
+            "prompt": "Enter the take profit at baseline volatility (e.g. 0.006 for 0.6%): ",
+            "prompt_on_new": True,
+            "is_updatable": True,
+        },
+    )
+    time_limit: Optional[int] = Field(
+        default=1800,
+        json_schema_extra={
+            "prompt": "Enter the time limit in seconds (e.g. 1800): ",
+            "prompt_on_new": True,
+            "is_updatable": True,
+        },
+    )
+
     min_take_profit: Decimal = Field(
         default=Decimal("0.0015"),
         json_schema_extra={
@@ -442,13 +471,15 @@ class FlowEdgeProController(DirectionalTradingControllerBase):
         rsi = self._safe_float(latest.get("rsi"), default=50.0)
 
         # Static bias terms — scalars that apply to every row of the frame.
-        di_bias = self.config.di_weight * slow_di
+        # di_bias is the RAW directional reading, reported as-is like every
+        # other component; the weight is applied only where it enters the score.
+        di_bias = slow_di
         funding_bias = self._get_funding_bias()
 
         # Per-row score so backtests see a real signal series, not one frozen
         # value. The scalar path below reads the last row of the same column.
         fast_df["score_biased"] = (
-            fast_df["score_damped"] + di_bias + funding_bias
+            fast_df["score_damped"] + self.config.di_weight * di_bias + funding_bias
         ).clip(-1.0, 1.0)
 
         threshold = self._adapted_threshold

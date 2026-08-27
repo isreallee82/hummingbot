@@ -107,11 +107,23 @@ than the rule:
 The adapted threshold is held separately from the config, so the config is never
 mutated and hot-reload stays safe. The status panel shows both: `0.42 (base 0.30)`.
 
-**Two runtimes, one signal.** The Condor agent's routine implements ATR, NATR, RSI,
-EMA and ADX/DI directly rather than importing a TA library, and is verified to agree
-with the controller's `pandas_ta` computations to floating-point precision (max
-observed difference 1.4e-14). The two runtimes cannot silently disagree about what
-the market is doing.
+**Two runtimes, one signal — enforced by a test, not by discipline.** The Condor
+agent's routine implements ATR, NATR, RSI, EMA and ADX/DI directly rather than
+importing a TA library. A parity suite drives both runtimes over identical candles
+across five volatility regimes and asserts that the blended score, every feature
+component, both regimes, the entry gate, the direction, the volatility multiplier,
+the ladder prices and sizes and all three barriers agree — plus a guard that every
+parameter both sides expose defaults to the same value. The hand-rolled indicators
+match `pandas_ta` to 1e-6.
+
+Writing it was worth more than the guarantee. It found three real defects that had
+been live: the routine computed on the **forming candle** while the controller
+deliberately drops it (early in a bar, close is pinned to the high or low, so CFI is
+mechanically ±1 and the bar's tiny range deflates NATR — the agent was trading a
+reading that repaints seconds later); the two loaded **different amounts of candle
+history**, and Wilder's RMA never forgets, so the same bar computed differently on
+each side; and the routine had no `allow_fast_regime_entry` flag, so it opened gates
+the controller kept shut.
 
 ### Markets
 
@@ -167,14 +179,14 @@ score itself is volatility-normalised, the signal parameters do not need retunin
 **Current state:** implemented, unit-tested, and calibrated — not yet live-validated
 in its current form.
 
-- 39 unit tests pass against the controller, covering config validation, volatility
+- 49 unit tests pass — 39 against the controller, covering config validation, volatility
   scaling, barrier construction, the regime gate, the RSI dampener, capacity and
   cooldown gating, and every self-adaptation invariant. There were previously no tests
   for any repo-root Hummingbot controller.
 - Signal distribution calibrated on synthetic candles across four volatility regimes;
   scale-invariance verified (|score| distribution within 1% between 0.15%/bar and
   0.6%/bar).
-- The Condor routine's indicators are verified against `pandas_ta` to 1.4e-14.
+- 10 cross-runtime parity tests assert the controller and the Condor routine compute the same signal, ladder and barriers from the same candles.
 - An earlier revision ran live sessions on Hyperliquid XRP-USD. That revision had two
   defects since fixed: the signal could not reach its own threshold, and the adaptive
   layer could latch permanently into not trading.
@@ -256,7 +268,8 @@ cd flowedge/diagrams && for f in *.svg; do rsvg-convert -z 2 "$f" -o "${f%.svg}.
 | --- | --- |
 | `controllers/directional_trading/flow_edge.py` | The Hummingbot V2 controller |
 | `flowedge/conf/conf_directional_trading.flow_edge_2.yml` | Controller configuration |
-| `test/controllers/directional_trading/test_flow_edge.py` | 39 unit tests |
+| `test/controllers/directional_trading/test_flow_edge.py` | 39 controller unit tests |
+| `test/controllers/directional_trading/test_flow_edge_parity.py` | 10 controller-vs-agent parity tests |
 | `agents/flow_edge/AGENT.md` | Condor agent identity (in the Condor repo) |
 | `agents/flow_edge/strategies/flowedge_dca/strategy.md` | Condor tick playbook |
 | `agents/flow_edge/routines/flow_edge_signal.py` | Deterministic signal routine |
@@ -283,7 +296,8 @@ cd flowedge/diagrams && for f in *.svg; do rsvg-convert -z 2 "$f" -o "${f%.svg}.
    permanent halt.
 5. **Running (60s).** Live status panel, then the Condor agent tick producing the same
    decision.
-6. **Close (15s).** Two runtimes, one signal, verified equivalent to 1.4e-14.
+6. **Close (15s).** Two runtimes, one signal — and a parity suite that fails the
+   build if they ever drift apart.
 
 ---
 
