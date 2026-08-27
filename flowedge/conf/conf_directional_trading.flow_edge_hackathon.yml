@@ -1,0 +1,137 @@
+# FlowEdge — Agent Builders Cup configuration
+#
+# Tuned from the 12h live run on derive_perpetual XRP-USDC (2026-08-26/27):
+# $1,087 volume, -0.86% net, 21 entry fills against only 3 close fills.
+# Every value that changed from conf_directional_trading.flow_edge_2.yml is
+# marked TUNED with the evidence behind it.
+#
+# The scoring rubric is Volume 40 / P&L 40 / vote 20, so this config is biased
+# toward keeping capital cycling: it recycles faster, fills more ladder levels,
+# and refuses to let the adaptive layer park itself out of the market.
+#
+# BEFORE DEPLOYING, read the two notes at the bottom of this file.
+
+id: flow_edge_hackathon
+controller_name: flow_edge
+controller_type: directional_trading
+total_amount_quote: '200'
+manual_kill_switch: false
+initial_positions: []
+
+# TUNED — venue. Derive rejected 53 of ~56 MARKET closes on XRP-USDC:
+# "no liquidity within the provided limit price". Entries filled 21/21, closes
+# 3/56, so positions opened and could not exit. Hyperliquid XRP-USD carries the
+# depth these clip sizes need. If you move back to Derive, cut
+# total_amount_quote until each ladder level fits inside the book.
+connector_name: hyperliquid_perpetual
+trading_pair: XRP-USD
+
+max_executors_per_side: 3      # TUNED (was 2) — more capital working at once
+cooldown_time: 60              # TUNED (was 180) — more entries per hour
+leverage: 2
+position_mode: ONEWAY
+
+# Barriers are expressed at baseline volatility and scaled at runtime by
+# natr_pct / natr_baseline_pct, clamped to [vol_multiplier_min, vol_multiplier_max].
+# take_profit is additionally floored at min_take_profit so a filled target
+# can never book less than the round-trip fee.
+#
+# TUNED — both halved, which leaves the RATIO unchanged at 3.33:1 (a 77%
+# breakeven win rate, before and after). That is deliberate and it is the normal
+# shape for a DCA scalper that averages down. What changes is how often the
+# target is actually reachable: 0.295% instead of 0.422% effective, still 15x
+# the ~2bp maker round trip. Do not read the old 10-18% win rate as evidence
+# against this ratio — see note 2 at the bottom.
+stop_loss: '0.010'
+take_profit: '0.003'
+time_limit: 900                # TUNED (was 1800) — recycle capital twice as fast
+take_profit_order_type: 2      # LIMIT — stay maker on the exit
+# TUNED — activation must sit BELOW take_profit or the resting limit always
+# fills first and the trailing stop is inert. At 0.2% it becomes a real backstop:
+# a move that reaches +0.2% and rolls over books a small win instead of giving
+# the whole trip back to the stop.
+trailing_stop: 0.002,0.0008
+
+# Candles from Binance: a deeper reference book than the venue being traded, and
+# the indicator maths is unaffected by the USDT/USD quote difference.
+candles_connector: binance_perpetual
+candles_trading_pair: XRP-USDT
+fast_interval: 3m
+fast_max_records: 150
+slow_interval: 15m
+slow_max_records: 100
+
+allow_fast_regime_entry: true
+adx_trending_threshold: 22.0
+adx_extreme_threshold: 50.0
+
+signal_threshold: 0.30
+cfi_weight: 0.35
+vwap_weight: 0.25
+trend_weight: 0.25
+di_weight: 0.15
+vwap_window: 24
+trend_ema_length: 21
+
+# TUNED — ladder level 3 filled twice against level 1's twelve, so only 71% of
+# the configured capital was ever deployed. Tighter rungs raise utilisation,
+# which is volume the old ladder simply left on the table.
+dca_spreads:
+- '0.0015'
+- '0.0035'
+- '0.0065'
+dca_amounts_pct:
+- '0.5'
+- '0.3'
+- '0.2'
+dynamic_spread: true
+
+# TUNED — the ladder geometry in the live fills implies a 0.703 multiplier,
+# i.e. a real 3m NATR of 0.246% against the 0.35% baseline. Everything was
+# running ~30% tighter than configured. 0.25 puts the multiplier back at ~1.0.
+# RE-MEASURE THIS IF YOU CHANGE PAIR — it is the one knob that must move.
+natr_baseline_pct: 0.25
+vol_multiplier_min: 0.6
+vol_multiplier_max: 2.5
+min_take_profit: '0.0015'
+
+# Controller-side backstop: MAKER ladders defer their own stop-loss until every
+# level fills, so a partially filled ladder would otherwise run to time_limit.
+emergency_stop_loss_pct: '0.05'
+
+rsi_length: 14
+rsi_overbought: 70.0
+rsi_oversold: 30.0
+
+adapt_window: 20
+adapt_min_samples: 4
+adapt_win_rate_low: 0.4
+adapt_win_rate_high: 0.65
+adapt_step: 0.02
+adapt_interval_seconds: 60     # TUNED — absent from the deployed build, which
+                               # stepped the threshold every tick: the logs show
+                               # 0.32 -> 0.60 in 14 seconds, a square wave.
+threshold_floor: 0.15
+threshold_ceiling: 0.45        # TUNED (was 0.6) — the run pinned the threshold
+                               # at 0.60 and traded nothing for six hours.
+                               # A lower ceiling bounds that damage.
+stale_entry_seconds: 600       # TUNED (was 1800) — re-engage sooner
+
+funding_bias_enabled: true
+funding_threshold: 0.0005
+funding_bias_strength: 0.15
+
+# ---------------------------------------------------------------------------
+# 1. REDEPLOY THE CONTROLLER. The server that produced the live run predates
+#    three fixes: the adapt_interval_seconds rate limiter, the phantom-loss
+#    filter (unfilled ladders were scored as losses, which ratcheted the
+#    threshold to its ceiling and stopped trading for six hours), and the
+#    turnover governor's monotonic staleness reference. This config sets
+#    adapt_interval_seconds, which an older build will reject outright.
+#
+# 2. THE RISK/REWARD HERE IS NOT YET CALIBRATED. The live run's 10-18% win rate
+#    is not evidence about the signal — it was dominated by unfilled ladders
+#    booked as losses and by closes the venue refused. Run one clean session
+#    where exits actually execute, then tune stop_loss and take_profit against
+#    a real win rate before the code freeze.
+# ---------------------------------------------------------------------------

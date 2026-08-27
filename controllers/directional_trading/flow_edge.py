@@ -398,6 +398,9 @@ class FlowEdgeProController(DirectionalTradingControllerBase):
         # Set on the first tick — the data provider's clock is not reliable yet
         # at construction time.
         self._first_tick_time: Optional[float] = None
+        # Newest executor timestamp ever observed on ANY side — distinct from
+        # _last_entry_ts, which is per-side and drives the cooldown.
+        self._last_entry_seen_ts: Optional[float] = None
         super().__init__(config, *args, **kwargs)
         self.logger().info(
             f"[FlowEdge] Started | pair={config.trading_pair} | "
@@ -977,6 +980,18 @@ class FlowEdgeProController(DirectionalTradingControllerBase):
             # that never existed.
             if executor.close_type in (CloseType.FAILED, CloseType.INSUFFICIENT_BALANCE):
                 continue
+            # Same reasoning, one step further out: a MAKER ladder whose limit
+            # orders never got hit expires on TIME_LIMIT having traded nothing.
+            # Its PnL is a structural zero, which `pnl > 0` scores as a loss.
+            # Live on Derive that was a doom loop — unfilled ladders dragged the
+            # window to a 17% win rate, the threshold ratcheted to its ceiling,
+            # and the controller stopped opening anything for six hours. An
+            # executor that never filled is evidence about the ladder's reach,
+            # not about the signal, so it must not enter the win-rate window.
+            if self._safe_float(
+                getattr(executor, "filled_amount_quote", 0.0), default=0.0
+            ) <= 0.0:
+                continue
             pnl = self._safe_float(executor.net_pnl_quote, default=0.0)
             self._recent_pnls.append(pnl)
             self._realized_pnl += pnl
@@ -997,8 +1012,19 @@ class FlowEdgeProController(DirectionalTradingControllerBase):
         if self._first_tick_time is None:
             self._first_tick_time = now
 
+        # Remember the newest executor we have ever seen. executors_info is a
+        # live window over the orchestrator's active list, so once an executor
+        # terminates and is pruned the list goes empty again — reading only the
+        # live list would report "no entries ever" moments after one closed.
         timestamps = [e.timestamp for e in self.executors_info]
-        reference = max(timestamps) if timestamps else self._first_tick_time
+        if timestamps:
+            newest = max(timestamps)
+            if self._last_entry_seen_ts is None or newest > self._last_entry_seen_ts:
+                self._last_entry_seen_ts = newest
+
+        reference = self._last_entry_seen_ts
+        if reference is None:
+            reference = self._first_tick_time
         return max(now - reference, 0.0)
 
     # ── Utilities ──────────────────────────────────────────────────────────

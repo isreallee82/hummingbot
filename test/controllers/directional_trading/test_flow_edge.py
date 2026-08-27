@@ -35,11 +35,12 @@ def make_candles(n=400, seed=7, sigma=0.0025, drift=0.0, start=100.0, interval_s
 
 
 def closed_executor(executor_id, pnl, timestamp=NOW, side=TradeType.BUY, is_done=True,
-                    close_type=CloseType.TAKE_PROFIT):
+                    close_type=CloseType.TAKE_PROFIT, filled_amount_quote=Decimal("50")):
     """A terminated executor as _harvest_closed_executors sees it."""
     return SimpleNamespace(
         id=executor_id,
         timestamp=timestamp,
+        filled_amount_quote=filled_amount_quote,
         net_pnl_quote=Decimal(str(pnl)),
         is_done=is_done,
         close_type=close_type,
@@ -52,6 +53,7 @@ def active_executor(executor_id, timestamp=NOW, side=TradeType.BUY):
     return SimpleNamespace(
         id=executor_id,
         timestamp=timestamp,
+        filled_amount_quote=Decimal("50"),
         net_pnl_quote=Decimal("0"),
         is_done=False,
         close_type=None,
@@ -485,6 +487,42 @@ class FlowEdgeControllerTests(IsolatedAsyncioWrapperTestCase):
             controller.market_data_provider.time.return_value = t
             controller._self_adapt()
         self.assertLess(controller._adapted_threshold, 0.5)
+
+    def test_unfilled_ladder_is_not_counted_as_a_loss(self):
+        """Live on Derive, MAKER ladders that never filled expired on TIME_LIMIT
+        with zero PnL. Scored as losses they dragged the window to a 17% win
+        rate, ratcheted the threshold to its ceiling, and stopped all trading
+        for six hours."""
+        controller = self.controller
+        controller.executors_info = [
+            closed_executor(f"unfilled-{i}", 0.0, close_type=CloseType.TIME_LIMIT,
+                            filled_amount_quote=Decimal("0"))
+            for i in range(10)
+        ]
+        controller._self_adapt()
+        self.assertEqual(controller.processed_data["closed_trades"], 0)
+        self.assertEqual(len(controller._recent_pnls), 0)
+        self.assertEqual(controller._adapted_threshold, controller.config.signal_threshold)
+
+    def test_a_filled_losing_trade_still_counts(self):
+        controller = self.controller
+        controller.executors_info = [
+            closed_executor("real-loss", -2.0, close_type=CloseType.STOP_LOSS)
+        ]
+        controller._self_adapt()
+        self.assertEqual(controller.processed_data["closed_trades"], 1)
+
+    def test_staleness_survives_executor_pruning(self):
+        """executors_info is a live window; terminated executors are pruned out
+        of it. Reading only the live list reports 'nothing ever opened' moments
+        after a trade closed, which is how the turnover governor stalled."""
+        controller = self.controller
+        controller.executors_info = [active_executor("e1", timestamp=NOW)]
+        controller._seconds_since_last_entry()
+
+        controller.executors_info = []  # executor terminated and was pruned
+        controller.market_data_provider.time.return_value = NOW + 600
+        self.assertAlmostEqual(controller._seconds_since_last_entry(), 600.0)
 
     # ── Emergency exit ─────────────────────────────────────────────────
 
