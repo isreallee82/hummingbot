@@ -163,7 +163,7 @@ The same signal ships in both forms the rules accept:
 
 - **Controller** — `controllers/directional_trading/flow_edge.py`. Runs natively
   inside Hummingbot with no LLM in the loop and no external services.
-- **Condor Agent** — `flowedge/condor_agent/`. A deterministic routine computes the
+- **Condor Agent** — `<condor>/agents/flow_edge/`. A deterministic routine computes the
   identical signal; the LLM handles what the controller cannot — leftover positions
   after a `keep_position` close, cross-tick context, and journalled reasoning.
 

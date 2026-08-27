@@ -12,9 +12,8 @@ market conditions.
 | `conf/conf_directional_trading.flow_edge_2.yml` | Controller config (`conf/` is gitignored, so the shipping copy lives here — copy it to `conf/controllers/` to run) |
 | `../test/controllers/directional_trading/test_flow_edge.py` | 32 unit tests |
 | `strategy.md` | Strategy description (submission deliverable) |
-| `condor_agent/agent.md` | Condor Trading Agent definition |
-| `condor_agent/learnings.md` | Seeded cross-session lessons (agent appends to it) |
-| `condor_agent/routines/flow_edge_signal.py` | Deterministic signal routine |
+
+The Condor agent lives in the Condor repo, not here — see *Condor agent* below.
 | `diagrams/` | Submission diagrams (SVG + PNG) and the generator that builds them |
 
 ## Running the controller
@@ -42,8 +41,7 @@ Copy the agent into your Condor checkout:
 
 ```bash
 mkdir -p <condor>/trading_agents/flow_edge/routines
-cp flowedge/condor_agent/agent.md               <condor>/trading_agents/flow_edge/agent.md
-cp flowedge/condor_agent/routines/*.py          <condor>/trading_agents/flow_edge/routines/
+# the agent now lives in the Condor repo under agents/flow_edge/
 ```
 
 Then, from Condor:
@@ -79,3 +77,21 @@ Condor builds its API base URL from the `servers:` block in `config.yml`. A host
 an embedded scheme (`host: https://api.example.com`, `port: 443`) is handled
 correctly by `_build_base_url`. If you ever see requests going to `http://https://...`,
 the Condor checkout predates that fix — update it rather than editing the host string.
+
+## Condor agent
+
+The agent half of this submission lives in the Condor repo, in the layout current
+Condor discovers:
+
+```
+<condor>/agents/flow_edge/
+    AGENT.md                              # identity + domain knowledge
+    routines/flow_edge_signal.py          # deterministic signal (shared by strategies)
+    strategies/flowedge_dca/
+        strategy.md                       # the tick playbook
+        learnings.md                      # cross-session lessons
+```
+
+The routine reimplements this controller's indicators directly rather than importing
+a TA library, and agrees with the `pandas_ta` versions to floating-point precision —
+so the two runtimes cannot silently disagree about what the market is doing.

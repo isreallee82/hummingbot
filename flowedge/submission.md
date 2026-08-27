@@ -257,8 +257,9 @@ cd flowedge/diagrams && for f in *.svg; do rsvg-convert -z 2 "$f" -o "${f%.svg}.
 | `controllers/directional_trading/flow_edge.py` | The Hummingbot V2 controller |
 | `flowedge/conf/conf_directional_trading.flow_edge_2.yml` | Controller configuration |
 | `test/controllers/directional_trading/test_flow_edge.py` | 39 unit tests |
-| `flowedge/condor_agent/agent.md` | Condor Trading Agent definition |
-| `flowedge/condor_agent/routines/flow_edge_signal.py` | Deterministic signal routine |
+| `agents/flow_edge/AGENT.md` | Condor agent identity (in the Condor repo) |
+| `agents/flow_edge/strategies/flowedge_dca/strategy.md` | Condor tick playbook |
+| `agents/flow_edge/routines/flow_edge_signal.py` | Deterministic signal routine |
 | `flowedge/strategy.md` | Strategy description (Rule 05 deliverable) |
 | `flowedge/README.md` | Install and run instructions for both runtimes |
 
