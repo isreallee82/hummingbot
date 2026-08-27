@@ -144,13 +144,13 @@ barrier is the backstop for the latter.
 | `adx_trending_threshold` | 22.0 | Entry gate opens |
 | `adx_extreme_threshold` | 50.0 | Hard halt |
 | `cfi/vwap/trend/di_weight` | 0.35/0.25/0.25/0.15 | Sum to 1.0 |
-| `natr_baseline_pct` | 0.35 | **Primary retuning knob per pair/venue** |
+| `natr_baseline_pct` | 0.25 | **Primary retuning knob per pair/venue** — measured from live 3m XRP |
 | `vol_multiplier_min/max` | 0.6 / 2.5 | Clamp on volatility scaling |
-| `stop_loss` / `take_profit` | 0.02 / 0.006 | At baseline volatility |
+| `stop_loss` / `take_profit` | 0.010 / 0.003 | At baseline volatility; 3.33:1, ~77% breakeven |
 | `min_take_profit` | 0.0015 | Round-trip fee floor |
 | `emergency_stop_loss_pct` | 0.05 | Controller-side backstop for MAKER's deferred stop-loss |
-| `time_limit` | 1800s | Third barrier |
-| `dca_spreads` / `dca_amounts_pct` | 0.002,0.005,0.01 / 0.5,0.3,0.2 | Ladder shape |
+| `time_limit` | 900s | Third barrier |
+| `dca_spreads` / `dca_amounts_pct` | 0.0015,0.0035,0.0065 / 0.5,0.3,0.2 | Ladder shape — tightened after only 71% capital utilisation live |
 | `threshold_floor` / `ceiling` | 0.15 / 0.60 | Adaptation bounds |
 | `cooldown_time` | 180s | Minimum gap between same-side entries |
 | `max_executors_per_side` | 2 | Capacity |
@@ -177,6 +177,59 @@ identically on both sides. The indicators match `pandas_ta` to 1e-6.
 
 ---
 
+## Live Validation
+
+A 12.1-hour session on `derive_perpetual` XRP-USDC, $200 at 2x, 2026-08-26/27.
+
+| | |
+|---|---|
+| Volume | $1,087 |
+| Net P&L | **−$1.71 (−0.86%)** incl. mark-to-market on the open position |
+| Fees / funding | $0.19 / −$0.004 |
+| Entry fills / close fills | **21 / 3** |
+| Rejected market closes | **53** |
+
+The headline number is 21 entries against 3 exits. Derive refused the executor's
+market closes — *"no liquidity within the provided limit price"* — so ladders filled
+on the maker side and then could not be unwound. Every limit entry filled (21/21);
+almost no close did.
+
+That single failure masked everything else, and unpicking it exposed three defects
+that had nothing to do with the venue:
+
+**Unfilled ladders were scored as losses.** A maker ladder that never gets hit
+expires on `TIME_LIMIT` with `net_pnl_quote = 0`, and `pnl > 0` reads that as a loss.
+The logs show the consequence exactly: win rate 17% → threshold ratcheted to its 0.60
+ceiling → **zero threshold changes for six hours** → no trading at all. An executor
+that never filled is evidence about the ladder's reach, not about the signal, and it
+no longer enters the win-rate window.
+
+**The turnover governor could not fire.** `executors_info` is a live window over the
+orchestrator's active list; once terminated executors were pruned it read as "nothing
+ever opened", so staleness never accumulated and the governor never relaxed the
+threshold. The reference is now tracked monotonically.
+
+**The deployed build had no `adapt_interval_seconds`.** The threshold stepped every
+tick — the logs show 0.32 → 0.60 in fourteen seconds. The adaptation was a square wave
+between its bounds rather than a controlled drift.
+
+### What the data set, rather than guessed
+
+The ladder geometry in the real fills implies a volatility multiplier of **0.703**,
+so XRP's true 3m NATR was **0.246%** against a configured 0.35% baseline — every
+spread and barrier was running ~30% tighter than written, invisibly. Ladder rung 3
+filled twice against rung 1's twelve, leaving **71% capital utilisation**.
+
+`natr_baseline_pct` is now 0.25, the rungs are tightened to 0.0015/0.0035/0.0065, and
+the barriers are halved to 0.010/0.003 so the target is reachable more often. That
+last change leaves the 3.33:1 ratio untouched — a ~77% breakeven win rate, which is
+the normal shape for a DCA scalper that averages down. It is **not yet validated**:
+the live win rate was dominated by phantom losses and refused exits, so it says
+nothing about the signal. One clean session where exits execute is the outstanding
+work.
+
+---
+
 ## Known Limitations
 
 - The volatility multiplier is clamped at 2.5x, and barriers are fixed when an
@@ -189,6 +242,11 @@ identically on both sides. The indicators match `pandas_ta` to 1e-6.
   covers this; without it, `time_limit` is the only control.
 - The funding bias saturates toward its configured strength but is still a
   single-rate tilt, not a term-structure or carry model.
+- **Venue exit risk.** The triple barrier closes at market on stop-loss, time-limit
+  and early-stop, whatever `take_profit_order_type` says. A venue that refuses market
+  orders for lack of depth inside its price band will leave positions open. Check book
+  depth against the intended size before sizing on a new venue; the Condor agent's
+  routine now probes this every tick and reports `exit_liquidity`.
 - Self-adaptation needs at least 4 closed trades before the win-rate branch acts.
   The turnover branch works from the first tick, so the threshold still relaxes if
   nothing opens, but early behaviour is driven by turnover rather than performance.
@@ -213,3 +271,13 @@ controller when nothing has ever opened. Measuring only from the last executor l
 a hole: a threshold too high for day-one conditions means nothing opens, and because
 nothing ever opened the turnover governor never engaged — the same silent latch the
 adaptive layer exists to prevent, reached from the other side.
+
+**Phantom-loss filter.** Executors that terminate having filled nothing are excluded
+from the win-rate window. Live, counting them cost six hours of trading.
+
+**Monotonic turnover reference.** Staleness is measured from the newest executor ever
+observed, not from whatever is currently live, so pruning cannot reset it.
+
+**Exit-liquidity probe (agent).** The Condor routine reads the book each tick and
+reports whether the exit can be absorbed within a configurable band, so the agent
+declines entries it would not be able to unwind.

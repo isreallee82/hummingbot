@@ -124,7 +124,9 @@ class FlowEdgeParityTests(IsolatedAsyncioWrapperTestCase):
             vol_multiplier_max=2.5,
             funding_threshold=0.0005,
             funding_bias_strength=0.15,
-            time_limit=1800,
+            time_limit=900,
+            dca_spreads=[0.0015, 0.0035, 0.0065],
+            dca_amounts_pct=[0.5, 0.3, 0.2],
         )
         shared.update(overrides)
 
@@ -140,8 +142,6 @@ class FlowEdgeParityTests(IsolatedAsyncioWrapperTestCase):
             stop_loss=Decimal("0.02"),
             take_profit=Decimal("0.006"),
             min_take_profit=Decimal("0.0015"),
-            dca_spreads="0.002,0.005,0.01",
-            dca_amounts_pct="0.5,0.3,0.2",
             **shared,
         )
         routine_config = ROUTINE.Config(
@@ -245,7 +245,14 @@ class FlowEdgeParityTests(IsolatedAsyncioWrapperTestCase):
             if controller_default is None or repr(controller_default) == "PydanticUndefined":
                 continue
             try:
-                same = float(controller_default) == float(routine_default)
+                if isinstance(routine_default, (list, tuple)):
+                    # The routine used to hardcode the ladder while the
+                    # controller read it from config — same numbers by luck, and
+                    # nothing would have caught them diverging.
+                    same = ([float(x) for x in controller_default]
+                            == [float(x) for x in routine_default])
+                else:
+                    same = float(controller_default) == float(routine_default)
             except (TypeError, ValueError):
                 same = str(controller_default) == str(routine_default)
             if not same:

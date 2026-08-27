@@ -77,7 +77,7 @@ from the same computation supply the DI Bias term rather than being discarded.
 level. Every distance scales with one dimensionless multiplier:
 
 ```text
-multiplier = clamp(live_NATR% / natr_baseline_pct, 0.6, 2.5)
+multiplier = clamp(live_NATR% / natr_baseline_pct, 0.6, 2.5)   # baseline 0.25%
 ```
 
 The multiplier scales DCA spreads, stop-loss, take-profit **and** the trailing stop
@@ -154,13 +154,13 @@ score itself is volatility-normalised, the signal parameters do not need retunin
 | `cfi_weight` / `vwap_weight` / `trend_weight` / `di_weight` | 0.35 / 0.25 / 0.25 / 0.15 | Sum to 1.0 |
 | `vwap_window` | 24 | Rolling VWAP lookback in bars |
 | `trend_ema_length` | 21 | EMA for the trend term |
-| `natr_baseline_pct` | 0.35 | **Primary retuning knob per pair/venue** |
+| `natr_baseline_pct` | 0.25 | **Primary retuning knob per pair/venue** — measured from live 3m XRP |
 | `vol_multiplier_min` / `max` | 0.6 / 2.5 | Clamp on volatility scaling |
-| `stop_loss` / `take_profit` | 0.02 / 0.006 | At baseline volatility |
+| `stop_loss` / `take_profit` | 0.010 / 0.003 | At baseline volatility; 3.33:1, ~77% breakeven |
 | `min_take_profit` | 0.0015 | Round-trip fee floor |
 | `emergency_stop_loss_pct` | 0.05 | Controller-side backstop for MAKER's deferred stop-loss |
-| `time_limit` | 1800s | Third barrier |
-| `dca_spreads` | 0.002, 0.005, 0.01 | Ladder depth |
+| `time_limit` | 900s | Third barrier |
+| `dca_spreads` | 0.0015, 0.0035, 0.0065 | Ladder depth — tightened after only 71% capital utilisation live |
 | `dca_amounts_pct` | 0.5, 0.3, 0.2 | Ladder weighting |
 | `trailing_stop` | 0.004, 0.0015 | Activation, delta — both volatility-scaled |
 | `rsi_length` / `overbought` / `oversold` | 14 / 70 / 30 | Dampener band |
@@ -176,8 +176,26 @@ score itself is volatility-normalised, the signal parameters do not need retunin
 
 ### Status
 
-**Current state:** implemented, unit-tested, and calibrated — not yet live-validated
-in its current form.
+**Current state:** implemented, unit-tested, and **calibrated against a live run** —
+with one venue-level blocker identified and the parameters re-derived from real fills.
+
+**Live run — 12.1h on `derive_perpetual` XRP-USDC, $200 at 2x (2026-08-26/27):**
+$1,087 volume, **−$1.71 (−0.86%)** net including mark-to-market on the open position.
+The decisive number is **21 entry fills against 3 close fills**: Derive refused 53
+market closes for want of liquidity inside its price band, so ladders filled on the
+maker side and could not be unwound. Every limit entry filled; almost no close did.
+
+Unpicking that exposed three defects unrelated to the venue — unfilled ladders were
+being scored as losses (which ratcheted the threshold to its ceiling and stopped
+trading for six hours), the turnover governor could not fire once executors were
+pruned, and the deployed build stepped the threshold every tick instead of once per
+interval. All three are fixed and covered by tests.
+
+The run also *measured* what had been guessed: the ladder geometry in the real fills
+implies a 0.703 volatility multiplier, so XRP's true 3m NATR was 0.246% against a
+configured 0.35% baseline — everything ran ~30% tighter than written. Rung 3 filled
+twice against rung 1's twelve, for 71% capital utilisation. The competition config
+re-derives `natr_baseline_pct`, the rungs and the barriers from those numbers.
 
 - 49 unit tests pass — 39 against the controller, covering config validation, volatility
   scaling, barrier construction, the regime gate, the RSI dampener, capacity and
@@ -187,9 +205,9 @@ in its current form.
   scale-invariance verified (|score| distribution within 1% between 0.15%/bar and
   0.6%/bar).
 - 10 cross-runtime parity tests assert the controller and the Condor routine compute the same signal, ladder and barriers from the same candles.
-- An earlier revision ran live sessions on Hyperliquid XRP-USD. That revision had two
-  defects since fixed: the signal could not reach its own threshold, and the adaptive
-  layer could latch permanently into not trading.
+- An earlier revision ran live on Hyperliquid XRP-USD. That revision had two defects
+  since fixed: the signal could not reach its own threshold, and the adaptive layer
+  could latch permanently into not trading.
 
 **Limitations that were closed rather than documented:**
 
@@ -209,7 +227,26 @@ in its current form.
   the turnover governor never engaged — the same silent latch the adaptive layer
   exists to prevent, reached from the other side.
 
+**Also closed, from the live run:**
+
+- **Phantom losses.** Executors that terminated having filled nothing were scored as
+  losses. Now excluded from the win-rate window — live, counting them cost six hours
+  of trading.
+- **Turnover reference reset by pruning.** Staleness is now measured from the newest
+  executor ever observed rather than from whatever is currently live.
+- **Exit liquidity was never checked.** The Condor routine now probes the book each
+  tick and reports whether the exit can be absorbed, so the agent declines entries it
+  could not unwind.
+
 **Limitations that remain, stated plainly:**
+
+- **Venue exit risk.** The triple barrier closes at market on stop-loss, time-limit
+  and early-stop regardless of `take_profit_order_type`. A venue that refuses market
+  orders for lack of depth will strand positions — check book depth against clip size
+  before deploying anywhere new.
+- **The 3.33:1 risk/reward is unvalidated.** The live win rate was dominated by
+  phantom losses and refused exits, so it says nothing about the signal. One clean
+  session where exits execute is the outstanding work before the freeze.
 
 - The volatility multiplier is clamped at 2.5x and barriers are never rescaled after
   an executor is created, so an outsized move is caught by the emergency exit and

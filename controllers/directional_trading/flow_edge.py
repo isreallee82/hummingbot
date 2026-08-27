@@ -181,9 +181,9 @@ class FlowEdgeProConfig(DirectionalTradingControllerConfigBase):
 
     # ── DCA entry spreads (scale with normalised NATR) ────────────────────
     dca_spreads: List[Decimal] = Field(
-        default=[Decimal("0.002"), Decimal("0.005"), Decimal("0.01")],
+        default=[Decimal("0.0015"), Decimal("0.0035"), Decimal("0.0065")],
         json_schema_extra={
-            "prompt": "Enter comma-separated DCA entry spreads (e.g. 0.002,0.005,0.01): ",
+            "prompt": "Enter comma-separated DCA entry spreads (e.g. 0.0015,0.0035,0.0065): ",
             "prompt_on_new": True,
             "is_updatable": True,
         },
@@ -209,9 +209,9 @@ class FlowEdgeProConfig(DirectionalTradingControllerConfigBase):
     # a baseline turns it into a dimensionless multiplier centred on 1.0, so a
     # market at its baseline volatility uses exactly the configured spreads.
     natr_baseline_pct: float = Field(
-        default=0.35,
+        default=0.25,
         json_schema_extra={
-            "prompt": "Enter the NATR%% that maps to a 1.0x multiplier (e.g. 0.35): ",
+            "prompt": "Enter the NATR%% that maps to a 1.0x multiplier (e.g. 0.25): ",
             "is_updatable": True,
         },
     )
@@ -226,25 +226,25 @@ class FlowEdgeProConfig(DirectionalTradingControllerConfigBase):
     # the Condor routine all agree — test_shared_parameter_defaults_match in
     # test_flow_edge_parity.py enforces that they stay agreed.
     stop_loss: Optional[Decimal] = Field(
-        default=Decimal("0.02"),
+        default=Decimal("0.010"),
         json_schema_extra={
-            "prompt": "Enter the stop loss at baseline volatility (e.g. 0.02 for 2%): ",
+            "prompt": "Enter the stop loss at baseline volatility (e.g. 0.01 for 1%): ",
             "prompt_on_new": True,
             "is_updatable": True,
         },
     )
     take_profit: Optional[Decimal] = Field(
-        default=Decimal("0.006"),
+        default=Decimal("0.003"),
         json_schema_extra={
-            "prompt": "Enter the take profit at baseline volatility (e.g. 0.006 for 0.6%): ",
+            "prompt": "Enter the take profit at baseline volatility (e.g. 0.003 for 0.3%): ",
             "prompt_on_new": True,
             "is_updatable": True,
         },
     )
     time_limit: Optional[int] = Field(
-        default=1800,
+        default=900,
         json_schema_extra={
-            "prompt": "Enter the time limit in seconds (e.g. 1800): ",
+            "prompt": "Enter the time limit in seconds (e.g. 900): ",
             "prompt_on_new": True,
             "is_updatable": True,
         },
