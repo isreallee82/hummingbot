@@ -1,0 +1,67 @@
+id: 6g1jJ1LXqKozEFCiWtiRxLXEcecj2hWbsMbK1FpxZ2Fm
+controller_name: flow_edge
+controller_type: directional_trading
+total_amount_quote: '100'
+manual_kill_switch: false
+initial_positions: []
+connector_name: hyperliquid_perpetual
+trading_pair: XRP-USD
+max_executors_per_side: 2
+cooldown_time: 180
+leverage: 2
+position_mode: ONEWAY
+# Barriers are expressed at baseline volatility and scaled at runtime by
+# natr_pct / natr_baseline_pct, clamped to [vol_multiplier_min, vol_multiplier_max].
+# take_profit is additionally floored at min_take_profit so a filled target
+# can never book less than the round-trip fee.
+stop_loss: '0.02'
+take_profit: '0.006'
+time_limit: 1800
+take_profit_order_type: 2
+trailing_stop: 0.004,0.0015
+candles_connector: hyperliquid_perpetual
+candles_trading_pair: XRP-USD
+fast_interval: 3m
+fast_max_records: 150
+slow_interval: 15m
+slow_max_records: 100
+allow_fast_regime_entry: true
+adx_trending_threshold: 22.0
+adx_extreme_threshold: 50.0
+signal_threshold: 0.30
+cfi_weight: 0.35
+vwap_weight: 0.25
+trend_weight: 0.25
+di_weight: 0.15
+vwap_window: 24
+trend_ema_length: 21
+dca_spreads:
+- '0.002'
+- '0.005'
+- '0.01'
+dca_amounts_pct:
+- '0.5'
+- '0.3'
+- '0.2'
+dynamic_spread: true
+natr_baseline_pct: 0.35
+vol_multiplier_min: 0.6
+vol_multiplier_max: 2.5
+min_take_profit: '0.0015'
+# Controller-side backstop: MAKER ladders defer their own stop-loss until every
+# level fills, so a partially filled ladder would otherwise run to time_limit.
+emergency_stop_loss_pct: '0.05'
+rsi_length: 14
+rsi_overbought: 70.0
+rsi_oversold: 30.0
+adapt_window: 20
+adapt_min_samples: 4
+adapt_win_rate_low: 0.4
+adapt_win_rate_high: 0.65
+adapt_step: 0.02
+threshold_floor: 0.15
+threshold_ceiling: 0.6
+stale_entry_seconds: 1800
+funding_bias_enabled: true
+funding_threshold: 0.0005
+funding_bias_strength: 0.15
