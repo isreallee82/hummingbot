@@ -288,11 +288,11 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
         return False
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
-        # V3 UTA cancel-order identifies the order by orderId/clientOid across the unified account.
+        # clientOid exists before the place-order response does, so a racing cancel never sends a null orderId
         cancel_result = await self._api_post(
             path_url=CONSTANTS.CANCEL_ORDER_ENDPOINT,
             data={
-                "orderId": tracked_order.exchange_order_id
+                "clientOid": tracked_order.client_order_id
             },
             is_auth_required=True,
         )
@@ -439,7 +439,8 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
 
                 self._trading_fees[trading_pair] = TradeFeeSchema(
                     maker_percent_fee_decimal=Decimal(str(maker_fee)),
-                    taker_percent_fee_decimal=Decimal(str(taker_fee))
+                    taker_percent_fee_decimal=Decimal(str(taker_fee)),
+                    buy_percent_fee_deducted_from_returns=True,
                 )
             except asyncio.CancelledError:
                 raise
@@ -696,17 +697,6 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
                     raise
 
         return trade_updates
-
-    async def _request_order_fills(self, order: InFlightOrder) -> Dict[str, Any]:
-        # V3 UTA fills query identifies fills by orderId across the unified account.
-        order_fills_response = await self._api_get(
-            path_url=CONSTANTS.ORDER_FILLS_ENDPOINT,
-            params={
-                "orderId": order.exchange_order_id,
-            },
-            is_auth_required=True,
-        )
-        return order_fills_response
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
         try:

@@ -11,9 +11,9 @@ class MarginMode(Enum):
 
 
 EXCHANGE_NAME = "bitget_unified_perpetual"
-DEFAULT_DOMAIN = "bitget.com"
-REST_SUBDOMAIN = "api"
-WSS_SUBDOMAIN = "ws"
+DEFAULT_DOMAIN = EXCHANGE_NAME
+REST_URLS = {DEFAULT_DOMAIN: "https://api.bitget.com"}
+WSS_URLS = {DEFAULT_DOMAIN: "wss://ws.bitget.com"}
 DEFAULT_TIME_IN_FORCE = "gtc"
 # V3 UTA post-only (maker-only) timeInForce, used for LIMIT_MAKER orders.
 POST_ONLY_TIME_IN_FORCE = "post_only"
@@ -114,6 +114,7 @@ RET_CODE_API_KEY_INVALID = "40006"
 RET_CODE_CLASSIC_ACCOUNT = "40084"
 RET_CODE_AUTH_TIMESTAMP_ERROR = "40005"
 
+# No bare HTTP 404 here: Bitget answers an unknown path with 404/40404, which says nothing about the order
 RET_CODES_ORDER_NOT_EXISTS = [
     "25204",
     "40768", "80011", "40819",

@@ -830,9 +830,8 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             self.assertNotIn("posSide", request_data)
 
     def validate_order_cancelation_request(self, order: InFlightOrder, request_call: RequestCall):
-        # V3 UTA cancel-order identifies the order by orderId across the unified account.
         request_data = json.loads(request_call.kwargs["data"])
-        self.assertEqual(order.exchange_order_id, request_data["orderId"])
+        self.assertEqual({"clientOid": order.client_order_id}, request_data)
 
     def validate_order_status_request(self, order: InFlightOrder, request_call: RequestCall):
         request_params = request_call.kwargs["params"]
@@ -900,13 +899,31 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> str:
-        pass
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CANCEL_ORDER_ENDPOINT)
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+        response = {
+            "code": "25204",
+            "msg": "Order does not exist",
+            "requestTime": 1695808949356,
+            "data": None
+        }
+        mock_api.post(regex_url, body=json.dumps(response), status=400, callback=callback)
+        return url
 
     def configure_order_not_found_error_order_status_response(
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> List[str]:
-        pass
+        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_DETAIL_ENDPOINT)
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
+        response = {
+            "code": "25204",
+            "msg": "Order does not exist",
+            "requestTime": 1695808949356,
+            "data": None
+        }
+        mock_api.get(regex_url, body=json.dumps(response), status=400, callback=callback)
+        return [url]
 
     def configure_completely_filled_order_status_response(
             self,
@@ -1557,6 +1574,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             TradeFeeSchema(
                 maker_percent_fee_decimal=Decimal("0.00012"),
                 taker_percent_fee_decimal=Decimal("0.00042"),
+                buy_percent_fee_deducted_from_returns=True,
             ),
             self.exchange._trading_fees[self.trading_pair],
         )
@@ -1712,12 +1730,6 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         self.assertEqual(Decimal("10000"), self.exchange.available_balances[self.quote_asset])
         self.assertEqual(Decimal("10000"), self.exchange.get_balance(self.quote_asset))
 
-    @aioresponses()
-    def test_cancel_order_not_found_in_the_exchange(self, mock_api):
-        # Disabling this test because the connector has not been updated yet to validate
-        # order not found during cancellation (check _is_order_not_found_during_cancelation_error)
-        pass
-
     def test_order_not_found_v3_code_recognized(self):
         # V3 UTA returns 25204 "Order does not exist" when cancelling/querying an order that is
         # unknown or already filled/cancelled; it must be recognised as order-not-found so the base
@@ -1730,11 +1742,15 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         self.assertTrue(self.exchange._is_order_not_found_during_cancelation_error(exception))
         self.assertTrue(self.exchange._is_order_not_found_during_status_update_error(exception))
 
-    @aioresponses()
-    def test_lost_order_removed_if_not_found_during_order_status_update(self, mock_api):
-        # Disabling this test because the connector has not been updated yet to validate
-        # order not found during status update (check _is_order_not_found_during_status_update_error)
-        pass
+    def test_unknown_path_404_is_not_order_not_found(self):
+        # Bitget's 404 means the route is wrong; reading it as a missing order would retire live orders.
+        exception = IOError(
+            "Error executing request POST https://api.bitget.com/api/v3/trade/cancel-order. "
+            'HTTP status is 404. Error: {"code":"40404","msg":"Request URL NOT FOUND",'
+            '"requestTime":1783017943282,"data":null}'
+        )
+        self.assertFalse(self.exchange._is_order_not_found_during_cancelation_error(exception))
+        self.assertFalse(self.exchange._is_order_not_found_during_status_update_error(exception))
 
     def _order_cancelation_request_successful_mock_response(self, order: InFlightOrder) -> Any:
         return {

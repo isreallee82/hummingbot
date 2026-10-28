@@ -315,7 +315,8 @@ class BitgetUnifiedExchange(ExchangePyBase):
 
                 self._trading_fees[trading_pair] = TradeFeeSchema(
                     maker_percent_fee_decimal=Decimal(str(maker_fee)),
-                    taker_percent_fee_decimal=Decimal(str(taker_fee))
+                    taker_percent_fee_decimal=Decimal(str(taker_fee)),
+                    buy_percent_fee_deducted_from_returns=True,
                 )
             except asyncio.CancelledError:
                 raise

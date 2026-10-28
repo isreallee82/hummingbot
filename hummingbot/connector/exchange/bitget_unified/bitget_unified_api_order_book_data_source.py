@@ -1,5 +1,5 @@
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from hummingbot.connector.exchange.bitget_unified import (
     bitget_unified_constants as CONSTANTS,
@@ -34,6 +34,8 @@ class BitgetUnifiedAPIOrderBookDataSource(OrderBookTrackerDataSource):
         self._connector: 'BitgetUnifiedExchange' = connector
         self._api_factory: WebAssistantsFactory = api_factory
         self._ping_task: Optional[asyncio.Task] = None
+        # symbol -> (seq of the last books push, whether that push was the snapshot)
+        self._book_sequences: Dict[str, Tuple[int, bool]] = {}
 
     async def get_last_traded_prices(
         self,
@@ -79,10 +81,36 @@ class BitgetUnifiedAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     "update": self._diff_messages_queue_key
                 }
                 channel = channels.get(action)
+                if channel is not None:
+                    self._validate_book_sequence(event_message)
             elif response_channel == CONSTANTS.PUBLIC_WS_TRADE:
                 channel = self._trade_messages_queue_key
 
         return channel
+
+    def _validate_book_sequence(self, event_message: Dict[str, Any]) -> None:
+        """Raises ConnectionError on a gap in the books chain, so the reconnect starts from a fresh snapshot."""
+        symbol: str = event_message["arg"]["symbol"]
+        is_snapshot = event_message["action"] == "snapshot"
+
+        for entry in event_message.get("data") or []:
+            if entry.get("seq") is None:
+                continue
+            seq = int(entry["seq"])
+            previous = self._book_sequences.get(symbol)
+
+            if not is_snapshot and previous is not None and entry.get("pseq") is not None:
+                last_seq, follows_snapshot = previous
+                pseq = int(entry["pseq"])
+                # pseq repeats the previous push's seq; the first update after a snapshot only brackets it
+                continuous = pseq <= last_seq <= seq if follows_snapshot else pseq == last_seq
+                if not continuous:
+                    raise ConnectionError(
+                        f"Order book sequence broken for {symbol} (last seq {last_seq}, next pseq {pseq}); "
+                        f"resubscribing for a fresh snapshot"
+                    )
+
+            self._book_sequences[symbol] = (seq, is_snapshot)
 
     async def _parse_any_order_book_message(
         self,
@@ -212,6 +240,7 @@ class BitgetUnifiedAPIOrderBookDataSource(OrderBookTrackerDataSource):
             )
 
             self.logger().info("Subscribed to public channels...")
+            self._ping_task = asyncio.create_task(self.send_interval_ping(ws))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -275,37 +304,17 @@ class BitgetUnifiedAPIOrderBookDataSource(OrderBookTrackerDataSource):
         except Exception:
             self.logger().exception("Error sending interval PING")
 
-    async def listen_for_subscriptions(self) -> NoReturn:
-        ws: Optional[WSAssistant] = None
-        while True:
+    async def _on_order_stream_interruption(self, websocket_assistant: Optional[WSAssistant] = None):
+        if self._ping_task is not None:
+            self._ping_task.cancel()
             try:
-                ws: WSAssistant = await self._connected_websocket_assistant()
-                self._ws_assistant = ws  # Store for dynamic subscriptions
-                await self._subscribe_channels(ws)
-                self._ping_task = asyncio.create_task(self.send_interval_ping(ws))
-                await self._process_websocket_messages(websocket_assistant=ws)
+                await self._ping_task
             except asyncio.CancelledError:
-                raise
-            except ConnectionError as connection_exception:
-                self.logger().warning(
-                    f"The websocket connection was closed ({connection_exception})"
-                )
-            except Exception:
-                self.logger().exception(
-                    "Unexpected error occurred when listening to order book streams. "
-                    "Retrying in 5 seconds...",
-                )
-                await self._sleep(1.0)
-            finally:
-                self._ws_assistant = None
-                if self._ping_task is not None:
-                    self._ping_task.cancel()
-                    try:
-                        await self._ping_task
-                    except asyncio.CancelledError:
-                        pass
-                    self._ping_task = None
-                await self._on_order_stream_interruption(websocket_assistant=ws)
+                pass
+            self._ping_task = None
+        # The next connection starts every pair over from a snapshot.
+        self._book_sequences.clear()
+        await super()._on_order_stream_interruption(websocket_assistant=websocket_assistant)
 
     async def subscribe_to_trading_pair(self, trading_pair: str) -> bool:
         """

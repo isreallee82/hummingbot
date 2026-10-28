@@ -1,5 +1,5 @@
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_web_utils as web_utils
 from hummingbot.connector.derivative.bitget_unified_perpetual import bitget_unified_perpetual_constants as CONSTANTS
@@ -153,6 +153,7 @@ class BitgetUnifiedPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             )
 
             self.logger().info("Subscribed to private channels...")
+            self._ping_task = asyncio.create_task(self.send_interval_ping(websocket_assistant))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -179,48 +180,27 @@ class BitgetUnifiedPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
 
     async def send_interval_ping(self, websocket_assistant: WSAssistant) -> None:
         """
-        Coroutine to send PING messages periodically.
+        Coroutine to send PING messages periodically. The first ping is the one listen_for_user_stream
+        sends right after subscribing.
 
         :param websocket_assistant: The websocket assistant to use to send the PING message.
         """
         try:
             while True:
-                await self._send_ping(websocket_assistant)
                 await asyncio.sleep(CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL)
+                await self._send_ping(websocket_assistant)
         except asyncio.CancelledError:
             self.logger().info("Interval PING task cancelled")
             raise
         except Exception:
             self.logger().exception("Error sending interval PING")
 
-    async def listen_for_user_stream(self, output: asyncio.Queue) -> NoReturn:
-        while True:
+    async def _on_user_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
+        if self._ping_task is not None:
+            self._ping_task.cancel()
             try:
-                self._ws_assistant = await self._connected_websocket_assistant()
-                await self._subscribe_channels(websocket_assistant=self._ws_assistant)
-                self._ping_task = asyncio.create_task(self.send_interval_ping(self._ws_assistant))
-                await self._process_websocket_messages(
-                    websocket_assistant=self._ws_assistant,
-                    queue=output
-                )
+                await self._ping_task
             except asyncio.CancelledError:
-                raise
-            except ConnectionError as connection_exception:
-                self.logger().warning(
-                    f"The websocket connection was closed ({connection_exception})"
-                )
-            except Exception:
-                self.logger().exception(
-                    "Unexpected error while listening to user stream. Retrying after 5 seconds..."
-                )
-                await self._sleep(1.0)
-            finally:
-                if self._ping_task is not None:
-                    self._ping_task.cancel()
-                    try:
-                        await self._ping_task
-                    except asyncio.CancelledError:
-                        pass
-                    self._ping_task = None
-                await self._on_user_stream_interruption(websocket_assistant=self._ws_assistant)
-                self._ws_assistant = None
+                pass
+            self._ping_task = None
+        await super()._on_user_stream_interruption(websocket_assistant=websocket_assistant)

@@ -16,7 +16,7 @@ from hummingbot.connector.test_support.exchange_connector_test import AbstractEx
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
-from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount, TradeFeeBase, TradeFeeSchema
+from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase, TradeFeeSchema
 
 
 class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests):
@@ -210,6 +210,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
                     "baseCoin": self.base_asset,
                     "quoteCoin": self.quote_asset,
                     "symbol": self.exchange_trading_pair,
+                    "status": "online",
                 }
             ],
             "msg": "success",
@@ -356,7 +357,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
     @property
     def expected_logged_error_for_erroneous_trading_rule(self):
         erroneous_rule = self.trading_rules_request_erroneous_mock_response["data"][0]
-        return f"Error parsing the trading pair rule {erroneous_rule}. Skipping."
+        return f"Error parsing the trading pair rule: {erroneous_rule}. Skipping."
 
     @property
     def expected_exchange_order_id(self):
@@ -380,7 +381,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
 
     @property
     def expected_fill_fee(self) -> TradeFeeBase:
-        return AddedToCostTradeFee(
+        return DeductedFromReturnsTradeFee(
             percent_token=None,
             flat_fees=[TokenAmount(token=self.quote_asset, amount=Decimal("30"))])
 
@@ -700,14 +701,6 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
     def order_event_for_full_fill_websocket_update(self, order: InFlightOrder):
         return self._order_event_websocket_update(order, "filled")
 
-    @aioresponses()
-    async def test_cancel_order_not_found_in_the_exchange(self, mock_api):
-        pass
-
-    @aioresponses()
-    async def test_lost_order_removed_if_not_found_during_order_status_update(self, mock_api):
-        pass
-
     def test_order_not_found_v3_code_recognized(self):
         # V3 UTA returns 25204 "Order does not exist" when cancelling/querying an order that is
         # unknown or already filled/cancelled; it must be recognised as order-not-found so the base
@@ -720,9 +713,15 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
         self.assertTrue(self.exchange._is_order_not_found_during_cancelation_error(exception))
         self.assertTrue(self.exchange._is_order_not_found_during_status_update_error(exception))
 
-    @aioresponses()
-    async def test_update_trading_rules_ignores_rule_with_error(self, mock_api):
-        pass
+    def test_unknown_path_404_is_not_order_not_found(self):
+        # Bitget's 404 means the route is wrong; reading it as a missing order would retire live orders.
+        exception = IOError(
+            "Error executing request POST https://api.bitget.com/api/v3/trade/cancel-order. "
+            'HTTP status is 404. Error: {"code":"40404","msg":"Request URL NOT FOUND",'
+            '"requestTime":1783017943282,"data":null}'
+        )
+        self.assertFalse(self.exchange._is_order_not_found_during_cancelation_error(exception))
+        self.assertFalse(self.exchange._is_order_not_found_during_status_update_error(exception))
 
     def _order_cancelation_request_successful_mock_response(
         self, order: InFlightOrder
@@ -1230,6 +1229,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             TradeFeeSchema(
                 maker_percent_fee_decimal=Decimal("0.0006"),
                 taker_percent_fee_decimal=Decimal("0.0008"),
+                buy_percent_fee_deducted_from_returns=True,
             ),
             self.exchange._trading_fees[self.trading_pair],
         )

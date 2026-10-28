@@ -129,6 +129,8 @@ class BitgetUnifiedPerpetualAPIOrderBookDataSourceTests(IsolatedAsyncioWrapperTe
         """
         snapshot: Dict[str, Any] = self.ws_order_book_snapshot_mock_response()
         snapshot["action"] = "update"
+        snapshot["data"][0]["pseq"] = snapshot["data"][0]["seq"]
+        snapshot["data"][0]["seq"] = snapshot["data"][0]["seq"] + 7
 
         return snapshot
 
@@ -155,7 +157,7 @@ class BitgetUnifiedPerpetualAPIOrderBookDataSourceTests(IsolatedAsyncioWrapperTe
                         ["27000.0", "2.710"],
                         ["26999.5", "1.460"]
                     ],
-                    "checksum": 0,
+                    "pseq": 0,
                     "seq": 123,
                     "ts": "1695716059516"
                 }
@@ -979,3 +981,249 @@ class BitgetUnifiedPerpetualAPIOrderBookDataSourceTests(IsolatedAsyncioWrapperTe
         self.assertEqual(funding_event, funding_queue.get_nowait())
         self.assertEqual(1, trade_queue.qsize())
         self.assertEqual(trade_event, trade_queue.get_nowait())
+
+    def _books_push(self, action: str, seq: int, pseq: int, symbol: Optional[str] = None) -> Dict[str, Any]:
+        message: Dict[str, Any] = self.ws_order_book_snapshot_mock_response()
+        message["action"] = action
+        message["arg"]["symbol"] = symbol or self.exchange_trading_pair
+        message["data"][0]["seq"] = seq
+        message["data"][0]["pseq"] = pseq
+        return message
+
+    def test_books_sequence_accepts_a_continuous_chain(self) -> None:
+        channels = [
+            self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0)),
+            self.data_source._channel_originating_message(self._books_push("update", seq=105, pseq=100)),
+            self.data_source._channel_originating_message(self._books_push("update", seq=111, pseq=105)),
+        ]
+
+        self.assertEqual(
+            [
+                self.data_source._snapshot_messages_queue_key,
+                self.data_source._diff_messages_queue_key,
+                self.data_source._diff_messages_queue_key,
+            ],
+            channels,
+        )
+
+    def test_books_sequence_gap_raises_connection_error(self) -> None:
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0))
+        self.data_source._channel_originating_message(self._books_push("update", seq=105, pseq=100))
+
+        with self.assertRaises(ConnectionError) as context:
+            self.data_source._channel_originating_message(self._books_push("update", seq=120, pseq=110))
+
+        self.assertIn("last seq 105, next pseq 110", str(context.exception))
+
+    def test_first_update_after_snapshot_only_has_to_bracket_it(self) -> None:
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0))
+
+        channel = self.data_source._channel_originating_message(self._books_push("update", seq=110, pseq=95))
+
+        self.assertEqual(self.data_source._diff_messages_queue_key, channel)
+        # From the second update on, pseq has to repeat the previous seq exactly.
+        with self.assertRaises(ConnectionError):
+            self.data_source._channel_originating_message(self._books_push("update", seq=120, pseq=100))
+
+    def test_first_update_after_snapshot_that_does_not_bracket_it_raises(self) -> None:
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0))
+
+        with self.assertRaises(ConnectionError):
+            self.data_source._channel_originating_message(self._books_push("update", seq=110, pseq=101))
+
+    def test_books_sequence_reset_mid_stream_raises_connection_error(self) -> None:
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0))
+        self.data_source._channel_originating_message(self._books_push("update", seq=105, pseq=100))
+
+        with self.assertRaises(ConnectionError):
+            self.data_source._channel_originating_message(self._books_push("update", seq=3, pseq=0))
+
+    def test_snapshot_restarts_the_books_sequence(self) -> None:
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0))
+        self.data_source._channel_originating_message(self._books_push("update", seq=105, pseq=100))
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=900, pseq=0))
+
+        channel = self.data_source._channel_originating_message(self._books_push("update", seq=905, pseq=900))
+
+        self.assertEqual(self.data_source._diff_messages_queue_key, channel)
+
+    def test_books_sequence_is_tracked_per_symbol(self) -> None:
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0))
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=500, pseq=0, symbol="ETHUSDT"))
+        self.data_source._channel_originating_message(self._books_push("update", seq=105, pseq=100))
+        self.data_source._channel_originating_message(self._books_push("update", seq=510, pseq=500, symbol="ETHUSDT"))
+
+        self.assertEqual((105, False), self.data_source._book_sequences[self.exchange_trading_pair])
+        self.assertEqual((510, False), self.data_source._book_sequences["ETHUSDT"])
+
+    def test_books_push_without_sequence_fields_is_not_checked(self) -> None:
+        message = self.ws_order_book_diff_mock_response()
+        del message["data"][0]["seq"]
+        del message["data"][0]["pseq"]
+
+        channel = self.data_source._channel_originating_message(message)
+
+        self.assertEqual(self.data_source._diff_messages_queue_key, channel)
+        self.assertEqual({}, self.data_source._book_sequences)
+
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    async def test_listen_for_subscriptions_resubscribes_after_a_books_sequence_gap(self, mock_ws: AsyncMock) -> None:
+        first_connection = self.mocking_assistant.create_websocket_mock()
+        second_connection = self.mocking_assistant.create_websocket_mock()
+        mock_ws.side_effect = [first_connection, second_connection]
+        for message in [
+            self._books_push("snapshot", seq=100, pseq=0),
+            self._books_push("update", seq=105, pseq=100),
+            self._books_push("update", seq=120, pseq=110),
+        ]:
+            self.mocking_assistant.add_websocket_aiohttp_message(
+                websocket_mock=first_connection, message=json.dumps(message)
+            )
+        self.mocking_assistant.add_websocket_aiohttp_message(
+            websocket_mock=second_connection, message=json.dumps(self._books_push("snapshot", seq=200, pseq=0))
+        )
+
+        self.listening_task = self.local_event_loop.create_task(self.data_source.listen_for_subscriptions())
+        await self.mocking_assistant.run_until_all_aiohttp_messages_delivered(second_connection)
+
+        self.assertEqual(2, mock_ws.call_count)
+        self.assertTrue(self._is_logged(
+            "WARNING",
+            f"The websocket connection was closed (Order book sequence broken for {self.exchange_trading_pair} "
+            f"(last seq 105, next pseq 110); resubscribing for a fresh snapshot)"
+        ))
+        expected_subscription = await self.expected_subscription_response(self.trading_pair)
+        self.assertEqual(
+            [expected_subscription], self.mocking_assistant.json_messages_sent_through_websocket(second_connection)
+        )
+        snapshot_queue = self.data_source._message_queue[self.data_source._snapshot_messages_queue_key]
+        diff_queue = self.data_source._message_queue[self.data_source._diff_messages_queue_key]
+        self.assertEqual(2, snapshot_queue.qsize())
+        self.assertEqual(1, diff_queue.qsize())
+        self.assertEqual((200, True), self.data_source._book_sequences[self.exchange_trading_pair])
+
+    async def test_subscribe_channels_starts_the_ping_task(self) -> None:
+        ws = AsyncMock()
+
+        await self.data_source._subscribe_channels(ws)
+        await asyncio.sleep(0)
+
+        self.assertIsNotNone(self.data_source._ping_task)
+        self.assertEqual(2, ws.send.call_count)  # the subscription, then the first ping
+        await self.data_source._on_order_stream_interruption(websocket_assistant=ws)
+
+    async def test_stream_interruption_stops_the_ping_task_and_clears_sequences(self) -> None:
+        ws = AsyncMock()
+        self.data_source._channel_originating_message(self._books_push("snapshot", seq=100, pseq=0))
+        ping_task = self.local_event_loop.create_task(self.data_source.send_interval_ping(ws))
+        self.data_source._ping_task = ping_task
+        await asyncio.sleep(0)
+
+        await self.data_source._on_order_stream_interruption(websocket_assistant=ws)
+
+        self.assertTrue(ping_task.cancelled())
+        self.assertIsNone(self.data_source._ping_task)
+        self.assertEqual({}, self.data_source._book_sequences)
+        ws.disconnect.assert_awaited_once()
+
+    async def test_subscribe_to_trading_pair_successful(self) -> None:
+        new_pair = "ETH-USDT"
+        ex_new_pair = "ETHUSDT"
+        self.connector._set_trading_pair_symbol_map(
+            bidict({self.exchange_trading_pair: self.trading_pair, ex_new_pair: new_pair})
+        )
+        mock_ws = AsyncMock()
+        self.data_source._ws_assistant = mock_ws
+
+        result = await self.data_source.subscribe_to_trading_pair(new_pair)
+
+        self.assertTrue(result)
+        self.assertIn(new_pair, self.data_source._trading_pairs)
+        self.assertEqual(1, mock_ws.send.call_count)
+        self.assertEqual(
+            await self.expected_subscription_response(new_pair), mock_ws.send.call_args[0][0].payload
+        )
+        self.assertTrue(self._is_logged("INFO", f"Successfully subscribed to {new_pair}"))
+
+    async def test_subscribe_to_trading_pair_websocket_not_connected(self) -> None:
+        new_pair = "ETH-USDT"
+        self.data_source._ws_assistant = None
+
+        result = await self.data_source.subscribe_to_trading_pair(new_pair)
+
+        self.assertFalse(result)
+        self.assertTrue(self._is_logged(
+            "WARNING", f"Cannot subscribe to {new_pair}: WebSocket connection not established."
+        ))
+
+    async def test_subscribe_to_trading_pair_raises_cancel_exception(self) -> None:
+        new_pair = "ETH-USDT"
+        ex_new_pair = "ETHUSDT"
+        self.connector._set_trading_pair_symbol_map(
+            bidict({self.exchange_trading_pair: self.trading_pair, ex_new_pair: new_pair})
+        )
+        mock_ws = AsyncMock()
+        mock_ws.send.side_effect = asyncio.CancelledError
+        self.data_source._ws_assistant = mock_ws
+
+        with self.assertRaises(asyncio.CancelledError):
+            await self.data_source.subscribe_to_trading_pair(new_pair)
+
+    async def test_subscribe_to_trading_pair_raises_exception_and_logs_error(self) -> None:
+        new_pair = "ETH-USDT"
+        ex_new_pair = "ETHUSDT"
+        self.connector._set_trading_pair_symbol_map(
+            bidict({self.exchange_trading_pair: self.trading_pair, ex_new_pair: new_pair})
+        )
+        mock_ws = AsyncMock()
+        mock_ws.send.side_effect = Exception("Test Error")
+        self.data_source._ws_assistant = mock_ws
+
+        result = await self.data_source.subscribe_to_trading_pair(new_pair)
+
+        self.assertFalse(result)
+        self.assertNotIn(new_pair, self.data_source._trading_pairs)
+        self.assertTrue(self._is_logged("ERROR", f"Error subscribing to {new_pair}: Test Error"))
+
+    async def test_unsubscribe_from_trading_pair_successful(self) -> None:
+        mock_ws = AsyncMock()
+        self.data_source._ws_assistant = mock_ws
+        expected_unsubscription = await self.expected_subscription_response(self.trading_pair)
+        expected_unsubscription["op"] = "unsubscribe"
+
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+
+        self.assertTrue(result)
+        self.assertNotIn(self.trading_pair, self.data_source._trading_pairs)
+        self.assertEqual(1, mock_ws.send.call_count)
+        self.assertEqual(expected_unsubscription, mock_ws.send.call_args[0][0].payload)
+        self.assertTrue(self._is_logged("INFO", f"Successfully unsubscribed from {self.trading_pair}"))
+
+    async def test_unsubscribe_from_trading_pair_websocket_not_connected(self) -> None:
+        self.data_source._ws_assistant = None
+
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+
+        self.assertFalse(result)
+        self.assertTrue(self._is_logged(
+            "WARNING", f"Cannot unsubscribe from {self.trading_pair}: WebSocket connection not established."
+        ))
+
+    async def test_unsubscribe_from_trading_pair_raises_cancel_exception(self) -> None:
+        mock_ws = AsyncMock()
+        mock_ws.send.side_effect = asyncio.CancelledError
+        self.data_source._ws_assistant = mock_ws
+
+        with self.assertRaises(asyncio.CancelledError):
+            await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+
+    async def test_unsubscribe_from_trading_pair_raises_exception_and_logs_error(self) -> None:
+        mock_ws = AsyncMock()
+        mock_ws.send.side_effect = Exception("Test Error")
+        self.data_source._ws_assistant = mock_ws
+
+        result = await self.data_source.unsubscribe_from_trading_pair(self.trading_pair)
+
+        self.assertFalse(result)
+        self.assertIn(self.trading_pair, self.data_source._trading_pairs)
+        self.assertTrue(self._is_logged("ERROR", f"Error unsubscribing from {self.trading_pair}: Test Error"))

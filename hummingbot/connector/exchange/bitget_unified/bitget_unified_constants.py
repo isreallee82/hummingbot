@@ -3,9 +3,9 @@ from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState
 
 EXCHANGE_NAME = "bitget_unified"
-DEFAULT_DOMAIN = "bitget.com"
-REST_SUBDOMAIN = "api"
-WSS_SUBDOMAIN = "ws"
+DEFAULT_DOMAIN = EXCHANGE_NAME
+REST_URLS = {DEFAULT_DOMAIN: "https://api.bitget.com"}
+WSS_URLS = {DEFAULT_DOMAIN: "wss://ws.bitget.com"}
 DEFAULT_TIME_IN_FORCE = "gtc"
 # V3 UTA post-only (maker-only) timeInForce, used for LIMIT_MAKER orders.
 POST_ONLY_TIME_IN_FORCE = "post_only"
@@ -96,6 +96,7 @@ RET_CODE_REQUEST_TIMESTAMP_EXPIRED = "30014"
 RET_CODE_INVALID_SIGNATURE = "30015"
 RET_CODE_PARAM_ERROR = "30016"
 
+# No bare HTTP 404 here: Bitget answers an unknown path with 404/40404, which says nothing about the order
 RET_CODES_ORDER_NOT_EXISTS = [
     "25204",
     "40768", "80011", "40819",
