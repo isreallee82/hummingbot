@@ -740,14 +740,18 @@ class BitgetUnifiedExchange(ExchangePyBase):
                     # 0.0001, so deriving the minimum from the precision would overstate it by
                     # orders of magnitude and make the executors reject valid orders.
                     min_order_size = Decimal(str(rule.get("minOrderQty", rule.get("minTradeAmount"))))
-                    # quantityPrecision is not always consistent with minOrderQty: the tokenized
-                    # stock pairs report precision 0 while accepting 0.0001. Taking the finer of
-                    # the two keeps the step from rounding the exchange's own minimum down to
-                    # zero, which would reject every order those pairs actually accept.
-                    quantity_step = min(
-                        Decimal(f"1e-{rule['quantityPrecision']}"),
-                        min_order_size,
-                    )
+                    precision_step = Decimal(f"1e-{rule['quantityPrecision']}")
+                    if min_order_size > 0:
+                        # quantityPrecision is not always consistent with minOrderQty: the tokenized
+                        # stock pairs report precision 0 while accepting 0.0001. Taking the finer of
+                        # the two keeps the step from rounding the exchange's own minimum down to
+                        # zero, which would reject every order those pairs actually accept.
+                        quantity_step = min(precision_step, min_order_size)
+                    else:
+                        # Nearly every V3 spot pair reports minOrderQty "0" (no base-size minimum);
+                        # a zero step would make order quantization divide by zero.
+                        quantity_step = precision_step
+                        min_order_size = precision_step
                     trading_rules.append(
                         TradingRule(
                             trading_pair=trading_pair,

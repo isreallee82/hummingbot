@@ -1147,6 +1147,45 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             self.exchange.quantize_order_amount(self.trading_pair, Decimal("0.5")),
         )
 
+    def test_trading_rule_treats_zero_min_order_qty_as_no_minimum(self) -> None:
+        # Live V3 SPOT shape for SOLUSDT: minOrderQty "0" means no base-size minimum, not a zero step.
+        self.exchange._set_trading_pair_symbol_map(
+            bidict({self.exchange_trading_pair: self.trading_pair})
+        )
+        response = {
+            "code": "00000",
+            "msg": "success",
+            "data": [{
+                "symbol": self.exchange_trading_pair,
+                "baseCoin": self.base_asset,
+                "quoteCoin": self.quote_asset,
+                "minOrderQty": "0",
+                "maxOrderQty": "0",
+                "pricePrecision": "2",
+                "quantityPrecision": "4",
+                "quotePrecision": "6",
+                "minOrderAmount": "1",
+                "status": "online",
+            }],
+        }
+
+        rules = self.async_run_with_timeout(self.exchange._format_trading_rules(response))
+
+        self.assertEqual(1, len(rules))
+        self.assertEqual(Decimal("0.0001"), rules[0].min_base_amount_increment)
+        self.assertEqual(Decimal("0.0001"), rules[0].min_order_size)
+        self.assertEqual(Decimal("1"), rules[0].min_notional_size)
+
+        self.exchange._trading_rules[self.trading_pair] = rules[0]
+        self.assertEqual(
+            Decimal("0.03"),
+            self.exchange.quantize_order_amount(self.trading_pair, Decimal("0.03")),
+        )
+        self.assertEqual(
+            Decimal("0"),
+            self.exchange.quantize_order_amount(self.trading_pair, Decimal("0.00005")),
+        )
+
     def test_trading_rule_falls_back_to_legacy_field_names(self) -> None:
         self.exchange._set_trading_pair_symbol_map(
             bidict({self.exchange_trading_pair: self.trading_pair})
