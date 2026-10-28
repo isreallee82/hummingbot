@@ -615,6 +615,7 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
         # private stream writes positions concurrently, so one opened after its category was
         # queried would otherwise be missing from the reported set and wrongly pruned below.
         stale_candidate_keys: set[str] = set(self._perpetual_trading.account_positions.keys())
+        symbol_map = await self.trading_pair_symbol_map()
 
         for product_type in product_types:
             # Every page matters here: the reconciliation below removes positions this poll did
@@ -627,7 +628,10 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
             for position in all_positions_data:
                 # V3 current-position (CurrentPositionV3) fields.
                 symbol = position["symbol"]
-                trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol)
+                if symbol not in symbol_map:
+                    # Dated futures share these categories but are kept out of the symbol map.
+                    continue
+                trading_pair = symbol_map[symbol]
                 position_side = position_sides[position["posSide"]]
                 unrealized_pnl = Decimal(str(position["unrealisedPnl"]))
                 entry_price = Decimal(str(position["avgPrice"]))
@@ -982,12 +986,16 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
             "long": PositionSide.LONG,
             "short": PositionSide.SHORT
         }
+        symbol_map = await self.trading_pair_symbol_map()
 
         for position in position_entries:
             # V3 UTA position channel (BitgetUnifiedUaPositionUpdate): symbol (not instId), posSide, size
             # (not total), avgPrice, unrealisedPnl.
             symbol = position["symbol"]
-            trading_pair = await self.trading_pair_associated_to_exchange_symbol(symbol)
+            if symbol not in symbol_map:
+                # Dated futures share the account but are kept out of the symbol map.
+                continue
+            trading_pair = symbol_map[symbol]
             position_side = position_sides[position["posSide"]]
             entry_price = Decimal(str(position["avgPrice"]))
             amount = Decimal(str(position["size"]))

@@ -2543,3 +2543,59 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
 
         self.assertEqual(1, len(self.exchange.account_positions))
         self.assertEqual(1, len(self._all_executed_requests(mock_api, url)))
+
+    @aioresponses()
+    def test_update_positions_skips_instruments_outside_the_symbol_map(self, mock_api):
+        """A dated futures position must not stop the poll from updating and pruning perpetual positions."""
+        self.exchange._set_trading_pair_symbol_map(
+            bidict({self.exchange_trading_pair: self.trading_pair, "ETHUSDT": "ETH-USDT"})
+        )
+        eth_key = self.exchange._perpetual_trading.position_key("ETH-USDT", PositionSide.LONG)
+        self.exchange._perpetual_trading.set_position(
+            eth_key,
+            Position(trading_pair="ETH-USDT", position_side=PositionSide.LONG,
+                     unrealized_pnl=Decimal("1"), entry_price=Decimal("3000"),
+                     amount=Decimal("2"), leverage=Decimal("10")),
+        )
+
+        def _position(symbol):
+            return {"symbol": symbol, "posSide": "long", "unrealisedPnl": "1",
+                    "avgPrice": "100", "total": "2", "leverage": "10"}
+
+        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
+        mock_api.get(regex_url, body=json.dumps({
+            "code": "00000", "msg": "success",
+            "data": {"list": [_position("BTCUSDT0327"), _position(self.exchange_trading_pair)], "cursor": ""},
+        }))
+
+        self.async_run_with_timeout(self.exchange._update_positions())
+
+        btc_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
+        self.assertEqual([btc_key], list(self.exchange.account_positions.keys()))
+
+    def test_position_event_skips_instruments_outside_the_symbol_map(self):
+        """A dated futures entry must not stop the rest of the message, or the snapshot pruning, from applying."""
+        self.exchange._set_trading_pair_symbol_map(
+            bidict({self.exchange_trading_pair: self.trading_pair, "ETHUSDT": "ETH-USDT"})
+        )
+        eth_key = self.exchange._perpetual_trading.position_key("ETH-USDT", PositionSide.LONG)
+        self.exchange._perpetual_trading.set_position(
+            eth_key,
+            Position(trading_pair="ETH-USDT", position_side=PositionSide.LONG,
+                     unrealized_pnl=Decimal("1"), entry_price=Decimal("3000"),
+                     amount=Decimal("2"), leverage=Decimal("10")),
+        )
+
+        def _entry(symbol):
+            return {"symbol": symbol, "posSide": "long", "size": "1", "avgPrice": "29000",
+                    "leverage": "10", "unrealisedPnl": "5"}
+
+        self.async_run_with_timeout(
+            self.exchange._process_account_position_event(
+                [_entry("BTCUSDT0327"), _entry(self.exchange_trading_pair)], is_snapshot=True
+            )
+        )
+
+        btc_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
+        self.assertEqual([btc_key], list(self.exchange.account_positions.keys()))

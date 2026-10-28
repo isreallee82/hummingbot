@@ -402,14 +402,12 @@ class BitgetUnifiedExchange(ExchangePyBase):
 
         if order.exchange_order_id is not None:
             try:
-                all_fills_response = await self._request_order_fills(order=order)
-                # V3 fills are paginated under data.list (the V2 API used the {"fillList": [...]}
-                # wrapper). Coalesce a null/missing list to an empty list.
-                fills_payload = all_fills_response.get("data")
-                if isinstance(fills_payload, dict):
-                    fills_data = fills_payload.get("list") or []
-                else:
-                    fills_data = fills_payload or []
+                # Reading only the first page would drop the earlier fills of a heavily
+                # partially-filled order.
+                fills_data = await self._paginated_rows(
+                    path_url=CONSTANTS.USER_FILLS_ENDPOINT,
+                    params={"orderId": order.exchange_order_id},
+                )
 
                 for fill_data in fills_data:
                     trade_update = self._parse_trade_update(
@@ -430,16 +428,37 @@ class BitgetUnifiedExchange(ExchangePyBase):
 
         return trade_updates
 
-    async def _request_order_fills(self, order: InFlightOrder) -> Dict[str, Any]:
-        order_fills_response = await self._api_get(
-            path_url=CONSTANTS.USER_FILLS_ENDPOINT,
-            params={
-                "orderId": order.exchange_order_id
-            },
-            is_auth_required=True,
-        )
+    async def _paginated_rows(self, path_url: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Reads every page of a cursor-paginated V3 response (rows in data.list, next page via data.cursor)."""
+        rows: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
 
-        return order_fills_response
+        for _ in range(CONSTANTS.MAX_PAGINATION_PAGES):
+            page_params = dict(params, limit=str(CONSTANTS.PAGINATION_LIMIT))
+            if cursor:
+                page_params["cursor"] = cursor
+
+            response = await self._api_get(path_url=path_url, params=page_params, is_auth_required=True)
+
+            payload = response.get("data")
+            if isinstance(payload, dict):
+                page_rows = payload.get("list") or []
+                cursor = payload.get("cursor") or None
+            else:
+                page_rows = payload or []
+                cursor = None
+            rows.extend(page_rows)
+
+            # The cursor also comes back alongside the last page, so only a full page means more rows.
+            if len(page_rows) < CONSTANTS.PAGINATION_LIMIT or not cursor:
+                break
+        else:
+            self.logger().warning(
+                f"Stopped paging {path_url} at {CONSTANTS.MAX_PAGINATION_PAGES} pages; the "
+                f"remaining rows were not read."
+            )
+
+        return rows
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
         order_info_response = await self._request_order_update(tracked_order=tracked_order)

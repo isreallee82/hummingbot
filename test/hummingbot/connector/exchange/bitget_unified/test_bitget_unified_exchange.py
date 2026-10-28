@@ -723,6 +723,38 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
         self.assertFalse(self.exchange._is_order_not_found_during_cancelation_error(exception))
         self.assertFalse(self.exchange._is_order_not_found_during_status_update_error(exception))
 
+    @aioresponses()
+    async def test_all_trade_updates_for_order_reads_every_page_of_fills(self, mock_api):
+        self.exchange.start_tracking_order(
+            order_id=self.client_order_id_prefix + "1",
+            exchange_order_id=str(self.expected_exchange_order_id),
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10000"),
+            amount=Decimal("1"),
+        )
+        order = self.exchange.in_flight_orders[self.client_order_id_prefix + "1"]
+        fill = self._order_fills_request_full_fill_mock_response(order)["data"][0]
+
+        def _page(page: int, rows: int, cursor: str) -> Dict[str, Any]:
+            fills = [dict(fill, tradeId=f"{page}-{row}") for row in range(rows)]
+            return {"code": "00000", "msg": "success", "data": {"list": fills, "cursor": cursor}}
+
+        url = web_utils.private_rest_url(path_url=CONSTANTS.USER_FILLS_ENDPOINT)
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+        # A full first page, then a short one; a cursor comes back with both.
+        mock_api.get(regex_url, body=json.dumps(_page(1, CONSTANTS.PAGINATION_LIMIT, "page2")))
+        mock_api.get(regex_url, body=json.dumps(_page(2, 1, "page3")))
+
+        trade_updates = await self.exchange._all_trade_updates_for_order(order)
+
+        self.assertEqual(CONSTANTS.PAGINATION_LIMIT + 1, len(trade_updates))
+        requests = self._all_executed_requests(mock_api, url)
+        self.assertEqual(2, len(requests))
+        self.assertNotIn("cursor", requests[0].kwargs["params"])
+        self.assertEqual("page2", requests[1].kwargs["params"]["cursor"])
+
     def _order_cancelation_request_successful_mock_response(
         self, order: InFlightOrder
     ) -> Dict[str, Any]:
