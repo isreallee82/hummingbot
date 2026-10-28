@@ -1,8 +1,10 @@
+import asyncio
 import json
 import re
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
+from unittest.mock import patch
 
-from aioresponses import aioresponses
+from aioresponses import CallbackResult, aioresponses
 
 import hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_constants as PERP_CONSTANTS
 import hummingbot.connector.exchange.bitget_unified.bitget_unified_constants as CONSTANTS
@@ -10,6 +12,7 @@ import hummingbot.connector.exchange.bitget_unified.bitget_unified_web_utils as 
 from hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_derivative import (
     BitgetUnifiedPerpetualDerivative,
 )
+from hummingbot.connector.exchange.bitget_unified import bitget_unified_account
 from hummingbot.connector.exchange.bitget_unified.bitget_unified_exchange import BitgetUnifiedExchange
 
 API_KEY = "test_api_key"
@@ -23,6 +26,15 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
     Bitget's UTA is one cross-margined wallet read by both connectors, so both report the same
     funds. They advertise a shared account id to stop that wallet being counted twice.
     """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The learned user ids are process-wide, so other tests must not leak into these.
+        bitget_unified_account.forget_all()
+
+    def tearDown(self) -> None:
+        bitget_unified_account.forget_all()
+        super().tearDown()
 
     @staticmethod
     def _spot(api_key=API_KEY):
@@ -54,11 +66,16 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
         assert CONSTANTS.USER_INFO_ENDPOINT == PERP_CONSTANTS.USER_INFO_ENDPOINT
         return web_utils.private_rest_url(path_url=CONSTANTS.USER_INFO_ENDPOINT)
 
+    def _user_info_regex(self) -> re.Pattern:
+        return re.compile(f"^{self._user_info_url()}".replace(".", r"\.").replace("?", r"\?"))
+
+    @staticmethod
+    def _user_info_body(user_id: str = USER_ID) -> str:
+        return json.dumps({"code": "00000", "msg": "success", "requestTime": 1744617600000,
+                           "data": {"userId": user_id, "parentId": None, "permType": "read_and_write"}})
+
     def _mock_user_id(self, mock_api: aioresponses, user_id: str = USER_ID, status: int = 200):
-        regex_url = re.compile(f"^{self._user_info_url()}".replace(".", r"\.").replace("?", r"\?"))
-        body = {"code": "00000", "msg": "success", "requestTime": 1744617600000,
-                "data": {"userId": user_id, "parentId": None, "permType": "read_and_write"}}
-        mock_api.get(regex_url, status=status, body=json.dumps(body))
+        mock_api.get(self._user_info_regex(), status=status, body=self._user_info_body(user_id))
 
     def _user_info_requests(self, mock_api: aioresponses) -> int:
         return sum(len(calls) for (method, url), calls in mock_api.requests.items()
@@ -119,25 +136,76 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
         self.assertTrue(spot.account_group_id.startswith("bitget_uta:"))
 
     @aioresponses()
-    async def test_the_user_id_is_read_once(self, mock_api):
+    async def test_the_user_id_is_read_once_per_api_key(self, mock_api):
         spot = self._spot()
+        perpetual = self._perpetual()
         self._mock_user_id(mock_api)
 
         await spot._update_account_uid()
         await spot._update_account_uid()
+        await perpetual._update_account_uid()
 
         self.assertEqual(1, self._user_info_requests(mock_api))
+        self.assertEqual(spot.account_group_id, perpetual.account_group_id)
 
     @aioresponses()
-    async def test_a_failed_read_falls_back_to_the_api_key_without_retrying(self, mock_api):
+    async def test_same_key_connectors_match_when_only_one_read_succeeds(self, mock_api):
+        """
+        The balance command refreshes both connectors at once and the endpoint allows one call per
+        second, so one read can be refused. The connector that failed must still match the other.
+        """
+        spot = self._spot()
+        perpetual = self._perpetual()
+        answered = []
+
+        async def _refuse_the_first_read_while_the_second_goes_out(*args, **kwargs):
+            answered.append(None)
+            if len(answered) == 1:
+                await asyncio.sleep(0)
+                return CallbackResult(status=429, body=json.dumps({"code": "429", "msg": "Too Many Requests"}))
+            return CallbackResult(status=200, body=self._user_info_body())
+
+        mock_api.get(self._user_info_regex(), callback=_refuse_the_first_read_while_the_second_goes_out, repeat=True)
+
+        await asyncio.gather(spot._update_account_uid(), perpetual._update_account_uid())
+
+        self.assertEqual(2, self._user_info_requests(mock_api))
+        self.assertEqual(USER_ID, bitget_unified_account.known_user_id(API_KEY))
+        self.assertEqual(spot.account_group_id, perpetual.account_group_id)
+        self.assertNotEqual(self._spot(api_key="unrelated_key").account_group_id, spot.account_group_id)
+
+    @aioresponses()
+    async def test_a_failed_read_falls_back_to_the_api_key_and_retries_after_the_interval(self, mock_api):
         spot = self._spot()
         key_based_id = spot.account_group_id
         self._mock_user_id(mock_api, status=400)
+        self._mock_user_id(mock_api)
 
-        await spot._update_account_uid()
-        await spot._update_account_uid()
+        with patch.object(bitget_unified_account, "_time", return_value=1000.0):
+            await spot._update_account_uid()
+            await spot._update_account_uid()
 
-        self.assertIsNone(spot._account_uid)
+        self.assertEqual(key_based_id, spot.account_group_id)
+        self.assertEqual(1, self._user_info_requests(mock_api))
+
+        retry_at = 1000.0 + bitget_unified_account.USER_ID_RETRY_INTERVAL_SECONDS
+        with patch.object(bitget_unified_account, "_time", return_value=retry_at):
+            await spot._update_account_uid()
+
+        self.assertEqual(2, self._user_info_requests(mock_api))
+        self.assertEqual(USER_ID, bitget_unified_account.known_user_id(API_KEY))
+        self.assertNotEqual(key_based_id, spot.account_group_id)
+
+    @aioresponses()
+    async def test_a_response_without_a_user_id_counts_as_a_failed_read(self, mock_api):
+        spot = self._spot()
+        key_based_id = spot.account_group_id
+        mock_api.get(self._user_info_regex(), body=json.dumps({"code": "00000", "msg": "success", "data": {}}))
+
+        with patch.object(bitget_unified_account, "_time", return_value=1000.0):
+            await spot._update_account_uid()
+            await spot._update_account_uid()
+
         self.assertEqual(key_based_id, spot.account_group_id)
         self.assertEqual(1, self._user_info_requests(mock_api))
 
@@ -146,9 +214,10 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
         """The balance command reads account_group_id right after _update_balances."""
         assets_body = json.dumps({"code": "00000", "msg": "success", "data": {"assets": [
             {"coin": "USDT", "available": "10", "locked": "0", "balance": "10"}]}})
-        for connector, assets_endpoint in (
-            (self._spot(api_key="key_for_spot"), CONSTANTS.ASSETS_ENDPOINT),
-            (self._perpetual(api_key="key_for_perpetual"), PERP_CONSTANTS.ACCOUNTS_INFO_ENDPOINT),
+        for api_key, connector, assets_endpoint in (
+            ("key_for_spot", self._spot(api_key="key_for_spot"), CONSTANTS.ASSETS_ENDPOINT),
+            ("key_for_perpetual", self._perpetual(api_key="key_for_perpetual"),
+             PERP_CONSTANTS.ACCOUNTS_INFO_ENDPOINT),
         ):
             assets_url = web_utils.private_rest_url(path_url=assets_endpoint)
             mock_api.get(re.compile(f"^{assets_url}".replace(".", r"\.").replace("?", r"\?")), body=assets_body)
@@ -156,5 +225,5 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
 
             await connector._update_balances()
 
-            self.assertEqual(USER_ID, connector._account_uid)
+            self.assertEqual(USER_ID, bitget_unified_account.known_user_id(api_key))
             self.assertEqual(10, connector.get_balance("USDT"))
