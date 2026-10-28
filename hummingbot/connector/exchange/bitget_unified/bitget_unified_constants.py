@@ -64,6 +64,7 @@ PUBLIC_TIME_ENDPOINT = "/api/v3/market/time"
 
 # Private (account/trade) V3 endpoints
 ASSETS_ENDPOINT = "/api/v3/account/assets"
+USER_INFO_ENDPOINT = "/api/v3/account/info"
 FEE_RATE_ENDPOINT = "/api/v3/account/fee-rate"
 CANCEL_ORDER_ENDPOINT = "/api/v3/trade/cancel-order"
 ORDER_INFO_ENDPOINT = "/api/v3/trade/order-info"
@@ -116,6 +117,7 @@ RATE_LIMITS = [
     RateLimit(limit_id=PUBLIC_TIME_ENDPOINT, limit=10, time_interval=1),
 
     RateLimit(limit_id=ASSETS_ENDPOINT, limit=10, time_interval=1),
+    RateLimit(limit_id=USER_INFO_ENDPOINT, limit=1, time_interval=1),
     RateLimit(limit_id=FEE_RATE_ENDPOINT, limit=10, time_interval=1),
     RateLimit(limit_id=CANCEL_ORDER_ENDPOINT, limit=10, time_interval=1),
     RateLimit(limit_id=ORDER_INFO_ENDPOINT, limit=20, time_interval=1),

@@ -207,8 +207,8 @@ class ExchangePyBase(ExchangeBase, ABC):
         connectors counts the same funds once per connector.
 
         Connectors backed by the same account return the same id, and it must be derived from the
-        credentials rather than the connector name: two different API keys are two real accounts
-        and must never be folded together. Returning None, the default, means this connector's
+        account the credentials belong to rather than the connector name: two different accounts
+        must never be folded together. Returning None, the default, means this connector's
         balance stands on its own and nothing changes.
         """
         return None
