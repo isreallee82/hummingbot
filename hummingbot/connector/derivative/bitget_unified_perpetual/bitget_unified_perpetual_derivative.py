@@ -522,12 +522,7 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
         data = accounts_info_response["data"]
 
         if isinstance(data, dict):
-            for asset in data.get("assets", []):
-                self._accumulate_balance(
-                    asset["coin"],
-                    Decimal(str(asset["available"])),
-                    Decimal(str(asset.get("balance", asset["available"]))),
-                )
+            self._set_unified_margin_balances(account=data, coins=data.get("assets", []))
         else:
             for balance_data in data:
                 self._accumulate_balance(
@@ -541,6 +536,31 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
                         Decimal(base_asset["available"]),
                         Decimal(base_asset["balance"]),
                     )
+
+    def _set_unified_margin_balances(self, account: Dict[str, Any], coins: List[Dict[str, Any]]) -> None:
+        """
+        UTA margin is one cross-collateral pool valued in USD (effEquity, net of haircuts), so it is reported
+        under the collateral token of the USDT- and USDC-margined pairs traded, USDT when none is configured.
+        A coin-margined pair keeps its coin's own balance; the rest of the wallet is the spot connector's to list.
+        """
+        pairs = [split_hb_trading_pair(trading_pair) for trading_pair in self._trading_pairs or []]
+        margin_tokens = {quote for _, quote in pairs if quote in ("USDT", "USDC")} or {"USDT"}
+        per_coin_tokens = {base for base, quote in pairs if quote == "USD"}
+
+        if account.get("effEquity") is not None:
+            equity = Decimal(str(account["effEquity"]))
+            available = max(equity - Decimal(str(account.get("imr") or 0)), s_decimal_0)
+            for token in margin_tokens:
+                self._account_balances[token] = equity
+                self._account_available_balances[token] = available
+        else:
+            per_coin_tokens |= margin_tokens
+
+        for coin_balance in coins:
+            if coin_balance["coin"] in per_coin_tokens:
+                available = Decimal(str(coin_balance["available"]))
+                self._account_balances[coin_balance["coin"]] = Decimal(str(coin_balance.get("balance", available)))
+                self._account_available_balances[coin_balance["coin"]] = available
 
     def _accumulate_balance(self, coin: str, available: Decimal, total: Decimal) -> None:
         new_total = self._account_balances.get(coin, Decimal(0)) + total
@@ -979,8 +999,7 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
                 elif channel == CONSTANTS.WS_ACCOUNT_ENDPOINT:
                     # The V3 account channel nests per-coin balances in each entry's "coin" array.
                     for account_msg in data:
-                        for coin_balance in account_msg.get("coin", []):
-                            self._process_wallet_event_message(coin_balance)
+                        self._set_unified_margin_balances(account=account_msg, coins=account_msg.get("coin", []))
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1215,19 +1234,6 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
         )
 
         return trade_update
-
-    def _process_wallet_event_message(self, coin_balance: Dict[str, Any]):
-        """
-        Updates account balances from a single V3 UTA account-channel coin entry
-        (coin/available/balance).
-        :param coin_balance: One per-coin balance entry from the account channel "coin" array
-        """
-        symbol = coin_balance["coin"]
-        available = Decimal(str(coin_balance["available"]))
-        total = Decimal(str(coin_balance["balance"]))
-
-        self._account_balances[symbol] = total
-        self._account_available_balances[symbol] = available
 
     async def _make_trading_pairs_request(self) -> Any:
         all_exchange_info: List[Dict[str, Any]] = []

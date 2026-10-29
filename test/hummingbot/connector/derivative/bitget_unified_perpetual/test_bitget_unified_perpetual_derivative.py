@@ -445,8 +445,8 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
 
     @property
     def balance_event_websocket_update(self):
-        # V3 UTA account channel: each data entry is an account snapshot whose per-coin balances
-        # are nested in a "coin" array.
+        # V3 UTA account channel: each data entry is an account snapshot carrying the account-level
+        # margin figures, with per-coin balances nested in a "coin" array.
         return {
             "action": "snapshot",
             "arg": {
@@ -455,20 +455,106 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             },
             "data": [
                 {
-                    "accountEquity": "15",
+                    "totalEquity": "1100",
+                    "effEquity": "1050",
+                    "imr": "50",
+                    "mmr": "10",
                     "coin": [
-                        {
-                            "coin": self.base_asset,
-                            "available": "10",
-                            "locked": "0",
-                            "balance": "15",
-                            "equity": "15",
-                        }
+                        {"coin": self.quote_asset, "available": "100", "locked": "0", "balance": "100",
+                         "equity": "100", "usdValue": "100"},
+                        {"coin": self.base_asset, "available": "10", "locked": "0", "balance": "15",
+                         "equity": "15", "usdValue": "1000"},
                     ]
                 }
             ],
             "ts": 1695717225146
         }
+
+    @staticmethod
+    def _unified_assets_response(eff_equity: Optional[str] = "1050", imr: str = "50") -> Dict[str, Any]:
+        data = {
+            "accountEquity": "1100",
+            "usdtEquity": "1100",
+            "imr": imr,
+            "mmr": "10",
+            "assets": [
+                {"coin": "USDT", "equity": "100", "usdValue": "100", "balance": "100", "available": "100",
+                 "debt": "0", "locked": "0"},
+                {"coin": "BTC", "equity": "0.01", "usdValue": "1000", "balance": "0.01", "available": "0.008",
+                 "debt": "0", "locked": "0.002"},
+                {"coin": "BGB", "equity": "1", "usdValue": "4", "balance": "1", "available": "1",
+                 "debt": "0", "locked": "0"},
+            ],
+        }
+        if eff_equity is not None:
+            data["effEquity"] = eff_equity
+        return {"code": "00000", "msg": "success", "requestTime": 1746687063471, "data": data}
+
+    def _mock_unified_assets(self, mock_api, response: Dict[str, Any]):
+        regex_url = re.compile(f"^{self.balance_url}".replace(".", r"\.").replace("?", r"\?"))
+        mock_api.get(regex_url, body=json.dumps(response))
+
+    async def test_user_stream_balance_update(self):
+        """The perpetual reports the cross-collateral margin under its collateral token, not each coin."""
+        self.exchange._set_current_timestamp(1640780000)
+        mock_queue = AsyncMock()
+        mock_queue.get.side_effect = [self.balance_event_websocket_update, asyncio.CancelledError]
+        self.exchange._user_stream_tracker._user_stream = mock_queue
+
+        try:
+            await self.exchange._user_stream_event_listener()
+        except asyncio.CancelledError:
+            pass
+
+        self.assertEqual(Decimal("1050"), self.exchange.get_balance(self.quote_asset))
+        self.assertEqual(Decimal("1000"), self.exchange.available_balances[self.quote_asset])
+        self.assertNotIn(self.base_asset, self.exchange.available_balances)
+
+    @aioresponses()
+    def test_update_balances_reports_the_unified_margin_under_the_collateral_token(self, mock_api):
+        self._mock_unified_assets(mock_api, self._unified_assets_response())
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        self.assertEqual({"USDT": Decimal("1050")}, self.exchange.get_all_balances())
+        self.assertEqual({"USDT": Decimal("1000")}, self.exchange.available_balances)
+
+    @aioresponses()
+    def test_update_balances_uses_usdc_for_usdc_margined_pairs(self, mock_api):
+        self.exchange._trading_pairs = ["BTC-USDC"]
+        self._mock_unified_assets(mock_api, self._unified_assets_response())
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        self.assertEqual({"USDC": Decimal("1050")}, self.exchange.get_all_balances())
+
+    @aioresponses()
+    def test_update_balances_keeps_the_coin_balance_for_coin_margined_pairs(self, mock_api):
+        self.exchange._trading_pairs = ["BTC-USDT", "BTC-USD"]
+        self._mock_unified_assets(mock_api, self._unified_assets_response())
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        self.assertEqual({"USDT": Decimal("1050"), "BTC": Decimal("0.01")}, self.exchange.get_all_balances())
+        self.assertEqual(Decimal("0.008"), self.exchange.available_balances["BTC"])
+
+    @aioresponses()
+    def test_update_balances_without_account_equity_reports_the_coin_balance(self, mock_api):
+        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity=None))
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        self.assertEqual({"USDT": Decimal("100")}, self.exchange.get_all_balances())
+        self.assertEqual({"USDT": Decimal("100")}, self.exchange.available_balances)
+
+    @aioresponses()
+    def test_available_margin_never_goes_negative(self, mock_api):
+        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity="40", imr="50"))
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        self.assertEqual(Decimal("0"), self.exchange.available_balances["USDT"])
+        self.assertEqual(Decimal("40"), self.exchange.get_balance("USDT"))
 
     @property
     def expected_latest_price(self):
