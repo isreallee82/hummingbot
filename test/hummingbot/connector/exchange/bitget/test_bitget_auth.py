@@ -5,11 +5,11 @@ import json
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
 from unittest.mock import MagicMock
 
-from hummingbot.connector.exchange.bitget_unified.bitget_unified_auth import BitgetUnifiedAuth
+from hummingbot.connector.exchange.bitget.bitget_auth import BitgetAuth
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest, WSJSONRequest
 
 
-class BitgetUnifiedAuthTests(IsolatedAsyncioWrapperTestCase):
+class BitgetAuthTests(IsolatedAsyncioWrapperTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.api_key = "test_api_key"
@@ -18,7 +18,7 @@ class BitgetUnifiedAuthTests(IsolatedAsyncioWrapperTestCase):
         self._time_synchronizer_mock = MagicMock()
         self._time_synchronizer_mock.time.return_value = 1640001112.223
 
-        self.auth = BitgetUnifiedAuth(
+        self.auth = BitgetAuth(
             api_key=self.api_key,
             secret_key=self.secret_key,
             passphrase=self.passphrase,

@@ -1,5 +1,5 @@
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_web_utils as web_utils
 from hummingbot.connector.derivative.bitget_perpetual import bitget_perpetual_constants as CONSTANTS
@@ -38,8 +38,37 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
 
     async def _authenticate(self, websocket_assistant: WSAssistant) -> None:
         """
-        Authenticates user to websocket
+        Authenticates user to websocket.
+
+        The login signature carries a timestamp that the exchange rejects once it is more than 30
+        seconds from its own clock (error 30014, "Timestamp request expired"). Hummingbot's
+        TimeSynchronizer derives that timestamp from time.perf_counter(), which does not advance
+        while the host is suspended, so after a laptop sleep or a long network stall the offset is
+        stale and every login is refused until enough fresh samples have flushed the 5-sample
+        buffer. Re-sampling the server clock before signing is what Bitget's own documentation
+        recommends, and a reconnect is rare enough that the extra request costs nothing.
         """
+        try:
+            # Discard the existing samples before re-sampling. TimeSynchronizer keeps a
+            # five-sample deque and derives the offset from their median and weighted average, so
+            # appending one fresh sample to five stale ones barely moves it: after an hour-long
+            # suspend the offset is still ~49 minutes out, and it takes five fresh samples to
+            # recover. Clearing first means the single fresh sample is the offset. The precision
+            # lost is half the REST round trip, which is negligible against the exchange's
+            # 30-second window.
+            self._connector._time_synchronizer.clear_time_offset_ms_samples()
+            await self._connector._update_time_synchronizer()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A failed resync is not itself fatal: sign with whatever offset is available and let
+            # the exchange decide.
+            self.logger().warning(
+                "Could not refresh the server time offset before authenticating the private "
+                "websocket. Signing with the existing offset.",
+                exc_info=True,
+            )
+
         await websocket_assistant.send(
             WSJSONRequest({
                 "op": "login",
@@ -49,7 +78,10 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         response: WSResponse = await websocket_assistant.receive()
         message = response.data
 
-        if (message["event"] != "login" and message["code"] != "0"):
+        # The login is only successful when the exchange echoes the "login" event *and* reports a
+        # zero result code. Either one alone being wrong means the session was rejected, so the
+        # listener must fail here and reconnect instead of subscribing on a rejected session.
+        if message.get("event") != "login" or str(message.get("code")) != "0":
             self.logger().error(
                 f"Error authenticating the private websocket connection. Response message {message}"
             )
@@ -68,12 +100,16 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             if event_message["event"] == "error":
                 message = event_message.get("msg", "Unknown error")
                 error_code = event_message.get("code", "Unknown code")
-                self.logger().error(
-                    f"Failed to subscribe to private channels: {message} ({error_code})"
-                )
+                error = f"Failed to subscribe to private channels: {message} ({error_code})"
+                # A rejected subscription leaves the connection up but silent, so raise to let
+                # listen_for_user_stream tear the session down and resubscribe from scratch.
+                self.logger().error(error)
+                raise IOError(error)
 
             if event_message["event"] == "subscribe":
-                channel: str = event_message["arg"]["channel"]
+                # V3 names the channel "topic", V2 (Classic accounts) "channel".
+                arg = event_message["arg"]
+                channel: str = arg.get("topic", arg.get("channel", ""))
                 self.logger().info(f"Subscribed to private channel: {channel.upper()}")
         else:
             self.logger().warning(f"Message for unknown channel received: {event_message}")
@@ -88,27 +124,37 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         else:
             await self._process_message_for_unknown_channel(event_message)
 
-    async def _subscribe_channels(self, websocket_assistant: WSAssistant) -> None:
-        try:
+    async def _subscription_topics(self) -> List[Dict[str, str]]:
+        if not await self._connector._is_unified_account():
+            # Classic (V2): every channel once per product type traded.
             product_types: set[str] = {
                 await self._connector.product_type_associated_to_trading_pair(trading_pair)
                 for trading_pair in self._trading_pairs
-            } or CONSTANTS.ALL_PRODUCT_TYPES
-            subscription_topics = []
+            } or set(CONSTANTS.ALL_PRODUCT_TYPES)
+            return [
+                {"instType": product_type, "channel": channel, "coin": "default"}
+                for product_type in product_types
+                for channel in (
+                    CONSTANTS.CLASSIC_WS_ACCOUNT_ENDPOINT,
+                    CONSTANTS.CLASSIC_WS_POSITIONS_ENDPOINT,
+                    CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                )
+            ]
+        # Under the V3 UTA account private channels are subscribed with instType "UTA" and cover the
+        # whole unified account (no per-product-type fan-out).
+        return [
+            {"instType": CONSTANTS.INST_TYPE_UTA, "topic": channel}
+            for channel in (
+                CONSTANTS.WS_ACCOUNT_ENDPOINT,
+                CONSTANTS.WS_POSITIONS_ENDPOINT,
+                CONSTANTS.WS_ORDERS_ENDPOINT,
+                CONSTANTS.WS_FILL_ENDPOINT,
+            )
+        ]
 
-            for product_type in product_types:
-                for channel in [
-                    CONSTANTS.WS_ACCOUNT_ENDPOINT,
-                    CONSTANTS.WS_POSITIONS_ENDPOINT,
-                    CONSTANTS.WS_ORDERS_ENDPOINT
-                ]:
-                    subscription_topics.append(
-                        {
-                            "instType": product_type,
-                            "channel": channel,
-                            "coin": "default"
-                        }
-                    )
+    async def _subscribe_channels(self, websocket_assistant: WSAssistant) -> None:
+        try:
+            subscription_topics = await self._subscription_topics()
 
             await websocket_assistant.send(
                 WSJSONRequest({
@@ -118,6 +164,7 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             )
 
             self.logger().info("Subscribed to private channels...")
+            self._ping_task = asyncio.create_task(self.send_interval_ping(websocket_assistant))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -127,10 +174,11 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             raise
 
     async def _connected_websocket_assistant(self) -> WSAssistant:
+        unified_account = await self._connector._is_unified_account()
         websocket_assistant: WSAssistant = await self._api_factory.get_ws_assistant()
 
         await websocket_assistant.connect(
-            ws_url=web_utils.private_ws_url(),
+            ws_url=web_utils.private_ws_url() if unified_account else web_utils.classic_private_ws_url(),
             message_timeout=CONSTANTS.SECONDS_TO_WAIT_TO_RECEIVE_MESSAGE
         )
         await self._authenticate(websocket_assistant)
@@ -144,48 +192,27 @@ class BitgetPerpetualUserStreamDataSource(UserStreamTrackerDataSource):
 
     async def send_interval_ping(self, websocket_assistant: WSAssistant) -> None:
         """
-        Coroutine to send PING messages periodically.
+        Coroutine to send PING messages periodically. The first ping is the one listen_for_user_stream
+        sends right after subscribing.
 
         :param websocket_assistant: The websocket assistant to use to send the PING message.
         """
         try:
             while True:
-                await self._send_ping(websocket_assistant)
                 await asyncio.sleep(CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL)
+                await self._send_ping(websocket_assistant)
         except asyncio.CancelledError:
             self.logger().info("Interval PING task cancelled")
             raise
         except Exception:
             self.logger().exception("Error sending interval PING")
 
-    async def listen_for_user_stream(self, output: asyncio.Queue) -> NoReturn:
-        while True:
+    async def _on_user_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
+        if self._ping_task is not None:
+            self._ping_task.cancel()
             try:
-                self._ws_assistant = await self._connected_websocket_assistant()
-                await self._subscribe_channels(websocket_assistant=self._ws_assistant)
-                self._ping_task = asyncio.create_task(self.send_interval_ping(self._ws_assistant))
-                await self._process_websocket_messages(
-                    websocket_assistant=self._ws_assistant,
-                    queue=output
-                )
+                await self._ping_task
             except asyncio.CancelledError:
-                raise
-            except ConnectionError as connection_exception:
-                self.logger().warning(
-                    f"The websocket connection was closed ({connection_exception})"
-                )
-            except Exception:
-                self.logger().exception(
-                    "Unexpected error while listening to user stream. Retrying after 5 seconds..."
-                )
-                await self._sleep(1.0)
-            finally:
-                if self._ping_task is not None:
-                    self._ping_task.cancel()
-                    try:
-                        await self._ping_task
-                    except asyncio.CancelledError:
-                        pass
-                    self._ping_task = None
-                await self._on_user_stream_interruption(websocket_assistant=self._ws_assistant)
-                self._ws_assistant = None
+                pass
+            self._ping_task = None
+        await super()._on_user_stream_interruption(websocket_assistant=websocket_assistant)

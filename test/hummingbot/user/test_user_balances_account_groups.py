@@ -28,28 +28,28 @@ class UserBalancesAccountGroupTests(unittest.TestCase):
 
     def test_connectors_sharing_an_account_are_reported_as_duplicates(self):
         self.user_balances._markets = {
-            "bitget_unified": self._connector("bitget_uta:abc123"),
-            "bitget_unified_perpetual": self._connector("bitget_uta:abc123"),
+            "bitget": self._connector("bitget_uta:abc123"),
+            "bitget_perpetual": self._connector("bitget_uta:abc123"),
         }
 
         duplicates = self.user_balances.duplicate_account_sources(
-            ["bitget_unified", "bitget_unified_perpetual"]
+            ["bitget", "bitget_perpetual"]
         )
 
         # The first connector holds the account; the second merely repeats it.
-        self.assertEqual({"bitget_unified_perpetual": "bitget_unified"}, duplicates)
+        self.assertEqual({"bitget_perpetual": "bitget"}, duplicates)
 
     def test_different_credentials_are_never_folded_together(self):
         """Two API keys are two real accounts, even on the same venue."""
         self.user_balances._markets = {
-            "bitget_unified": self._connector("bitget_uta:abc123"),
-            "bitget_unified_perpetual": self._connector("bitget_uta:different"),
+            "bitget": self._connector("bitget_uta:abc123"),
+            "bitget_perpetual": self._connector("bitget_uta:different"),
         }
 
         self.assertEqual(
             {},
             self.user_balances.duplicate_account_sources(
-                ["bitget_unified", "bitget_unified_perpetual"]
+                ["bitget", "bitget_perpetual"]
             ),
         )
 
@@ -74,15 +74,15 @@ class UserBalancesAccountGroupTests(unittest.TestCase):
     def test_the_first_connector_in_display_order_keeps_the_balance(self):
         """Whichever is shown first owns the total, so the displayed sum stays stable."""
         self.user_balances._markets = {
-            "bitget_unified": self._connector("bitget_uta:abc123"),
-            "bitget_unified_perpetual": self._connector("bitget_uta:abc123"),
+            "bitget": self._connector("bitget_uta:abc123"),
+            "bitget_perpetual": self._connector("bitget_uta:abc123"),
         }
 
         reversed_order = self.user_balances.duplicate_account_sources(
-            ["bitget_unified_perpetual", "bitget_unified"]
+            ["bitget_perpetual", "bitget"]
         )
 
-        self.assertEqual({"bitget_unified": "bitget_unified_perpetual"}, reversed_order)
+        self.assertEqual({"bitget": "bitget_perpetual"}, reversed_order)
 
 
 if __name__ == "__main__":
@@ -101,16 +101,16 @@ class SharedAccountTotalsTests(unittest.TestCase):
         asset = {"asset": "USDT", "total": Decimal("88.93"), "available": Decimal("88.93"),
                  "value": Decimal("88.93"), "allocated": "0%"}
         return {
-            "bitget_unified": {
+            "bitget": {
                 "assets": [asset], "allocated_total": Decimal("0"), "usd_total": Decimal("93.35"),
             },
-            "bitget_unified_perpetual": {
+            "bitget_perpetual": {
                 "assets": [asset], "allocated_total": Decimal("0"), "usd_total": Decimal("93.35"),
                 "pnl_total": Decimal("5"),
                 "positions": [{"trading_pair": "XRP-USDC", "side": "LONG", "amount": "10",
                                "entry_price": "1.5", "notional": "15",
                                "unrealized_pnl": "5", "leverage": "3"}],
-                "duplicate_of": "bitget_unified",
+                "duplicate_of": "bitget",
             },
         }
 
@@ -130,4 +130,4 @@ class SharedAccountTotalsTests(unittest.TestCase):
 
         # The JSON path used to sum every connector, inflating the total past the rendered one.
         self.assertEqual(98.35, payload["net_value_total"])
-        self.assertEqual("bitget_unified", payload["connectors"]["bitget_unified_perpetual"]["duplicate_of"])
+        self.assertEqual("bitget", payload["connectors"]["bitget_perpetual"]["duplicate_of"])

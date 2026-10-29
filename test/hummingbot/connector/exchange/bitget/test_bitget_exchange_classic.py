@@ -6,29 +6,27 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from aioresponses import aioresponses
 from aioresponses.core import RequestCall
-from bidict import bidict
 
-import hummingbot.connector.exchange.bitget_unified.bitget_unified_constants as CONSTANTS
-import hummingbot.connector.exchange.bitget_unified.bitget_unified_utils as bitget_unified_utils
-import hummingbot.connector.exchange.bitget_unified.bitget_unified_web_utils as web_utils
-from hummingbot.connector.exchange.bitget_unified.bitget_unified_exchange import BitgetUnifiedExchange
+import hummingbot.connector.exchange.bitget.bitget_constants as CONSTANTS
+import hummingbot.connector.exchange.bitget.bitget_web_utils as web_utils
+from hummingbot.connector.exchange.bitget.bitget_exchange import BitgetExchange
 from hummingbot.connector.test_support.exchange_connector_test import AbstractExchangeConnectorTests
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
-from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase, TradeFeeSchema
+from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase
 
 
-class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests):
+class BitgetClassicAccountExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests):
+    """
+    bitget on a Classic account: private calls go through the V2 API, market data through V3 as for a
+    Unified Trading Account (whose suite is test_bitget_exchange.py).
+    """
 
     def setUp(self) -> None:
         super().setUp()
-        # The base connector test methods carry a single shared @aioresponses() instance (defined
-        # once on the base class and inherited by both the spot and perpetual BitgetUnified test classes).
-        # aioresponses resets its matchers between runs but NOT its captured `requests` history, and
-        # the V3 UTA spot and perpetual connectors share the same /api/v3/trade/* endpoints, so a
-        # request recorded during one connector's run would otherwise leak into the other's
-        # assertions. Clear the shared history before each test.
+        # The base class's shared @aioresponses() instance keeps its request history between tests, and the
+        # spot and perpetual suites share the V3 market-data URLs, so clear it before each test.
         for name in dir(type(self)):
             closure = getattr(getattr(type(self), name, None), "__closure__", None) or ()
             for cell in closure:
@@ -62,12 +60,12 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
 
     @property
     def order_creation_url(self):
-        url = web_utils.private_rest_url(CONSTANTS.PLACE_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_PLACE_ORDER_ENDPOINT)
         return url
 
     @property
     def balance_url(self):
-        url = web_utils.private_rest_url(CONSTANTS.ASSETS_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_ASSETS_ENDPOINT)
         return url
 
     @property
@@ -231,30 +229,28 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
 
     @property
     def balance_request_mock_response_for_base_and_quote(self):
-        # V3 UTA assets response: data is an object with an "assets" list; held amount is "locked".
         return {
             "code": "00000",
             "message": "success",
             "requestTime": 1695808949356,
-            "data": {
-                "accountEquity": "2010",
-                "assets": [
-                    {
-                        "coin": self.base_asset,
-                        "available": "10",
-                        "locked": "5",
-                        "balance": "15",
-                        "equity": "15",
-                    },
-                    {
-                        "coin": self.quote_asset,
-                        "available": "2000",
-                        "locked": "0",
-                        "balance": "2000",
-                        "equity": "2000",
-                    }
-                ]
-            }
+            "data": [
+                {
+                    "coin": self.base_asset,
+                    "available": "10",
+                    "frozen": "5",
+                    "locked": "0",
+                    "limitAvailable": "0",
+                    "uTime": "1622697148"
+                },
+                {
+                    "coin": self.quote_asset,
+                    "available": "2000",
+                    "frozen": "0",
+                    "locked": "0",
+                    "limitAvailable": "0",
+                    "uTime": "1622697148"
+                }
+            ]
         }
 
     @property
@@ -263,18 +259,16 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             "code": "00000",
             "message": "success",
             "requestTime": 1695808949356,
-            "data": {
-                "accountEquity": "15",
-                "assets": [
-                    {
-                        "coin": self.base_asset,
-                        "available": "10",
-                        "locked": "5",
-                        "balance": "15",
-                        "equity": "15",
-                    }
-                ]
-            }
+            "data": [
+                {
+                    "coin": self.base_asset,
+                    "available": "10",
+                    "frozen": "5",
+                    "locked": "0",
+                    "limitAvailable": "0",
+                    "uTime": "1622697148"
+                }
+            ]
         }
 
     @property
@@ -302,33 +296,29 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
 
     @property
     def balance_event_websocket_update(self):
-        # V3 UTA account channel: each data entry is an account snapshot whose per-coin balances
-        # are nested in a "coin" array.
         return {
             "action": "snapshot",
             "arg": {
-                "instType": CONSTANTS.INST_TYPE_UTA,
-                "topic": CONSTANTS.WS_ACCOUNT_ENDPOINT
+                "instType": "SPOT",
+                "channel": CONSTANTS.CLASSIC_WS_ACCOUNT_ENDPOINT,
+                "coin": "default"
             },
             "data": [
                 {
-                    "accountEquity": "2015",
-                    "coin": [
-                        {
-                            "coin": self.base_asset,
-                            "available": "10",
-                            "locked": "5",
-                            "balance": "15",
-                            "equity": "15",
-                        },
-                        {
-                            "coin": self.quote_asset,
-                            "available": "2000",
-                            "locked": "0",
-                            "balance": "2000",
-                            "equity": "2000",
-                        }
-                    ]
+                    "coin": self.base_asset,
+                    "available": "10",
+                    "frozen": "5",
+                    "locked": "0",
+                    "limitAvailable": "0",
+                    "uTime": "1622697148"
+                },
+                {
+                    "coin": self.quote_asset,
+                    "available": "2000",
+                    "frozen": "0",
+                    "locked": "0",
+                    "limitAvailable": "0",
+                    "uTime": "1622697148"
                 }
             ],
             "ts": 1695713887792
@@ -393,12 +383,14 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
         return base_token + quote_token
 
     def create_exchange_instance(self):
-        return BitgetUnifiedExchange(
-            bitget_unified_api_key="test_api_key",
-            bitget_unified_secret_key="test_secret_key",
-            bitget_unified_passphrase="test_passphrase",
+        exchange = BitgetExchange(
+            bitget_api_key="test_api_key",
+            bitget_secret_key="test_secret_key",
+            bitget_passphrase="test_passphrase",
             trading_pairs=[self.trading_pair],
         )
+        exchange._unified_account = False
+        return exchange
 
     # validate functions (auth, order creation, order cancellation, order status, trades)
     def validate_auth_credentials_present(self, request_call: RequestCall):
@@ -420,12 +412,11 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             request_data["orderType"]
         )
         self.assertEqual(order.trade_type.name.lower(), request_data["side"])
-        self.assertEqual(order.amount, Decimal(request_data["qty"]))
+        self.assertEqual(order.amount, Decimal(request_data["size"]))
         if order.order_type.is_limit_type():
             self.assertEqual(order.price, Decimal(request_data["price"]))
         self.assertEqual(order.client_order_id, request_data["clientOid"])
-        self.assertEqual(CONSTANTS.DEFAULT_TIME_IN_FORCE.lower(), request_data["timeInForce"])
-        self.assertEqual(CONSTANTS.CATEGORY, request_data["category"])
+        self.assertEqual(CONSTANTS.DEFAULT_TIME_IN_FORCE.lower(), request_data["force"])
 
     @aioresponses()
     def test_create_limit_maker_order_sends_post_only(self, mock_api):
@@ -446,12 +437,12 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
         self.assertIn(order_id, self.exchange.in_flight_orders)
         request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
         self.assertEqual("limit", request_data["orderType"])
-        self.assertEqual(CONSTANTS.POST_ONLY_TIME_IN_FORCE, request_data["timeInForce"])
+        self.assertEqual(CONSTANTS.POST_ONLY_TIME_IN_FORCE, request_data["force"])
 
     def validate_order_cancelation_request(self, order: InFlightOrder, request_call: RequestCall):
-        # V3 UTA cancel-order identifies the order by clientOid across the unified account.
         request_data = json.loads(request_call.kwargs["data"])
         self.assertEqual(order.client_order_id, request_data["clientOid"])
+        self.assertEqual(self.exchange_trading_pair, request_data["symbol"])
 
     def validate_order_status_request(self, order: InFlightOrder, request_call: RequestCall):
         request_params = request_call.kwargs["params"]
@@ -460,6 +451,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
     def validate_trades_request(self, order: InFlightOrder, request_call: RequestCall):
         request_params = request_call.kwargs["params"]
         self.assertEqual(str(order.exchange_order_id), request_params["orderId"])
+        self.assertEqual(order.trading_pair, request_params["symbol"])
 
     def configure_successful_cancelation_response(
             self,
@@ -468,7 +460,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             callback: Optional[Callable] = lambda *args,
             **kwargs: None
     ) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.CANCEL_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_CANCEL_ORDER_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_cancelation_request_successful_mock_response(order=order)
         mock_api.post(regex_url, body=json.dumps(response), callback=callback)
@@ -479,7 +471,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.CANCEL_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_CANCEL_ORDER_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         mock_api.post(regex_url, status=400, callback=callback)
         return url
@@ -510,10 +502,10 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.CANCEL_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_CANCEL_ORDER_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = {
-            "code": "25204",
+            "code": "31007",
             "msg": "Order does not exist",
             "requestTime": 1695808949356,
             "data": None
@@ -526,7 +518,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> List[str]:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_INFO_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_ORDER_INFO_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_status_request_completely_filled_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -539,7 +531,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
         callback: Optional[Callable] = lambda *args,
         **kwargs: None
     ) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_INFO_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_ORDER_INFO_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_status_request_canceled_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -551,7 +543,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
         mock_api: aioresponses,
         callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> List[str]:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_INFO_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_ORDER_INFO_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_status_request_open_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -562,7 +554,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_INFO_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_ORDER_INFO_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         mock_api.get(regex_url, status=401, callback=callback)
         return url
@@ -572,7 +564,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_INFO_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_ORDER_INFO_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_status_request_partially_filled_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -582,7 +574,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> List[str]:
-        url = web_utils.private_rest_url(CONSTANTS.ORDER_INFO_ENDPOINT)
+        url = web_utils.private_rest_url(CONSTANTS.CLASSIC_ORDER_INFO_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = {
             "code": "00000",
@@ -598,7 +590,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.USER_FILLS_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_USER_FILLS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_fills_request_partial_fill_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -609,7 +601,7 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.USER_FILLS_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_USER_FILLS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         mock_api.get(regex_url, status=400, callback=callback)
         return url
@@ -619,141 +611,173 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.USER_FILLS_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_USER_FILLS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_fills_request_full_fill_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
         return url
 
     def trade_event_for_full_fill_websocket_update(self, order: InFlightOrder):
-        # V3 UTA "fill" channel (BitgetUnifiedUaUserTrade): execId/execPrice/execQty/execValue/feeDetail.fee.
         return {
             "action": "snapshot",
             "arg": {
-                "instType": CONSTANTS.INST_TYPE_UTA,
-                "topic": CONSTANTS.WS_FILL_ENDPOINT,
-                "symbol": self.exchange_trading_pair
+                "instType": "SPOT",
+                "channel": CONSTANTS.CLASSIC_WS_FILL_ENDPOINT,
+                "instId": self.exchange_trading_pair
             },
             "data": [
                 {
-                    "execId": self.expected_fill_trade_id,
+                    "tradeId": self.expected_fill_trade_id,
                     "orderId": order.exchange_order_id,
                     "clientOid": order.client_order_id,
                     "symbol": self.exchange_trading_pair,
                     "side": order.trade_type.name.lower(),
-                    "execPrice": str(order.price),
-                    "execQty": str(order.amount),
-                    "execValue": str(order.amount * order.price),
+                    "priceAvg": str(order.price),
+                    "size": str(order.amount),
+                    "amount": str(order.amount * order.price),
                     "feeDetail": [
                         {
-                            "fee": str(self.expected_fill_fee.flat_fees[0].amount),
+                            "totalFee": str(self.expected_fill_fee.flat_fees[0].amount),
                             "feeCoin": self.expected_fill_fee.flat_fees[0].token
                         }
                     ],
-                    "updatedTime": int(order.creation_timestamp * 1000)
+                    "uTime": int(order.creation_timestamp * 1000)
                 }
             ],
             "ts": int(order.creation_timestamp * 1000)
         }
 
-    def _order_event_websocket_update(self, order: InFlightOrder, order_status: str):
-        # V3 UTA "order" channel (BitgetUnifiedUaOrder): state only (orderStatus/qty/amount/cumExec*/avgPrice).
+    def order_event_for_new_order_websocket_update(self, order: InFlightOrder):
         return {
             "action": "snapshot",
             "arg": {
-                "instType": CONSTANTS.INST_TYPE_UTA,
-                "topic": CONSTANTS.WS_ORDERS_ENDPOINT,
-                "symbol": self.exchange_trading_pair
+                "instType": "SPOT",
+                "channel": CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                "instId": self.exchange_trading_pair
             },
             "data": [
                 {
-                    "symbol": self.exchange_trading_pair,
+                    "instId": self.exchange_trading_pair,
                     "orderId": order.exchange_order_id,
                     "clientOid": order.client_order_id,
-                    "qty": str(order.amount),
-                    "amount": str(order.amount * order.price),
+                    "size": str(order.amount),
+                    "newSize": "0.0000",
+                    "notional": "0.000000",
                     "orderType": order.order_type.name.lower(),
-                    "timeInForce": CONSTANTS.DEFAULT_TIME_IN_FORCE.lower(),
+                    "force": CONSTANTS.DEFAULT_TIME_IN_FORCE.lower(),
                     "side": order.trade_type.name.lower(),
-                    "cumExecQty": str(order.amount) if order_status == "filled" else "0",
-                    "cumExecValue": str(order.amount * order.price) if order_status == "filled" else "0",
-                    "avgPrice": str(order.price),
-                    "orderStatus": order_status,
-                    "createdTime": "1695797773257",
-                    "updatedTime": "1695797773326",
+                    "fillPrice": "0.0",
+                    "tradeId": self.expected_fill_trade_id,
+                    "baseVolume": "0.0000",
+                    "fillTime": "1695797773286",
+                    "fillFee": "-0.00000018",
+                    "fillFeeCoin": "BTC",
+                    "tradeScope": "T",
+                    "accBaseVolume": "0.0000",
+                    "priceAvg": str(order.price),
+                    "status": "live",
+                    "cTime": "1695797773257",
+                    "uTime": "1695797773326",
+                    "stpMode": "cancel_taker",
                     "feeDetail": [
                         {
                             "feeCoin": "BTC",
                             "fee": "-0.00000018"
                         }
                     ],
+                    "enterPointSource": "WEB"
                 }
             ],
             "ts": 1695797773370
         }
 
-    def order_event_for_new_order_websocket_update(self, order: InFlightOrder):
-        return self._order_event_websocket_update(order, "live")
-
     def order_event_for_canceled_order_websocket_update(self, order: InFlightOrder):
-        return self._order_event_websocket_update(order, "cancelled")
+        return {
+            "action": "snapshot",
+            "arg": {
+                "instType": "SPOT",
+                "channel": CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                "instId": self.exchange_trading_pair
+            },
+            "data": [
+                {
+                    "instId": self.exchange_trading_pair,
+                    "orderId": order.exchange_order_id,
+                    "clientOid": order.client_order_id,
+                    "size": str(order.amount),
+                    "newSize": "0.0000",
+                    "notional": "0.000000",
+                    "orderType": order.order_type.name.lower(),
+                    "force": CONSTANTS.DEFAULT_TIME_IN_FORCE.lower(),
+                    "side": order.trade_type.name.lower(),
+                    "fillPrice": "0.0",
+                    "tradeId": self.expected_fill_trade_id,
+                    "baseVolume": "0.0000",
+                    "fillTime": "1695797773286",
+                    "fillFee": "-0.00000018",
+                    "fillFeeCoin": "BTC",
+                    "tradeScope": "T",
+                    "accBaseVolume": "0.0000",
+                    "priceAvg": str(order.price),
+                    "status": "cancelled",
+                    "cTime": "1695797773257",
+                    "uTime": "1695797773326",
+                    "stpMode": "cancel_taker",
+                    "feeDetail": [
+                        {
+                            "feeCoin": "BTC",
+                            "fee": "-0.00000018"
+                        }
+                    ],
+                    "enterPointSource": "WEB"
+                }
+            ],
+            "ts": 1695797773370
+        }
 
     def order_event_for_full_fill_websocket_update(self, order: InFlightOrder):
-        return self._order_event_websocket_update(order, "filled")
-
-    def test_order_not_found_v3_code_recognized(self):
-        # V3 UTA returns 25204 "Order does not exist" when cancelling/querying an order that is
-        # unknown or already filled/cancelled; it must be recognised as order-not-found so the base
-        # connector handles it gracefully instead of logging a hard error.
-        exception = IOError(
-            "Error executing request POST https://api.bitget.com/api/v3/trade/cancel-order. "
-            'HTTP status is 400. Error: {"code":"25204","msg":"Order does not exist",'
-            '"requestTime":1783017943282,"data":null}'
-        )
-        self.assertTrue(self.exchange._is_order_not_found_during_cancelation_error(exception))
-        self.assertTrue(self.exchange._is_order_not_found_during_status_update_error(exception))
-
-    def test_unknown_path_404_is_not_order_not_found(self):
-        # Bitget's 404 means the route is wrong; reading it as a missing order would retire live orders.
-        exception = IOError(
-            "Error executing request POST https://api.bitget.com/api/v3/trade/cancel-order. "
-            'HTTP status is 404. Error: {"code":"40404","msg":"Request URL NOT FOUND",'
-            '"requestTime":1783017943282,"data":null}'
-        )
-        self.assertFalse(self.exchange._is_order_not_found_during_cancelation_error(exception))
-        self.assertFalse(self.exchange._is_order_not_found_during_status_update_error(exception))
-
-    @aioresponses()
-    async def test_all_trade_updates_for_order_reads_every_page_of_fills(self, mock_api):
-        self.exchange.start_tracking_order(
-            order_id=self.client_order_id_prefix + "1",
-            exchange_order_id=str(self.expected_exchange_order_id),
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-        )
-        order = self.exchange.in_flight_orders[self.client_order_id_prefix + "1"]
-        fill = self._order_fills_request_full_fill_mock_response(order)["data"][0]
-
-        def _page(page: int, rows: int, cursor: str) -> Dict[str, Any]:
-            fills = [dict(fill, tradeId=f"{page}-{row}") for row in range(rows)]
-            return {"code": "00000", "msg": "success", "data": {"list": fills, "cursor": cursor}}
-
-        url = web_utils.private_rest_url(path_url=CONSTANTS.USER_FILLS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        # A full first page, then a short one; a cursor comes back with both.
-        mock_api.get(regex_url, body=json.dumps(_page(1, CONSTANTS.PAGINATION_LIMIT, "page2")))
-        mock_api.get(regex_url, body=json.dumps(_page(2, 1, "page3")))
-
-        trade_updates = await self.exchange._all_trade_updates_for_order(order)
-
-        self.assertEqual(CONSTANTS.PAGINATION_LIMIT + 1, len(trade_updates))
-        requests = self._all_executed_requests(mock_api, url)
-        self.assertEqual(2, len(requests))
-        self.assertNotIn("cursor", requests[0].kwargs["params"])
-        self.assertEqual("page2", requests[1].kwargs["params"]["cursor"])
+        return {
+            "action": "snapshot",
+            "arg": {
+                "instType": "SPOT",
+                "channel": CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                "instId": self.exchange_trading_pair
+            },
+            "data": [
+                {
+                    "instId": self.exchange_trading_pair,
+                    "orderId": order.exchange_order_id,
+                    "clientOid": order.client_order_id,
+                    "size": str(order.amount),
+                    "newSize": str(order.amount),
+                    "notional": str(order.amount * order.price),
+                    "orderType": order.order_type.name.lower(),
+                    "force": CONSTANTS.DEFAULT_TIME_IN_FORCE.lower(),
+                    "side": order.trade_type.name.lower(),
+                    "fillPrice": str(order.price),
+                    "tradeId": self.expected_fill_trade_id,
+                    "baseVolume": str(order.amount),
+                    "fillTime": "1695797773286",
+                    "fillFee": "-0.00000018",
+                    "fillFeeCoin": "BTC",
+                    "tradeScope": "T",
+                    "accBaseVolume": "0.0000",
+                    "priceAvg": str(order.price),
+                    "status": "filled",
+                    "cTime": "1695797773257",
+                    "uTime": "1695797773326",
+                    "stpMode": "cancel_taker",
+                    "feeDetail": [
+                        {
+                            "feeCoin": "BTC",
+                            "fee": "-0.00000018"
+                        }
+                    ],
+                    "enterPointSource": "WEB"
+                }
+            ],
+            "ts": 1695797773370
+        }
 
     def _order_cancelation_request_successful_mock_response(
         self, order: InFlightOrder
@@ -977,417 +1001,3 @@ class BitgetUnifiedExchangeTests(AbstractExchangeConnectorTests.ExchangeConnecto
             order_update_response=order_update_response
         )
         self.assertEqual(order_update.new_state, OrderState.FILLED)
-
-    def test_market_buy_fill_uses_reported_execution_quantity(self) -> None:
-        """
-        A market buy that fills away from the price quoted when the order was placed must report
-        the quantity the exchange executed, not one rebuilt from the stale placement price.
-        """
-        self._simulate_trading_rules_initialized()
-        order_id = self.client_order_id_prefix + "1"
-        self.exchange.start_tracking_order(
-            order_id=order_id,
-            exchange_order_id=self.expected_exchange_order_id,
-            trading_pair=self.trading_pair,
-            order_type=OrderType.MARKET,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-            initial_state=OrderState.OPEN,
-        )
-        order: InFlightOrder = self.exchange.in_flight_orders[order_id]
-
-        # Filled at 8000 rather than the 10000 quoted at placement: 10000 quote buys 1.25 base.
-        fill_msg = {
-            "execId": self.expected_fill_trade_id,
-            "orderId": self.expected_exchange_order_id,
-            "symbol": self.exchange_trading_pair,
-            "side": "buy",
-            "execPrice": "8000",
-            "execQty": "1.25",
-            "execValue": "10000",
-            "feeDetail": [{"feeCoin": self.quote_asset, "fee": "10"}],
-            "updatedTime": "1695797773326",
-        }
-
-        trade_update = self.exchange._parse_trade_update(
-            trade_msg=fill_msg,
-            tracked_order=order,
-            source_type="websocket",
-        )
-
-        self.assertEqual(Decimal("1.25"), trade_update.fill_base_amount)
-        self.assertEqual(Decimal("10000"), trade_update.fill_quote_amount)
-        self.assertEqual(Decimal("8000"), trade_update.fill_price)
-
-    def test_market_buy_fill_parsed_for_untracked_expected_amount(self) -> None:
-        """
-        A fill arriving before any order-status update - as happens for an order restored after a
-        restart - must still be parsed rather than lost.
-        """
-        self._simulate_trading_rules_initialized()
-        order_id = self.client_order_id_prefix + "2"
-        self.exchange.start_tracking_order(
-            order_id=order_id,
-            exchange_order_id=self.expected_exchange_order_id,
-            trading_pair=self.trading_pair,
-            order_type=OrderType.MARKET,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-            initial_state=OrderState.OPEN,
-        )
-        order: InFlightOrder = self.exchange.in_flight_orders[order_id]
-
-        # Legacy field names, with the filled size reported in quote currency.
-        fill_msg = {
-            "tradeId": self.expected_fill_trade_id,
-            "orderId": self.expected_exchange_order_id,
-            "symbol": self.exchange_trading_pair,
-            "side": "buy",
-            "priceAvg": "8000",
-            "size": "10000",
-            "amount": "10000",
-            "feeDetail": [{"feeCoin": self.quote_asset, "totalFee": "10"}],
-            "uTime": "1695797773326",
-        }
-
-        trade_update = self.exchange._parse_trade_update(
-            trade_msg=fill_msg,
-            tracked_order=order,
-            source_type="websocket",
-        )
-
-        self.assertEqual(Decimal("1.25"), trade_update.fill_base_amount)
-
-    def test_only_online_instruments_are_tradable(self) -> None:
-        self.assertTrue(bitget_unified_utils.is_instrument_tradable(
-            {"symbol": self.exchange_trading_pair, "status": "online"}
-        ))
-        self.assertFalse(bitget_unified_utils.is_instrument_tradable(
-            {"symbol": self.exchange_trading_pair, "status": "offline"}
-        ))
-        self.assertFalse(bitget_unified_utils.is_instrument_tradable(
-            {"symbol": self.exchange_trading_pair}
-        ))
-        self.assertFalse(bitget_unified_utils.is_instrument_tradable(
-            {"status": "online"}
-        ))
-
-    def test_suspended_instruments_stay_in_the_symbol_map(self) -> None:
-        """
-        A pair suspended while orders are still open on it must remain resolvable, or order and
-        fill updates referencing its symbol can no longer be translated to a trading pair.
-        """
-        self.assertTrue(bitget_unified_utils.is_exchange_information_valid(
-            {"symbol": self.exchange_trading_pair, "status": "offline"}
-        ))
-        self.assertFalse(bitget_unified_utils.is_exchange_information_valid({}))
-
-        exchange_info = {"data": [{
-            "symbol": self.exchange_trading_pair,
-            "baseCoin": self.base_asset,
-            "quoteCoin": self.quote_asset,
-            "status": "offline",
-        }]}
-        self.exchange._initialize_trading_pair_symbols_from_exchange_info(exchange_info)
-
-        self.assertEqual(
-            self.trading_pair,
-            self.async_run_with_timeout(
-                self.exchange.trading_pair_associated_to_exchange_symbol(self.exchange_trading_pair)
-            ),
-        )
-
-    def test_trading_rule_min_order_size_comes_from_min_order_qty(self) -> None:
-        """
-        Live V3 SPOT instruments carry a minOrderQty that is independent of quantityPrecision:
-        53 online pairs report quantityPrecision 0 while still accepting 0.0001. Deriving the
-        minimum from the precision reports it 10000x too large and makes the executors refuse
-        valid orders.
-        """
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        response = {
-            "code": "00000",
-            "msg": "success",
-            "data": [{
-                "symbol": self.exchange_trading_pair,
-                "category": "SPOT",
-                "baseCoin": self.base_asset,
-                "quoteCoin": self.quote_asset,
-                "minOrderQty": "0.0001",
-                "maxOrderQty": "0",
-                "pricePrecision": "2",
-                "quantityPrecision": "0",
-                "quotePrecision": "2",
-                "minOrderAmount": "20",
-                "status": "online",
-            }],
-        }
-
-        rules = self.async_run_with_timeout(self.exchange._format_trading_rules(response))
-
-        self.assertEqual(1, len(rules))
-        self.assertEqual(Decimal("0.0001"), rules[0].min_order_size)
-        # The step must not be coarser than the minimum, or quantizing rounds the smallest
-        # accepted order down to zero.
-        self.assertEqual(Decimal("0.0001"), rules[0].min_base_amount_increment)
-        self.assertEqual(Decimal("20"), rules[0].min_notional_size)
-
-        # The rule must also survive contact with order quantization.
-        self.exchange._trading_rules[self.trading_pair] = rules[0]
-        self.assertEqual(
-            Decimal("0.0001"),
-            self.exchange.quantize_order_amount(self.trading_pair, Decimal("0.0001")),
-        )
-        self.assertEqual(
-            Decimal("0.5"),
-            self.exchange.quantize_order_amount(self.trading_pair, Decimal("0.5")),
-        )
-
-    def test_trading_rule_treats_zero_min_order_qty_as_no_minimum(self) -> None:
-        # Live V3 SPOT shape for SOLUSDT: minOrderQty "0" means no base-size minimum, not a zero step.
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        response = {
-            "code": "00000",
-            "msg": "success",
-            "data": [{
-                "symbol": self.exchange_trading_pair,
-                "baseCoin": self.base_asset,
-                "quoteCoin": self.quote_asset,
-                "minOrderQty": "0",
-                "maxOrderQty": "0",
-                "pricePrecision": "2",
-                "quantityPrecision": "4",
-                "quotePrecision": "6",
-                "minOrderAmount": "1",
-                "status": "online",
-            }],
-        }
-
-        rules = self.async_run_with_timeout(self.exchange._format_trading_rules(response))
-
-        self.assertEqual(1, len(rules))
-        self.assertEqual(Decimal("0.0001"), rules[0].min_base_amount_increment)
-        self.assertEqual(Decimal("0.0001"), rules[0].min_order_size)
-        self.assertEqual(Decimal("1"), rules[0].min_notional_size)
-
-        self.exchange._trading_rules[self.trading_pair] = rules[0]
-        self.assertEqual(
-            Decimal("0.03"),
-            self.exchange.quantize_order_amount(self.trading_pair, Decimal("0.03")),
-        )
-        self.assertEqual(
-            Decimal("0"),
-            self.exchange.quantize_order_amount(self.trading_pair, Decimal("0.00005")),
-        )
-
-    def test_trading_rule_falls_back_to_legacy_field_names(self) -> None:
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        response = {
-            "code": "00000",
-            "msg": "success",
-            "data": [{
-                "symbol": self.exchange_trading_pair,
-                "baseCoin": self.base_asset,
-                "quoteCoin": self.quote_asset,
-                "minTradeAmount": "0.002",
-                "pricePrecision": "2",
-                "quantityPrecision": "6",
-                "quotePrecision": "8",
-                "minTradeUSDT": "5",
-                "status": "online",
-            }],
-        }
-
-        rules = self.async_run_with_timeout(self.exchange._format_trading_rules(response))
-
-        self.assertEqual(Decimal("0.002"), rules[0].min_order_size)
-        self.assertEqual(Decimal("5"), rules[0].min_notional_size)
-
-    def test_trading_rules_skip_instruments_that_are_not_online(self) -> None:
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        response = {
-            "code": "00000",
-            "msg": "success",
-            "data": [{
-                "symbol": self.exchange_trading_pair,
-                "baseCoin": self.base_asset,
-                "quoteCoin": self.quote_asset,
-                "minOrderQty": "0.0001",
-                "pricePrecision": "2",
-                "quantityPrecision": "6",
-                "quotePrecision": "8",
-                "minOrderAmount": "1",
-                # Seen live on newly-listed pairs still in the call-auction phase.
-                "status": "limit_open",
-            }],
-        }
-
-        rules = self.async_run_with_timeout(self.exchange._format_trading_rules(response))
-
-        self.assertEqual(0, len(rules))
-
-    def test_unknown_order_status_is_logged_and_skipped(self) -> None:
-        """
-        An unmapped status must not raise a bare KeyError: on the user-stream path the listener's
-        catch-all swallows it and the update disappears with nothing naming the cause.
-        """
-        self.exchange._set_current_timestamp(1640780000)
-        order_id = self.client_order_id_prefix + "9"
-        self.exchange.start_tracking_order(
-            order_id=order_id,
-            exchange_order_id=self.expected_exchange_order_id,
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-        )
-        order = self.exchange.in_flight_orders[order_id]
-
-        self.exchange._process_order_event_message({
-            "orderStatus": "some_status_bitget_added_later",
-            "clientOid": order_id,
-            "orderId": self.expected_exchange_order_id,
-            "updatedTime": "1640780000000",
-        })
-
-        # The order is untouched and the reason is in the log.
-        self.assertEqual(order.current_state, self.exchange.in_flight_orders[order_id].current_state)
-        self.assertTrue(self.is_logged(
-            "WARNING",
-            "Received an unrecognised order status from the exchange: "
-            "'some_status_bitget_added_later'. The order update was ignored. This usually means a "
-            "status was added to the API that the connector does not map yet."
-        ))
-
-    @aioresponses()
-    def test_update_trading_fees_uses_the_account_fee_rate(self, mock_api) -> None:
-        """
-        The V3 SPOT instruments response carries no fee fields at all, so fees have to come from
-        the private fee-rate endpoint or every order is costed at the hardcoded default instead
-        of the account's VIP tier or BGB discount.
-        """
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-
-        url = web_utils.private_rest_url(CONSTANTS.FEE_RATE_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        mock_api.get(regex_url, body=json.dumps({
-            "code": "00000",
-            "msg": "success",
-            "requestTime": 1751972326323,
-            "data": {"makerFeeRate": "0.0006", "takerFeeRate": "0.0008"},
-        }))
-
-        self.async_run_with_timeout(self.exchange._update_trading_fees())
-
-        request_params = self._all_executed_requests(mock_api, url)[0].kwargs["params"]
-        self.assertEqual(CONSTANTS.CATEGORY, request_params["category"])
-        self.assertEqual(self.exchange_trading_pair, request_params["symbol"])
-
-        self.assertEqual(
-            TradeFeeSchema(
-                maker_percent_fee_decimal=Decimal("0.0006"),
-                taker_percent_fee_decimal=Decimal("0.0008"),
-                buy_percent_fee_deducted_from_returns=True,
-            ),
-            self.exchange._trading_fees[self.trading_pair],
-        )
-
-        # And the rate is what _get_fee actually charges.
-        fee = self.exchange._get_fee(
-            base_currency=self.base_asset,
-            quote_currency=self.quote_asset,
-            order_type=OrderType.LIMIT,
-            order_side=TradeType.BUY,
-            amount=Decimal("1"),
-            price=Decimal("10000"),
-            is_maker=True,
-        )
-        self.assertEqual(Decimal("0.0006"), fee.percent)
-
-    @aioresponses()
-    def test_update_trading_fees_falls_back_when_the_endpoint_fails(self, mock_api) -> None:
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        url = web_utils.private_rest_url(CONSTANTS.FEE_RATE_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        mock_api.get(regex_url, status=500, body=json.dumps({"code": "40000", "msg": "boom"}))
-
-        self.async_run_with_timeout(self.exchange._update_trading_fees())
-
-        self.assertNotIn(self.trading_pair, self.exchange._trading_fees)
-
-    def test_unknown_status_on_status_poll_keeps_the_order_alive(self) -> None:
-        """
-        An unmapped status must not read as a missing order. The active-order handler counts every
-        status-update exception towards the lost-order limit, so raising here would retire a live
-        order after a few polls.
-        """
-        self.exchange._set_current_timestamp(1640780000)
-        order_id = self.client_order_id_prefix + "8"
-        self.exchange.start_tracking_order(
-            order_id=order_id,
-            exchange_order_id=self.expected_exchange_order_id,
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-            initial_state=OrderState.OPEN,
-        )
-        order = self.exchange.in_flight_orders[order_id]
-
-        response = self._order_status_request_completely_filled_mock_response(order=order)
-        payload = response["data"]
-        payload = payload[0] if isinstance(payload, list) else payload
-        payload["orderStatus"] = "some_status_bitget_added_later"
-        payload.pop("status", None)
-
-        state_before = order.current_state
-        order_update = self.exchange._create_order_update(order=order, order_update_response=response)
-
-        # State is held, not invented, and nothing was raised.
-        self.assertEqual(state_before, order_update.new_state)
-        self.assertTrue(self.is_logged(
-            "WARNING",
-            "Received an unrecognised order status from the exchange: "
-            "'some_status_bitget_added_later'. The order update was ignored. This usually means a "
-            "status was added to the API that the connector does not map yet."
-        ))
-
-    def test_empty_status_payload_is_still_reported_as_order_not_found(self) -> None:
-        """
-        The genuinely empty response must keep raising ValueError: that is how this connector
-        reports an order the exchange does not know about.
-        """
-        self.exchange._set_current_timestamp(1640780000)
-        order_id = self.client_order_id_prefix + "7"
-        self.exchange.start_tracking_order(
-            order_id=order_id,
-            exchange_order_id=self.expected_exchange_order_id,
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-        )
-        order = self.exchange.in_flight_orders[order_id]
-
-        with self.assertRaises(ValueError):
-            self.exchange._create_order_update(
-                order=order, order_update_response={"code": "00000", "data": []}
-            )
-        self.assertTrue(self.exchange._is_order_not_found_during_status_update_error(ValueError()))

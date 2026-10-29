@@ -1,5 +1,5 @@
 """
-The account identity shared by bitget_unified and bitget_unified_perpetual.
+The account identity shared by bitget and bitget_perpetual.
 
 Both connectors read the same UTA wallet, so the balance command folds them together when their
 account_group_id matches. The id is keyed on the account's user id, so different API keys of one

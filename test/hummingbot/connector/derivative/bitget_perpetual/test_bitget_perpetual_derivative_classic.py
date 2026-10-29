@@ -9,12 +9,9 @@ from aioresponses import aioresponses
 from aioresponses.core import RequestCall
 from bidict import bidict
 
-import hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_constants as CONSTANTS
-import hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_web_utils as web_utils
-from hummingbot.connector.derivative.bitget_unified_perpetual import bitget_unified_perpetual_utils
-from hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_derivative import (
-    BitgetUnifiedPerpetualDerivative,
-)
+import hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_constants as CONSTANTS
+import hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_web_utils as web_utils
+from hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_derivative import BitgetPerpetualDerivative
 from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.test_support.perpetual_derivative_test import AbstractPerpetualDerivativeTests
 from hummingbot.connector.trading_rule import TradingRule
@@ -22,12 +19,16 @@ from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
 from hummingbot.core.data_type.funding_info import FundingInfo
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
-from hummingbot.core.data_type.order_candidate import PerpetualOrderCandidate
 from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase, TradeFeeSchema
 from hummingbot.core.event.events import BuyOrderCompletedEvent, OrderFilledEvent
 
 
-class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualDerivativeTests):
+class BitgetClassicAccountPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualDerivativeTests):
+    """
+    bitget_perpetual on a Classic account: private calls go through the V2 API, market data through V3 as for
+    a Unified Trading Account (whose suite is test_bitget_perpetual_derivative.py).
+    """
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
@@ -40,12 +41,8 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
 
     def setUp(self) -> None:
         super().setUp()
-        # The base connector test methods carry a single shared @aioresponses() instance (defined
-        # once on the base class and inherited by both the spot and perpetual BitgetUnified test classes).
-        # aioresponses resets its matchers between runs but NOT its captured `requests` history, and
-        # the V3 UTA spot and perpetual connectors share the same /api/v3/trade/* endpoints, so a
-        # request recorded during one connector's run would otherwise leak into the other's
-        # assertions. Clear the shared history before each test.
+        # The base class's shared @aioresponses() instance keeps its request history between tests, and the
+        # spot and perpetual suites share the V3 market-data URLs, so clear it before each test.
         for name in dir(type(self)):
             closure = getattr(getattr(type(self), name, None), "__closure__", None) or ()
             for cell in closure:
@@ -86,14 +83,14 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
 
     @property
     def order_creation_url(self):
-        url = web_utils.private_rest_url(path_url=CONSTANTS.PLACE_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_PLACE_ORDER_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         return regex_url
 
     @property
     def balance_url(self):
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ACCOUNTS_INFO_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ACCOUNTS_INFO_ENDPOINT)
 
         return url
 
@@ -106,7 +103,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
 
     @property
     def funding_payment_url(self):
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ACCOUNT_BILLS_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ACCOUNT_BILLS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         return regex_url
@@ -446,146 +443,32 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
 
     @property
     def balance_event_websocket_update(self):
-        # V3 UTA account channel: each data entry is an account snapshot carrying the account-level
-        # margin figures, with per-coin balances nested in a "coin" array.
         return {
             "action": "snapshot",
             "arg": {
-                "instType": CONSTANTS.INST_TYPE_UTA,
-                "topic": CONSTANTS.WS_ACCOUNT_ENDPOINT
+                "instType": CONSTANTS.USDT_PRODUCT_TYPE,
+                "channel": CONSTANTS.CLASSIC_WS_ACCOUNT_ENDPOINT,
+                "coin": "default"
             },
             "data": [
                 {
-                    "totalEquity": "1100",
-                    "effEquity": "1050",
-                    "imr": "50",
-                    "mmr": "10",
-                    "coin": [
-                        {"coin": self.quote_asset, "available": "100", "locked": "0", "balance": "100",
-                         "equity": "100", "usdValue": "100"},
-                        {"coin": self.base_asset, "available": "10", "locked": "0", "balance": "15",
-                         "equity": "15", "usdValue": "1000"},
-                    ]
+                    "marginCoin": self.base_asset,
+                    "frozen": "0.00000000",
+                    "available": "10",
+                    "maxOpenPosAvailable": "10",
+                    "maxTransferOut": "10",
+                    "equity": "15",
+                    "usdtEquity": "11.985457617660",
+                    "crossedRiskRate": "0",
+                    "unrealizedPL": "0.000000000000",
+                    "unionTotalMargin": "100",
+                    "unionAvailable": "20",
+                    "unionMm": "15",
+                    "assetMode": "union"
                 }
             ],
             "ts": 1695717225146
         }
-
-    @staticmethod
-    def _unified_assets_response(eff_equity: Optional[str] = "1050", imr: str = "50") -> Dict[str, Any]:
-        data = {
-            "accountEquity": "1100",
-            "usdtEquity": "1100",
-            "imr": imr,
-            "mmr": "10",
-            "assets": [
-                {"coin": "USDT", "equity": "100", "usdValue": "100", "balance": "100", "available": "100",
-                 "debt": "0", "locked": "0"},
-                {"coin": "BTC", "equity": "0.01", "usdValue": "1000", "balance": "0.01", "available": "0.008",
-                 "debt": "0", "locked": "0.002"},
-                {"coin": "BGB", "equity": "1", "usdValue": "4", "balance": "1", "available": "1",
-                 "debt": "0", "locked": "0"},
-            ],
-        }
-        if eff_equity is not None:
-            data["effEquity"] = eff_equity
-        return {"code": "00000", "msg": "success", "requestTime": 1746687063471, "data": data}
-
-    def _mock_unified_assets(self, mock_api, response: Dict[str, Any]):
-        regex_url = re.compile(f"^{self.balance_url}".replace(".", r"\.").replace("?", r"\?"))
-        mock_api.get(regex_url, body=json.dumps(response))
-
-    async def test_user_stream_balance_update(self):
-        """The perpetual reports the cross-collateral margin under its collateral token, not each coin."""
-        self.exchange._set_current_timestamp(1640780000)
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [self.balance_event_websocket_update, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
-
-        try:
-            await self.exchange._user_stream_event_listener()
-        except asyncio.CancelledError:
-            pass
-
-        self.assertEqual(Decimal("1050"), self.exchange.get_balance(self.quote_asset))
-        self.assertEqual(Decimal("1000"), self.exchange.available_balances[self.quote_asset])
-        self.assertNotIn(self.base_asset, self.exchange.available_balances)
-
-    @aioresponses()
-    def test_update_balances_reports_the_unified_margin_under_the_collateral_token(self, mock_api):
-        self._mock_unified_assets(mock_api, self._unified_assets_response())
-
-        self.async_run_with_timeout(self.exchange._update_balances())
-
-        self.assertEqual({"USDT": Decimal("1050")}, self.exchange.get_all_balances())
-        self.assertEqual({"USDT": Decimal("1000")}, self.exchange.available_balances)
-
-    @aioresponses()
-    def test_update_balances_uses_usdc_for_usdc_margined_pairs(self, mock_api):
-        self.exchange._trading_pairs = ["BTC-USDC"]
-        self._mock_unified_assets(mock_api, self._unified_assets_response())
-
-        self.async_run_with_timeout(self.exchange._update_balances())
-
-        self.assertEqual({"USDC": Decimal("1050")}, self.exchange.get_all_balances())
-
-    @aioresponses()
-    def test_update_balances_keeps_the_coin_balance_for_coin_margined_pairs(self, mock_api):
-        self.exchange._trading_pairs = ["BTC-USDT", "BTC-USD"]
-        self._mock_unified_assets(mock_api, self._unified_assets_response())
-
-        self.async_run_with_timeout(self.exchange._update_balances())
-
-        self.assertEqual({"USDT": Decimal("1050"), "BTC": Decimal("0.01")}, self.exchange.get_all_balances())
-        self.assertEqual(Decimal("0.008"), self.exchange.available_balances["BTC"])
-
-    @aioresponses()
-    def test_update_balances_without_account_equity_reports_the_coin_balance(self, mock_api):
-        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity=None))
-
-        self.async_run_with_timeout(self.exchange._update_balances())
-
-        self.assertEqual({"USDT": Decimal("100")}, self.exchange.get_all_balances())
-        self.assertEqual({"USDT": Decimal("100")}, self.exchange.available_balances)
-
-    @aioresponses()
-    def test_available_margin_never_goes_negative(self, mock_api):
-        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity="40", imr="50"))
-
-        self.async_run_with_timeout(self.exchange._update_balances())
-
-        self.assertEqual(Decimal("0"), self.exchange.available_balances["USDT"])
-        self.assertEqual(Decimal("40"), self.exchange.get_balance("USDT"))
-
-    @aioresponses()
-    def test_usdt_and_usdc_orders_share_the_unified_margin_budget(self, mock_api):
-        # Both tokens report the whole pool of 1000, so two orders needing 600 each cannot both be approved.
-        self.exchange._trading_pairs = ["BTC-USDT", "BTC-USDC"]
-        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity="1000", imr="0"))
-        self.async_run_with_timeout(self.exchange._update_balances())
-        self.assertEqual({"USDT": Decimal("1000"), "USDC": Decimal("1000")}, self.exchange.available_balances)
-
-        candidates = [
-            PerpetualOrderCandidate(
-                trading_pair=trading_pair, is_maker=True, order_type=OrderType.LIMIT, order_side=TradeType.BUY,
-                amount=Decimal("0.006"), price=Decimal("100000"), leverage=Decimal("1"))
-            for trading_pair in ("BTC-USDT", "BTC-USDC")
-        ]
-
-        approved = self.exchange.budget_checker.adjust_candidates(candidates, all_or_none=True)
-
-        self.assertEqual(Decimal("0.006"), approved[0].amount)
-        self.assertEqual(Decimal("0"), approved[1].amount)
-
-    @aioresponses()
-    def test_coin_balances_do_not_share_a_budget(self, mock_api):
-        self.exchange._trading_pairs = ["BTC-USDT", "BTC-USDC"]
-        self.exchange._pooled_margin_tokens = {"USDT", "USDC"}
-        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity=None))
-
-        self.async_run_with_timeout(self.exchange._update_balances())
-
-        self.assertEqual(set(), self.exchange.pooled_margin_tokens)
 
     @property
     def expected_latest_price(self):
@@ -598,7 +481,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             "msg": "success",
             "requestTime": 1695809161807,
             "data": {
-                "list": []
+                "bills": []
             },
             "endId": "0"
         }
@@ -610,20 +493,20 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             "msg": "success",
             "requestTime": 1695809161807,
             "data": {
-                "list": [
+                "bills": [
                     {
-                        "id": "1",
-                        "category": CONSTANTS.USDT_PRODUCT_TYPE,
+                        "billId": "1",
                         "symbol": self.exchange_trading_pair,
                         "amount": str(self.target_funding_payment_payment_amount),
                         "fee": "0.1",
-                        "type": "CONTRACT_MAIN_SETTLE_FEE_USER_OUT",
+                        "feeByCoupon": "",
+                        "businessType": "contract_settle_fee",
                         "coin": self.quote_asset,
                         "balance": "232.21",
-                        "ts": "1657110053000"
+                        "cTime": "1657110053000"
                     }
                 ],
-                "cursor": "1"
+                "endId": "1"
             }
         }
 
@@ -721,108 +604,248 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
     def _expected_valid_trading_pairs(self):
         return [self.trading_pair, "BTC-USD", "BTC-USDC"]
 
-    def _order_trade_side(self, order: InFlightOrder) -> str:
-        side = order.trade_type.name.lower()
-        return f"{side}_single" if order.position is PositionAction.NIL else order.position.name.lower()
-
-    def _order_channel_event(self, order: InFlightOrder, order_status: str) -> Dict[str, Any]:
-        # V3 UTA "order" channel (BitgetUnifiedUaOrder): order state only.
-        return {
-            "action": "snapshot",
-            "arg": {
-                "instType": CONSTANTS.INST_TYPE_UTA,
-                "topic": CONSTANTS.WS_ORDERS_ENDPOINT
-            },
-            "data": [
-                {
-                    "orderId": order.exchange_order_id or "1640b725-75e9-407d-bea9-aae4fc666d33",
-                    "clientOid": order.client_order_id or "",
-                    "marginCoin": self.quote_asset,
-                    "marginMode": "crossed",
-                    "symbol": self.exchange_trading_pair,
-                    "side": order.trade_type.name.lower(),
-                    "orderType": order.order_type.name.lower(),
-                    "qty": str(order.amount),
-                    "price": str(order.price),
-                    "avgPrice": str(order.price),
-                    "cumExecQty": str(order.amount) if order_status == "filled" else "0",
-                    "leverage": "20",
-                    "posSide": "long",
-                    "tradeSide": self._order_trade_side(order),
-                    "reduceOnly": "no",
-                    "orderStatus": order_status,
-                    "createdTime": "1695718781129",
-                    "updatedTime": "1695718781146"
-                }
-            ],
-            "ts": 1695718781206
-        }
-
-    def _fill_channel_event(self, order: InFlightOrder, exec_qty, exec_price, fee_amount) -> Dict[str, Any]:
-        # V3 UTA "fill" channel (BitgetUnifiedUaUserTrade): execId/execPrice/execQty/execValue/feeDetail.fee.
-        return {
-            "action": "snapshot",
-            "arg": {
-                "instType": CONSTANTS.INST_TYPE_UTA,
-                "topic": CONSTANTS.WS_FILL_ENDPOINT,
-                "symbol": self.exchange_trading_pair
-            },
-            "data": [
-                {
-                    "execId": "1111111111",
-                    "orderId": order.exchange_order_id or "1640b725-75e9-407d-bea9-aae4fc666d33",
-                    "clientOid": order.client_order_id or "",
-                    "symbol": self.exchange_trading_pair,
-                    "side": order.trade_type.name.lower(),
-                    "execPrice": str(exec_price),
-                    "execQty": str(exec_qty),
-                    "execValue": str(Decimal(str(exec_qty)) * Decimal(str(exec_price))),
-                    "tradeSide": self._order_trade_side(order),
-                    "feeDetail": [
-                        {
-                            "feeCoin": self.quote_asset,
-                            "fee": str(fee_amount)
-                        }
-                    ],
-                    "createdTime": "1695718781146"
-                }
-            ],
-            "ts": 1695718781206
-        }
-
     def order_event_for_new_order_websocket_update(self, order: InFlightOrder):
         reversed_order_states = {v: k for k, v in CONSTANTS.STATE_TYPES.items()}
         current_state = reversed_order_states[order.current_state] \
             if order.current_state in reversed_order_states else "live"
-        return self._order_channel_event(order, current_state)
+        side = order.trade_type.name.lower()
+        trade_side = f"{side}_single" if order.position is PositionAction.NIL else order.position.name.lower()
+
+        return {
+            "action": "snapshot",
+            "arg": {
+                "instType": CONSTANTS.USDT_PRODUCT_TYPE,
+                "channel": CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                "instId": "default"
+            },
+            "data": [
+                {
+                    "accBaseVolume": "0.01",
+                    "cTime": "1695718781129",
+                    "clientOid": order.client_order_id or "",
+                    "feeDetail": [
+                        {
+                            "feeCoin": self.quote_asset,
+                            "fee": str(self.expected_partial_fill_fee.flat_fees[0].amount)
+                        }
+                    ],
+                    "fillFee": str(self.expected_partial_fill_fee.flat_fees[0].amount),
+                    "fillFeeCoin": self.quote_asset,
+                    "fillNotionalUsd": "270.005",
+                    "fillPrice": "0",
+                    "baseVolume": "0.01",
+                    "fillTime": "1695718781146",
+                    "force": CONSTANTS.DEFAULT_TIME_IN_FORCE,
+                    "instId": self.exchange_trading_pair,
+                    "leverage": "20",
+                    "marginCoin": self.quote_asset,
+                    "marginMode": "crossed",
+                    "notionalUsd": "270",
+                    "orderId": order.exchange_order_id or "1640b725-75e9-407d-bea9-aae4fc666d33",
+                    "orderType": order.order_type.name.lower(),
+                    "pnl": "0",
+                    "posMode": "hedge_mode",
+                    "posSide": "long",
+                    "price": str(order.price),
+                    "priceAvg": str(order.price),
+                    "reduceOnly": "no",
+                    "stpMode": "cancel_taker",
+                    "side": side,
+                    "size": str(order.amount),
+                    "enterPointSource": "WEB",
+                    "status": current_state,
+                    "tradeScope": "T",
+                    "tradeId": "1111111111",
+                    "tradeSide": trade_side,
+                    "presetStopSurplusPrice": "21.4",
+                    "totalProfits": "11221.45",
+                    "presetStopLossPrice": "21.5",
+                    "cancelReason": "normal_cancel",
+                    "uTime": "1695718781146"
+                }
+            ],
+            "ts": 1695718781206
+        }
 
     def order_event_for_canceled_order_websocket_update(self, order: InFlightOrder):
-        return self._order_channel_event(order, "cancelled")
+        return {
+            "action": "snapshot",
+            "arg": {
+                "instType": CONSTANTS.USDT_PRODUCT_TYPE,
+                "channel": CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                "instId": "default"
+            },
+            "data": [
+                {
+                    "accBaseVolume": "0.01",
+                    "cTime": "1695718781129",
+                    "clientOid": order.client_order_id,
+                    "feeDetail": [
+                        {
+                            "feeCoin": self.quote_asset,
+                            "fee": str(self.expected_partial_fill_fee.flat_fees[0].amount)
+                        }
+                    ],
+                    "fillFee": str(self.expected_partial_fill_fee.flat_fees[0].amount),
+                    "fillFeeCoin": self.quote_asset,
+                    "fillNotionalUsd": "270.005",
+                    "fillPrice": "0",
+                    "baseVolume": "0.01",
+                    "fillTime": "1695718781146",
+                    "force": CONSTANTS.DEFAULT_TIME_IN_FORCE,
+                    "instId": self.exchange_trading_pair,
+                    "leverage": "20",
+                    "marginCoin": self.quote_asset,
+                    "marginMode": "crossed",
+                    "notionalUsd": "270",
+                    "orderId": order.exchange_order_id or "1640b725-75e9-407d-bea9-aae4fc666d33",
+                    "orderType": order.order_type.name.lower(),
+                    "pnl": "0",
+                    "posMode": "hedge_mode",
+                    "posSide": "long",
+                    "price": str(order.price),
+                    "priceAvg": str(order.price),
+                    "reduceOnly": "no",
+                    "stpMode": "cancel_taker",
+                    "side": order.trade_type.name.lower(),
+                    "size": str(order.amount),
+                    "enterPointSource": "WEB",
+                    "status": "cancelled",
+                    "tradeScope": "T",
+                    "tradeId": "1111111111",
+                    "tradeSide": "close",
+                    "presetStopSurplusPrice": "21.4",
+                    "totalProfits": "11221.45",
+                    "presetStopLossPrice": "21.5",
+                    "cancelReason": "normal_cancel",
+                    "uTime": "1695718781146"
+                }
+            ],
+            "ts": 1695718781206
+        }
 
     def order_event_for_partially_canceled_websocket_update(self, order: InFlightOrder):
         return self.order_event_for_canceled_order_websocket_update(order=order)
 
     def order_event_for_partially_filled_websocket_update(self, order: InFlightOrder):
-        return self._order_channel_event(order, "partially_filled")
+        return {
+            "action": "snapshot",
+            "arg": {
+                "instType": CONSTANTS.USDT_PRODUCT_TYPE,
+                "channel": CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                "instId": "default"
+            },
+            "data": [
+                {
+                    "accBaseVolume": str(self.expected_partial_fill_amount),
+                    "cTime": "1695718781129",
+                    "clientOid": order.client_order_id,
+                    "feeDetail": [
+                        {
+                            "feeCoin": self.quote_asset,
+                            "fee": str(self.expected_partial_fill_fee.flat_fees[0].amount)
+                        }
+                    ],
+                    "fillFee": str(self.expected_partial_fill_fee.flat_fees[0].amount),
+                    "fillFeeCoin": self.quote_asset,
+                    "fillNotionalUsd": "270.005",
+                    "fillPrice": str(self.expected_partial_fill_price),
+                    "baseVolume": str(self.expected_partial_fill_amount),
+                    "fillTime": "1695718781146",
+                    "force": CONSTANTS.DEFAULT_TIME_IN_FORCE,
+                    "instId": self.exchange_trading_pair,
+                    "leverage": "20",
+                    "marginCoin": self.quote_asset,
+                    "marginMode": "crossed",
+                    "notionalUsd": "270",
+                    "orderId": order.exchange_order_id or "1640b725-75e9-407d-bea9-aae4fc666d33",
+                    "orderType": order.order_type.name.lower(),
+                    "pnl": "0",
+                    "posMode": "hedge_mode",
+                    "posSide": "long",
+                    "price": str(order.price),
+                    "priceAvg": str(self.expected_partial_fill_price),
+                    "reduceOnly": "no",
+                    "stpMode": "cancel_taker",
+                    "side": order.trade_type.name.lower(),
+                    "size": str(order.amount),
+                    "enterPointSource": "WEB",
+                    "status": "partially_filled",
+                    "tradeScope": "T",
+                    "tradeId": "1111111111",
+                    "tradeSide": "open",
+                    "presetStopSurplusPrice": "21.4",
+                    "totalProfits": "11221.45",
+                    "presetStopLossPrice": "21.5",
+                    "cancelReason": "normal_cancel",
+                    "uTime": "1695718781146"
+                }
+            ],
+            "ts": 1695718781206
+        }
 
     def order_event_for_full_fill_websocket_update(self, order: InFlightOrder):
-        return self._order_channel_event(order, "filled")
+        return {
+            "action": "snapshot",
+            "arg": {
+                "instType": CONSTANTS.USDT_PRODUCT_TYPE,
+                "channel": CONSTANTS.CLASSIC_WS_ORDERS_ENDPOINT,
+                "instId": "default"
+            },
+            "data": [
+                {
+                    "accBaseVolume": str(order.amount),
+                    "cTime": "1695718781129",
+                    "clientOid": order.client_order_id or "",
+                    "feeDetail": [
+                        {
+                            "feeCoin": self.quote_asset,
+                            "fee": str(self.expected_partial_fill_fee.flat_fees[0].amount)
+                        }
+                    ],
+                    "fillFee": str(self.expected_partial_fill_fee.flat_fees[0].amount),
+                    "fillFeeCoin": self.quote_asset,
+                    "fillNotionalUsd": "270.005",
+                    "fillPrice": str(order.price),
+                    "baseVolume": str(order.amount),
+                    "fillTime": "1695718781146",
+                    "force": CONSTANTS.DEFAULT_TIME_IN_FORCE,
+                    "instId": self.exchange_trading_pair,
+                    "leverage": "20",
+                    "marginCoin": self.quote_asset,
+                    "marginMode": "crossed",
+                    "notionalUsd": "270",
+                    "orderId": order.exchange_order_id or "1640b725-75e9-407d-bea9-aae4fc666d33",
+                    "orderType": order.order_type.name.lower(),
+                    "pnl": "0",
+                    "posMode": "hedge_mode",
+                    "posSide": "long",
+                    "price": str(order.price),
+                    "priceAvg": str(order.price),
+                    "reduceOnly": "no",
+                    "stpMode": "cancel_taker",
+                    "side": order.trade_type.name.lower(),
+                    "size": str(order.amount),
+                    "enterPointSource": "WEB",
+                    "status": "filled",
+                    "tradeScope": "T",
+                    "tradeId": "1111111111",
+                    "tradeSide": "close",
+                    "presetStopSurplusPrice": "21.4",
+                    "totalProfits": "11221.45",
+                    "presetStopLossPrice": "21.5",
+                    "cancelReason": "normal_cancel",
+                    "uTime": "1695718781146"
+                }
+            ],
+            "ts": 1695718781206
+        }
 
     def trade_event_for_partial_fill_websocket_update(self, order: InFlightOrder):
-        return self._fill_channel_event(
-            order,
-            self.expected_partial_fill_amount,
-            self.expected_partial_fill_price,
-            self.expected_partial_fill_fee.flat_fees[0].amount,
-        )
+        return self.order_event_for_partially_filled_websocket_update(order)
 
     def trade_event_for_full_fill_websocket_update(self, order: InFlightOrder):
-        return self._fill_channel_event(
-            order,
-            order.amount,
-            order.price,
-            self.expected_fill_fee.flat_fees[0].amount,
-        )
+        return self.order_event_for_full_fill_websocket_update(order)
 
     def position_event_for_full_fill_websocket_update(
         self,
@@ -832,25 +855,26 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         return {
             "action": "snapshot",
             "arg": {
-                "instType": CONSTANTS.INST_TYPE_UTA,
-                "topic": CONSTANTS.WS_POSITIONS_ENDPOINT
+                "instType": CONSTANTS.USDT_PRODUCT_TYPE,
+                "channel": CONSTANTS.CLASSIC_WS_POSITIONS_ENDPOINT,
+                "instId": "default"
             },
             "data": [
                 {
                     "posId": "1",
-                    "symbol": self.exchange_trading_pair,
+                    "instId": self.exchange_trading_pair,
                     "marginCoin": self.quote_asset,
                     "marginSize": str(order.amount),
                     "marginMode": "crossed",
-                    "posSide": "short",
-                    "holdMode": "hedge_mode",
-                    "size": str(order.amount),
+                    "holdSide": "short",
+                    "posMode": "hedge_mode",
+                    "total": str(order.amount),
                     "available": str(order.amount),
                     "frozen": "0",
-                    "avgPrice": str(order.price),
+                    "openPriceAvg": str(order.price),
                     "leverage": str(order.leverage),
                     "achievedProfits": "0",
-                    "unrealisedPnl": str(unrealized_pnl),
+                    "unrealizedPL": str(unrealized_pnl),
                     "unrealizedPLR": "0",
                     "liquidationPrice": "5788.108475905242",
                     "keepMarginRate": "0.005",
@@ -903,12 +927,13 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         return f"{base_token}{quote_token}"
 
     def create_exchange_instance(self):
-        exchange = BitgetUnifiedPerpetualDerivative(
-            bitget_unified_perpetual_api_key=self.api_key,
-            bitget_unified_perpetual_secret_key=self.api_secret,
-            bitget_unified_perpetual_passphrase=self.passphrase,
+        exchange = BitgetPerpetualDerivative(
+            bitget_perpetual_api_key=self.api_key,
+            bitget_perpetual_secret_key=self.api_secret,
+            bitget_perpetual_passphrase=self.passphrase,
             trading_pairs=[self.trading_pair],
         )
+        exchange._unified_account = False
         exchange._last_trade_history_timestamp = self.latest_trade_hist_timestamp
         funding_info = FundingInfo(
             trading_pair=self.trading_pair,
@@ -932,30 +957,53 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
     def validate_order_creation_request(self, order: InFlightOrder, request_call: RequestCall):
         request_data = json.loads(request_call.kwargs["data"])
 
-        # V3 UTA place-order: size -> qty, force -> timeInForce, productType -> category.
         self.assertEqual(order.trade_type.name.lower(), request_data["side"])
         self.assertEqual(self.exchange_trading_pair, request_data["symbol"])
-        self.assertEqual(order.amount, Decimal(request_data["qty"]))
-        self.assertEqual(CONSTANTS.DEFAULT_TIME_IN_FORCE, request_data["timeInForce"])
+        self.assertEqual(order.amount, Decimal(request_data["size"]))
+        self.assertEqual(CONSTANTS.DEFAULT_TIME_IN_FORCE, request_data["force"])
         self.assertEqual(order.client_order_id, request_data["clientOid"])
 
         if self.exchange.position_mode == PositionMode.HEDGE:
-            # V3 hedge mode targets a position side (long/short) via posSide instead of tradeSide.
-            self.assertIn("posSide", request_data)
-            self.assertIn(request_data["posSide"], ["long", "short"])
+            self.assertIn("tradeSide", request_data)
+            self.assertEqual(order.position.name.lower(), request_data["tradeSide"])
         else:
-            self.assertNotIn("posSide", request_data)
+            self.assertNotIn("tradeSide", request_data)
+
+    @aioresponses()
+    def test_create_limit_maker_order_sends_post_only(self, mock_api):
+        self._simulate_trading_rules_initialized()
+        self.exchange._set_current_timestamp(1640780000)
+        request_sent_event = asyncio.Event()
+
+        url = self.order_creation_url
+        mock_api.post(
+            url,
+            body=json.dumps(self.order_creation_request_successful_mock_response),
+            callback=lambda *args, **kwargs: request_sent_event.set(),
+        )
+
+        order_id = self.place_buy_order(order_type=OrderType.LIMIT_MAKER)
+        self.async_run_with_timeout(request_sent_event.wait())
+
+        self.assertIn(order_id, self.exchange.in_flight_orders)
+        request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
+        self.assertEqual("limit", request_data["orderType"])
+        self.assertEqual(CONSTANTS.POST_ONLY_TIME_IN_FORCE, request_data["force"])
 
     def validate_order_cancelation_request(self, order: InFlightOrder, request_call: RequestCall):
         request_data = json.loads(request_call.kwargs["data"])
-        self.assertEqual({"clientOid": order.client_order_id}, request_data)
+        self.assertEqual(self.exchange_trading_pair, request_data["symbol"])
+        self.assertEqual(order.client_order_id, request_data["clientOid"])
+        self.assertNotIn("orderId", request_data)
 
     def validate_order_status_request(self, order: InFlightOrder, request_call: RequestCall):
         request_params = request_call.kwargs["params"]
+        self.assertEqual(self.exchange_trading_pair, request_params["symbol"])
         self.assertEqual(order.exchange_order_id, request_params["orderId"])
 
     def validate_trades_request(self, order: InFlightOrder, request_call: RequestCall):
         request_params = request_call.kwargs["params"]
+        self.assertEqual(self.exchange_trading_pair, request_params["symbol"])
         self.assertEqual(order.exchange_order_id, request_params["orderId"])
 
     def configure_successful_cancelation_response(
@@ -967,7 +1015,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         """
         :return: the URL configured for the cancelation
         """
-        url = web_utils.private_rest_url(path_url=CONSTANTS.CANCEL_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_CANCEL_ORDER_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.post(regex_url, body=json.dumps(
@@ -982,7 +1030,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.CANCEL_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_CANCEL_ORDER_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.post(regex_url, body=json.dumps({
@@ -1016,10 +1064,10 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.CANCEL_ORDER_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_CANCEL_ORDER_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = {
-            "code": "25204",
+            "code": "40768",
             "msg": "Order does not exist",
             "requestTime": 1695808949356,
             "data": None
@@ -1031,10 +1079,10 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             self, order: InFlightOrder, mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> List[str]:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_DETAIL_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_DETAIL_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
         response = {
-            "code": "25204",
+            "code": "40768",
             "msg": "Order does not exist",
             "requestTime": 1695808949356,
             "data": None
@@ -1048,7 +1096,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_DETAIL_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_DETAIL_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.get(regex_url, body=json.dumps(
@@ -1063,7 +1111,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_DETAIL_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_DETAIL_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.get(regex_url, body=json.dumps(
@@ -1078,7 +1126,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_DETAIL_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_DETAIL_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
         response = self._order_status_request_open_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -1091,7 +1139,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_DETAIL_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_DETAIL_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.get(regex_url, status=404, callback=callback)
@@ -1104,7 +1152,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_DETAIL_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_DETAIL_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.get(regex_url, body=json.dumps(
@@ -1131,7 +1179,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_FILLS_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_FILLS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.get(regex_url, body=json.dumps(
@@ -1146,7 +1194,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_FILLS_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_FILLS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.get(regex_url, body=json.dumps(
@@ -1161,7 +1209,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> str:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.ORDER_FILLS_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_ORDER_FILLS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
         mock_api.get(regex_url, status=400, callback=callback)
 
@@ -1173,7 +1221,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ):
-        url = web_utils.private_rest_url(path_url=CONSTANTS.SET_POSITION_MODE_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_SET_POSITION_MODE_ENDPOINT)
 
         mock_api.post(url, body=json.dumps(
             self.set_position_mode_request_mock_response
@@ -1187,7 +1235,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None
     ):
-        url = web_utils.private_rest_url(path_url=CONSTANTS.SET_POSITION_MODE_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_SET_POSITION_MODE_ENDPOINT)
         mock_response = self.set_position_mode_request_mock_response
         mock_response["code"] = CONSTANTS.RET_CODE_PARAMS_ERROR
         mock_response["msg"] = "Some problem"
@@ -1202,7 +1250,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ) -> Tuple[str, str]:
-        url = web_utils.private_rest_url(path_url=CONSTANTS.SET_LEVERAGE_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_SET_LEVERAGE_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_response = self.set_leverage_request_mock_response
@@ -1219,7 +1267,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None,
     ):
-        url = web_utils.private_rest_url(path_url=CONSTANTS.SET_LEVERAGE_ENDPOINT)
+        url = web_utils.private_rest_url(path_url=CONSTANTS.CLASSIC_SET_LEVERAGE_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
 
         mock_api.post(regex_url, body=json.dumps(
@@ -1374,8 +1422,9 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         position_event = {
             "action": "snapshot",
             "arg": {
-                "topic": CONSTANTS.WS_POSITIONS_ENDPOINT,
-                "instType": CONSTANTS.INST_TYPE_UTA
+                "channel": CONSTANTS.CLASSIC_WS_POSITIONS_ENDPOINT,
+                "instType": CONSTANTS.USDT_PRODUCT_TYPE,
+                "instId": "default"
             },
             "data": [],
         }
@@ -1393,50 +1442,6 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
             pass
 
         self.assertEqual(0, len(self.exchange._perpetual_trading._account_positions))
-
-    def test_user_stream_position_event_sets_position(self):
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        self.exchange._perpetual_trading.set_leverage(self.trading_pair, 10)
-
-        # V3 UTA position channel: symbol/posSide/avgPrice/size/leverage/unrealisedPnl.
-        position_event = {
-            "action": "snapshot",
-            "arg": {
-                "topic": CONSTANTS.WS_POSITIONS_ENDPOINT,
-                "instType": CONSTANTS.INST_TYPE_UTA,
-            },
-            "data": [
-                {
-                    "symbol": self.exchange_trading_pair,
-                    "posSide": "long",
-                    "avgPrice": "29000",
-                    "size": "3",
-                    "leverage": "10",
-                    "unrealisedPnl": "12.3",
-                }
-            ],
-        }
-
-        mock_queue = AsyncMock()
-        mock_queue.get.side_effect = [position_event, asyncio.CancelledError]
-        self.exchange._user_stream_tracker._user_stream = mock_queue
-
-        try:
-            self.async_run_with_timeout(self.exchange._user_stream_event_listener())
-        except asyncio.CancelledError:
-            pass
-
-        positions = self.exchange.account_positions
-        self.assertEqual(1, len(positions))
-        position = list(positions.values())[0]
-        self.assertEqual(self.trading_pair, position.trading_pair)
-        self.assertEqual(PositionSide.LONG, position.position_side)
-        self.assertEqual(Decimal("29000"), position.entry_price)
-        self.assertEqual(Decimal("3"), position.amount)
-        self.assertEqual(Decimal("12.3"), position.unrealized_pnl)
 
     @aioresponses()
     @patch("asyncio.Queue.get")
@@ -1527,189 +1532,30 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         self.assertEqual(CONSTANTS.USD_PRODUCT_TYPE, product_type)
 
     @aioresponses()
-    def test_update_positions_reads_paginated_data_list(self, mock_api):
-        # V3 current-position wraps the rows in a paginated object (data.list).
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        response = {
-            "code": "00000",
-            "msg": "success",
-            "requestTime": 1695807725658,
-            "data": {
-                "list": [
-                    {
-                        "symbol": self.exchange_trading_pair,
-                        "posSide": "long",
-                        "unrealisedPnl": "15.5",
-                        "avgPrice": "29000",
-                        "total": "2",
-                        "leverage": "10",
-                    }
-                ],
-                "cursor": "1",
-            },
-        }
-        mock_api.get(regex_url, body=json.dumps(response))
-
-        self.async_run_with_timeout(self.exchange._update_positions())
-
-        positions = self.exchange.account_positions
-        self.assertEqual(1, len(positions))
-        position = list(positions.values())[0]
-        self.assertEqual(self.trading_pair, position.trading_pair)
-        self.assertEqual(PositionSide.LONG, position.position_side)
-        self.assertEqual(Decimal("15.5"), position.unrealized_pnl)
-        self.assertEqual(Decimal("29000"), position.entry_price)
-        self.assertEqual(Decimal("2"), position.amount)
-        self.assertEqual(Decimal("10"), position.leverage)
-
-    @aioresponses()
-    def test_update_positions_handles_null_list(self, mock_api):
-        # With no open positions V3 returns data.list = null; this must not raise.
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        response = {
-            "code": "00000",
-            "msg": "success",
-            "requestTime": 1695807725658,
-            "data": {"list": None, "cursor": ""},
-        }
-        mock_api.get(regex_url, body=json.dumps(response))
-
-        self.async_run_with_timeout(self.exchange._update_positions())
-
-        self.assertEqual(0, len(self.exchange.account_positions))
-
-    def test_process_order_event_new_status_sets_open(self):
-        # V3 order channel reports a freshly-accepted order with orderStatus "new".
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_leverage(self.trading_pair, 2)
-        self.exchange.start_tracking_order(
-            order_id="OID-NEW",
-            exchange_order_id="EX-NEW",
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("1.05"),
-            amount=Decimal("9"),
-            position_action=PositionAction.OPEN,
-        )
-        self.exchange._process_order_event_message(
-            {"orderStatus": "new", "clientOid": "OID-NEW", "orderId": "EX-NEW"}
-        )
-        self.assertTrue(self.exchange.in_flight_orders["OID-NEW"].is_open)
-
-    def test_parse_trade_update_uses_exec_time_for_ws_fill(self):
-        # The V3 "fill" websocket channel carries execTime (no createdTime).
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_leverage(self.trading_pair, 2)
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        self.exchange.start_tracking_order(
-            order_id="OID-EXEC",
-            exchange_order_id="EX-EXEC",
-            trading_pair=self.trading_pair,
-            order_type=OrderType.MARKET,
-            trade_type=TradeType.BUY,
-            price=Decimal("1.05"),
-            amount=Decimal("9"),
-            position_action=PositionAction.OPEN,
-        )
-        order = self.exchange.in_flight_orders["OID-EXEC"]
-        trade_msg = {
-            "execId": "T1",
-            "orderId": "EX-EXEC",
-            "clientOid": "OID-EXEC",
-            "symbol": self.exchange_trading_pair,
-            "side": "buy",
-            "execPrice": "1.056",
-            "execQty": "9",
-            "tradeSide": "open",
-            "feeDetail": [{"feeCoin": self.quote_asset, "fee": "0.01"}],
-            "execTime": "1695718781146",
-            "updatedTime": "1695718781150",
-        }
-        trade_update = self.exchange._parse_trade_update(trade_msg=trade_msg, tracked_order=order)
-        self.assertEqual("T1", trade_update.trade_id)
-        self.assertEqual(int("1695718781146") * 1e-3, trade_update.fill_timestamp)
-        self.assertEqual(Decimal("9"), trade_update.fill_base_amount)
-
-    @aioresponses()
-    def test_create_limit_maker_order_sends_post_only(self, mock_api):
-        self._simulate_trading_rules_initialized()
-        self.exchange._set_current_timestamp(1640780000)
-        request_sent_event = asyncio.Event()
-
-        url = self.order_creation_url
-        mock_api.post(
-            url,
-            body=json.dumps(self.order_creation_request_successful_mock_response),
-            callback=lambda *args, **kwargs: request_sent_event.set(),
-        )
-
-        order_id = self.place_buy_order(order_type=OrderType.LIMIT_MAKER)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        self.assertIn(order_id, self.exchange.in_flight_orders)
-        request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
-        self.assertEqual("limit", request_data["orderType"])
-        self.assertEqual(CONSTANTS.POST_ONLY_TIME_IN_FORCE, request_data["timeInForce"])
-
-    @aioresponses()
     def test_update_trading_fees(self, mock_api):
-        """
-        Fees come from the private fee-rate endpoint, which reports the account's own VIP/BGB
-        adjusted rate. The instruments endpoint is public and only ever returns the base rate.
-        """
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
+        """A Classic account's rates come with the V2 contract list, one request per product type."""
+        self.exchange._set_trading_pair_symbol_map(bidict({self.exchange_trading_pair: self.trading_pair}))
 
-        url = web_utils.private_rest_url(CONSTANTS.FEE_RATE_ENDPOINT)
+        url = web_utils.public_rest_url(path_url=CONSTANTS.CLASSIC_PUBLIC_CONTRACTS_ENDPOINT)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        mock_api.get(regex_url, body=json.dumps({
-            "code": "00000",
-            "msg": "success",
-            "requestTime": 1751972326323,
-            "data": {"makerFeeRate": "0.00012", "takerFeeRate": "0.00042"},
-        }))
+        resp = self.all_symbols_request_mock_response
+        for _ in CONSTANTS.ALL_PRODUCT_TYPES:
+            mock_api.get(regex_url, body=json.dumps(resp))
 
         self.async_run_with_timeout(self.exchange._update_trading_fees())
 
-        request_params = self._all_executed_requests(mock_api, url)[0].kwargs["params"]
-        self.assertEqual(CONSTANTS.USDT_PRODUCT_TYPE, request_params["category"])
-        self.assertEqual(self.exchange_trading_pair, request_params["symbol"])
+        requested_product_types = [
+            request.kwargs["params"]["productType"] for request in self._all_executed_requests(mock_api, url)
+        ]
+        self.assertEqual(CONSTANTS.ALL_PRODUCT_TYPES, requested_product_types)
 
-        self.assertEqual(
-            TradeFeeSchema(
-                maker_percent_fee_decimal=Decimal("0.00012"),
-                taker_percent_fee_decimal=Decimal("0.00042"),
-                buy_percent_fee_deducted_from_returns=True,
-            ),
-            self.exchange._trading_fees[self.trading_pair],
+        expected_trading_fees = TradeFeeSchema(
+            maker_percent_fee_decimal=Decimal(resp["data"][0]["makerFeeRate"]),
+            taker_percent_fee_decimal=Decimal(resp["data"][0]["takerFeeRate"]),
+            buy_percent_fee_deducted_from_returns=True,
         )
 
-    @aioresponses()
-    def test_update_trading_fees_falls_back_when_the_endpoint_fails(self, mock_api):
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        url = web_utils.private_rest_url(CONSTANTS.FEE_RATE_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        mock_api.get(regex_url, status=500, body=json.dumps({"code": "40000", "msg": "boom"}))
-
-        # A failing fee lookup must not take the polling loop down; _get_fee then falls back to
-        # the default schema for that pair.
-        self.async_run_with_timeout(self.exchange._update_trading_fees())
-
-        self.assertNotIn(self.trading_pair, self.exchange._trading_fees)
+        self.assertEqual(expected_trading_fees, self.exchange._trading_fees[self.trading_pair])
 
     def test_collateral_token_balance_updated_when_processing_order_creation_update(self):
         self.exchange._set_current_timestamp(1640780000)
@@ -1847,28 +1693,6 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         self.assertEqual(Decimal("10000"), self.exchange.available_balances[self.quote_asset])
         self.assertEqual(Decimal("10000"), self.exchange.get_balance(self.quote_asset))
 
-    def test_order_not_found_v3_code_recognized(self):
-        # V3 UTA returns 25204 "Order does not exist" when cancelling/querying an order that is
-        # unknown or already filled/cancelled; it must be recognised as order-not-found so the base
-        # connector handles it gracefully instead of logging a hard error.
-        exception = IOError(
-            "Error executing request POST https://api.bitget.com/api/v3/trade/cancel-order. "
-            'HTTP status is 400. Error: {"code":"25204","msg":"Order does not exist",'
-            '"requestTime":1783017943282,"data":null}'
-        )
-        self.assertTrue(self.exchange._is_order_not_found_during_cancelation_error(exception))
-        self.assertTrue(self.exchange._is_order_not_found_during_status_update_error(exception))
-
-    def test_unknown_path_404_is_not_order_not_found(self):
-        # Bitget's 404 means the route is wrong; reading it as a missing order would retire live orders.
-        exception = IOError(
-            "Error executing request POST https://api.bitget.com/api/v3/trade/cancel-order. "
-            'HTTP status is 404. Error: {"code":"40404","msg":"Request URL NOT FOUND",'
-            '"requestTime":1783017943282,"data":null}'
-        )
-        self.assertFalse(self.exchange._is_order_not_found_during_cancelation_error(exception))
-        self.assertFalse(self.exchange._is_order_not_found_during_status_update_error(exception))
-
     def _order_cancelation_request_successful_mock_response(self, order: InFlightOrder) -> Any:
         return {
             "code": "00000",
@@ -1945,7 +1769,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         return {
             "code": "00000",
             "data": {
-                "list": [
+                "fillList": [
                     {
                         "tradeId": self.expected_fill_trade_id,
                         "symbol": self.exchange_trading_pair,
@@ -1982,7 +1806,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         return {
             "code": "00000",
             "data": {
-                "list": [
+                "fillList": [
                     {
                         "tradeId": self.expected_fill_trade_id,
                         "symbol": self.exchange_trading_pair,
@@ -2092,7 +1916,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         self.assertEqual(order.amount, fill_event.amount)
         expected_fee = DeductedFromReturnsTradeFee(
             percent_token=self.quote_asset,
-            flat_fees=[TokenAmount(token=self.quote_asset, amount=Decimal("0.1"))],
+            flat_fees=[TokenAmount(token=self.quote_asset, amount=-Decimal("0.1"))],
         )
         self.assertEqual(expected_fee, fill_event.trade_fee)
 
@@ -2172,7 +1996,7 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         self.assertEqual(order.amount, fill_event.amount)
         expected_fee = DeductedFromReturnsTradeFee(
             percent_token=self.quote_asset,
-            flat_fees=[TokenAmount(token=self.quote_asset, amount=Decimal("0.1"))],
+            flat_fees=[TokenAmount(token=self.quote_asset, amount=-Decimal("0.1"))],
         )
         self.assertEqual(expected_fee, fill_event.trade_fee)
 
@@ -2201,567 +2025,3 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         }
 
         return self.exchange._trading_rules
-
-    @aioresponses()
-    def test_hedge_mode_close_targets_the_position_being_closed(self, mock_api):
-        # A SELL with PositionAction.CLOSE closes the LONG: the order side must stay "sell" and
-        # posSide must name the long position, otherwise the order opens/reduces the short and
-        # leaves the intended long untouched.
-        self._simulate_trading_rules_initialized()
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_position_mode(PositionMode.HEDGE)
-        request_sent_event = asyncio.Event()
-
-        url = self.order_creation_url
-        mock_api.post(
-            url,
-            body=json.dumps(self.order_creation_request_successful_mock_response),
-            callback=lambda *args, **kwargs: request_sent_event.set(),
-        )
-
-        self.place_sell_order(position_action=PositionAction.CLOSE)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
-        self.assertEqual("sell", request_data["side"])
-        self.assertEqual("long", request_data["posSide"])
-        self.assertEqual("yes", request_data["reduceOnly"])
-
-    @aioresponses()
-    def test_hedge_mode_close_of_short_targets_short_position(self, mock_api):
-        # The mirror case: a BUY with PositionAction.CLOSE closes the SHORT.
-        self._simulate_trading_rules_initialized()
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_position_mode(PositionMode.HEDGE)
-        request_sent_event = asyncio.Event()
-
-        url = self.order_creation_url
-        mock_api.post(
-            url,
-            body=json.dumps(self.order_creation_request_successful_mock_response),
-            callback=lambda *args, **kwargs: request_sent_event.set(),
-        )
-
-        self.place_buy_order(position_action=PositionAction.CLOSE)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
-        self.assertEqual("buy", request_data["side"])
-        self.assertEqual("short", request_data["posSide"])
-        self.assertEqual("yes", request_data["reduceOnly"])
-
-    @aioresponses()
-    def test_hedge_mode_open_keeps_side_and_position_side_aligned(self, mock_api):
-        self._simulate_trading_rules_initialized()
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_position_mode(PositionMode.HEDGE)
-        request_sent_event = asyncio.Event()
-
-        url = self.order_creation_url
-        mock_api.post(
-            url,
-            body=json.dumps(self.order_creation_request_successful_mock_response),
-            callback=lambda *args, **kwargs: request_sent_event.set(),
-        )
-
-        self.place_buy_order(position_action=PositionAction.OPEN)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
-        self.assertEqual("buy", request_data["side"])
-        self.assertEqual("long", request_data["posSide"])
-        self.assertNotIn("reduceOnly", request_data)
-
-    @aioresponses()
-    def test_update_positions_removes_position_missing_from_the_response(self, mock_api):
-        # A closed position drops out of the V3 current-position list entirely instead of being
-        # returned with a zero size, so an empty poll must clear the stale position.
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        pos_key = self.exchange._perpetual_trading.position_key(
-            self.trading_pair, PositionSide.LONG
-        )
-        self.exchange._perpetual_trading.set_position(
-            pos_key,
-            Position(
-                trading_pair=self.trading_pair,
-                position_side=PositionSide.LONG,
-                unrealized_pnl=Decimal("1"),
-                entry_price=Decimal("29000"),
-                amount=Decimal("2"),
-                leverage=Decimal("10"),
-            ),
-        )
-        self.assertEqual(1, len(self.exchange.account_positions))
-
-        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        mock_api.get(
-            regex_url,
-            body=json.dumps({
-                "code": "00000",
-                "msg": "success",
-                "requestTime": 1695807725658,
-                "data": {"list": None, "cursor": ""},
-            }),
-        )
-
-        self.async_run_with_timeout(self.exchange._update_positions())
-
-        self.assertEqual(0, len(self.exchange.account_positions))
-
-    def test_format_trading_rules_from_v3_instrument_payload(self):
-        """
-        The shared symbol mocks still use the V2 field names, so the V3 branches of
-        _format_trading_rules were never exercised. This pins them against the field set the
-        live /api/v3/market/instruments endpoint actually returns.
-        """
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        instrument = {
-            "symbol": self.exchange_trading_pair,
-            "category": CONSTANTS.USDT_PRODUCT_TYPE,
-            "baseCoin": self.base_asset,
-            "quoteCoin": self.quote_asset,
-            "minOrderQty": "0.0001",
-            "maxOrderQty": "1200",
-            "pricePrecision": "1",
-            "quantityPrecision": "4",
-            # The live futures payload really does return an empty quotePrecision.
-            "quotePrecision": "",
-            "minOrderAmount": "5",
-            "status": "online",
-            "deliveryPeriod": "",
-            "type": "perpetual",
-        }
-
-        rules = self.async_run_with_timeout(self.exchange._format_trading_rules([instrument]))
-
-        self.assertEqual(1, len(rules))
-        rule = rules[0]
-        self.assertEqual(Decimal("0.0001"), rule.min_order_size)
-        self.assertEqual(Decimal("1200"), rule.max_order_size)
-        self.assertEqual(Decimal("5"), rule.min_order_value)
-        self.assertEqual(Decimal("0.1"), rule.min_price_increment)
-        self.assertEqual(Decimal("0.0001"), rule.min_base_amount_increment)
-        # USDT-margined: the collateral is the quote coin.
-        self.assertEqual(self.quote_asset, rule.buy_order_collateral_token)
-        self.assertEqual(self.quote_asset, rule.sell_order_collateral_token)
-
-    def test_format_trading_rules_uses_the_exchange_multipliers_as_steps(self):
-        # Live SHIBUSDT: sizes must be multiples of 10000 although quantityPrecision is 0.
-        self.exchange._set_trading_pair_symbol_map(bidict({"SHIBUSDT": "SHIB-USDT"}))
-        instrument = {
-            "symbol": "SHIBUSDT",
-            "category": CONSTANTS.USDT_PRODUCT_TYPE,
-            "baseCoin": "SHIB",
-            "quoteCoin": "USDT",
-            "minOrderQty": "10000",
-            "maxOrderQty": "83000000000",
-            "pricePrecision": "9",
-            "quantityPrecision": "0",
-            "quotePrecision": "",
-            "priceMultiplier": "0.000000001",
-            "quantityMultiplier": "10000",
-            "minOrderAmount": "5",
-            "status": "online",
-            "deliveryPeriod": "",
-            "type": "perpetual",
-        }
-
-        rule = self.async_run_with_timeout(self.exchange._format_trading_rules([instrument]))[0]
-
-        self.assertEqual(Decimal("10000"), rule.min_base_amount_increment)
-        self.assertEqual(Decimal("0.000000001"), rule.min_price_increment)
-
-    def test_format_trading_rules_ignores_an_empty_multiplier(self):
-        self.exchange._set_trading_pair_symbol_map(bidict({self.exchange_trading_pair: self.trading_pair}))
-        instrument = {
-            "symbol": self.exchange_trading_pair,
-            "category": CONSTANTS.USDT_PRODUCT_TYPE,
-            "baseCoin": self.base_asset,
-            "quoteCoin": self.quote_asset,
-            "minOrderQty": "0.0001",
-            "pricePrecision": "1",
-            "quantityPrecision": "4",
-            "priceMultiplier": "",
-            "quantityMultiplier": "0",
-            "minOrderAmount": "5",
-            "status": "online",
-            "deliveryPeriod": "",
-            "type": "perpetual",
-        }
-
-        rule = self.async_run_with_timeout(self.exchange._format_trading_rules([instrument]))[0]
-
-        self.assertEqual(Decimal("0.0001"), rule.min_base_amount_increment)
-        self.assertEqual(Decimal("0.1"), rule.min_price_increment)
-
-    def test_format_trading_rules_uses_base_coin_as_collateral_for_coin_futures(self):
-        coin_pair = combine_to_hb_trading_pair(self.base_asset, "USD")
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({f"{self.base_asset}USD": coin_pair})
-        )
-        instrument = {
-            "symbol": f"{self.base_asset}USD",
-            "category": CONSTANTS.USD_PRODUCT_TYPE,
-            "baseCoin": self.base_asset,
-            "quoteCoin": "USD",
-            "minOrderQty": "0.01",
-            "maxOrderQty": "1000000",
-            "pricePrecision": "1",
-            "quantityPrecision": "2",
-            "minOrderAmount": "5",
-            "status": "online",
-            "deliveryPeriod": "",
-        }
-
-        rules = self.async_run_with_timeout(self.exchange._format_trading_rules([instrument]))
-
-        self.assertEqual(self.base_asset, rules[0].buy_order_collateral_token)
-        self.assertEqual(self.base_asset, rules[0].sell_order_collateral_token)
-
-    def test_format_trading_rules_skips_instruments_that_are_not_online(self):
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        instrument = {
-            "symbol": self.exchange_trading_pair,
-            "category": CONSTANTS.USDT_PRODUCT_TYPE,
-            "baseCoin": self.base_asset,
-            "quoteCoin": self.quote_asset,
-            "minOrderQty": "0.0001",
-            "maxOrderQty": "1200",
-            "pricePrecision": "1",
-            "quantityPrecision": "4",
-            "minOrderAmount": "5",
-            "status": "offline",
-            "deliveryPeriod": "",
-        }
-
-        rules = self.async_run_with_timeout(self.exchange._format_trading_rules([instrument]))
-
-        self.assertEqual(0, len(rules))
-
-    def test_suspended_contracts_stay_in_the_symbol_map(self):
-        """
-        A contract suspended while the account still holds a position on it must remain
-        resolvable, or position polling cannot translate the symbol the exchange reports back to
-        a trading pair and the whole poll fails.
-        """
-        self.assertTrue(bitget_unified_perpetual_utils.is_exchange_information_valid(
-            {"symbol": self.exchange_trading_pair, "status": "offline", "deliveryPeriod": ""}
-        ))
-        self.assertFalse(bitget_unified_perpetual_utils.is_instrument_tradable(
-            {"symbol": self.exchange_trading_pair, "status": "offline", "deliveryPeriod": ""}
-        ))
-
-        self.exchange._initialize_trading_pair_symbols_from_exchange_info([{
-            "symbol": self.exchange_trading_pair,
-            "baseCoin": self.base_asset,
-            "quoteCoin": self.quote_asset,
-            "status": "offline",
-            "deliveryPeriod": "",
-        }])
-
-        self.assertEqual(
-            self.trading_pair,
-            self.async_run_with_timeout(
-                self.exchange.trading_pair_associated_to_exchange_symbol(self.exchange_trading_pair)
-            ),
-        )
-
-    @aioresponses()
-    def test_update_positions_keeps_position_opened_while_the_poll_is_in_flight(self, mock_api):
-        """
-        The private stream writes positions concurrently with the REST poll. One that appears
-        after its category has been queried is absent from the polled response, and must not be
-        mistaken for a stale position and removed.
-        """
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-        pos_key = self.exchange._perpetual_trading.position_key(
-            self.trading_pair, PositionSide.LONG
-        )
-
-        def open_position_mid_poll(*args, **kwargs):
-            # Stands in for the private stream delivering a brand new position.
-            self.exchange._perpetual_trading.set_position(
-                pos_key,
-                Position(
-                    trading_pair=self.trading_pair,
-                    position_side=PositionSide.LONG,
-                    unrealized_pnl=Decimal("1"),
-                    entry_price=Decimal("29000"),
-                    amount=Decimal("2"),
-                    leverage=Decimal("10"),
-                ),
-            )
-
-        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        mock_api.get(
-            regex_url,
-            body=json.dumps({
-                "code": "00000",
-                "msg": "success",
-                "requestTime": 1695807725658,
-                "data": {"list": None, "cursor": ""},
-            }),
-            callback=open_position_mid_poll,
-        )
-
-        self.async_run_with_timeout(self.exchange._update_positions())
-
-        self.assertIn(pos_key, self.exchange.account_positions)
-        self.assertEqual(Decimal("2"), self.exchange.account_positions[pos_key].amount)
-
-    def test_unknown_order_status_is_logged_and_skipped(self):
-        """
-        An unmapped status must not raise a bare KeyError: on the user-stream path the listener's
-        catch-all swallows it and the update disappears with nothing naming the cause.
-        """
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_leverage(self.trading_pair, 2)
-        self.exchange.start_tracking_order(
-            order_id="OID-UNKNOWN",
-            exchange_order_id="EX-UNKNOWN",
-            trading_pair=self.trading_pair,
-            order_type=OrderType.LIMIT,
-            trade_type=TradeType.BUY,
-            price=Decimal("10000"),
-            amount=Decimal("1"),
-            leverage=2,
-            position_action=PositionAction.OPEN,
-        )
-        order = self.exchange.in_flight_orders["OID-UNKNOWN"]
-
-        self.exchange._process_order_event_message({
-            "orderStatus": "some_status_bitget_added_later",
-            "clientOid": "OID-UNKNOWN",
-            "orderId": "EX-UNKNOWN",
-        })
-
-        self.assertEqual(order.current_state, self.exchange.in_flight_orders["OID-UNKNOWN"].current_state)
-        self.assertTrue(self.is_logged(
-            "WARNING",
-            "Received an unrecognised order status from the exchange: "
-            "'some_status_bitget_added_later'. The order update was ignored. This usually means a "
-            "status was added to the API that the connector does not map yet."
-        ))
-
-    @aioresponses()
-    def test_one_way_close_sets_reduce_only(self, mock_api):
-        """
-        A close is sized against the position as it was when the order was built. Without
-        reduceOnly, a position that shrinks first leaves the remainder to trade through zero and
-        open a position the other way. That flag used to be set only in hedge mode.
-        """
-        self._simulate_trading_rules_initialized()
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_position_mode(PositionMode.ONEWAY)
-        request_sent_event = asyncio.Event()
-
-        url = self.order_creation_url
-        mock_api.post(
-            url,
-            body=json.dumps(self.order_creation_request_successful_mock_response),
-            callback=lambda *args, **kwargs: request_sent_event.set(),
-        )
-
-        self.place_sell_order(position_action=PositionAction.CLOSE)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
-        self.assertEqual("yes", request_data["reduceOnly"])
-        # One-way mode carries no posSide.
-        self.assertNotIn("posSide", request_data)
-
-    @aioresponses()
-    def test_one_way_open_does_not_set_reduce_only(self, mock_api):
-        self._simulate_trading_rules_initialized()
-        self.exchange._set_current_timestamp(1640780000)
-        self.exchange._perpetual_trading.set_position_mode(PositionMode.ONEWAY)
-        request_sent_event = asyncio.Event()
-
-        url = self.order_creation_url
-        mock_api.post(
-            url,
-            body=json.dumps(self.order_creation_request_successful_mock_response),
-            callback=lambda *args, **kwargs: request_sent_event.set(),
-        )
-
-        self.place_buy_order(position_action=PositionAction.OPEN)
-        self.async_run_with_timeout(request_sent_event.wait())
-
-        request_data = json.loads(self._all_executed_requests(mock_api, url)[0].kwargs["data"])
-        self.assertNotIn("reduceOnly", request_data)
-
-    def test_partial_position_update_does_not_close_other_positions(self):
-        """
-        An "update" carries only what changed. Treating it as a full snapshot deletes unrelated
-        positions that are still open.
-        """
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair, "ETHUSDT": "ETH-USDT"})
-        )
-        eth_key = self.exchange._perpetual_trading.position_key("ETH-USDT", PositionSide.LONG)
-        self.exchange._perpetual_trading.set_position(
-            eth_key,
-            Position(trading_pair="ETH-USDT", position_side=PositionSide.LONG,
-                     unrealized_pnl=Decimal("1"), entry_price=Decimal("3000"),
-                     amount=Decimal("2"), leverage=Decimal("10")),
-        )
-
-        # A delta naming only BTC must leave the ETH position alone.
-        btc_only = [{
-            "symbol": self.exchange_trading_pair, "posSide": "long", "size": "1",
-            "avgPrice": "29000", "leverage": "10", "unrealisedPnl": "5",
-        }]
-        self.async_run_with_timeout(
-            self.exchange._process_account_position_event(btc_only, is_snapshot=False)
-        )
-
-        self.assertIn(eth_key, self.exchange.account_positions)
-
-    def test_snapshot_position_event_still_closes_absent_positions(self):
-        """A snapshot lists every open position, so anything missing really has closed."""
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair, "ETHUSDT": "ETH-USDT"})
-        )
-        eth_key = self.exchange._perpetual_trading.position_key("ETH-USDT", PositionSide.LONG)
-        self.exchange._perpetual_trading.set_position(
-            eth_key,
-            Position(trading_pair="ETH-USDT", position_side=PositionSide.LONG,
-                     unrealized_pnl=Decimal("1"), entry_price=Decimal("3000"),
-                     amount=Decimal("2"), leverage=Decimal("10")),
-        )
-
-        btc_only = [{
-            "symbol": self.exchange_trading_pair, "posSide": "long", "size": "1",
-            "avgPrice": "29000", "leverage": "10", "unrealisedPnl": "5",
-        }]
-        self.async_run_with_timeout(
-            self.exchange._process_account_position_event(btc_only, is_snapshot=True)
-        )
-
-        self.assertNotIn(eth_key, self.exchange.account_positions)
-
-    @aioresponses()
-    def test_update_positions_reads_every_page_before_pruning(self, mock_api):
-        """
-        _update_positions removes positions the poll did not report, so a truncated read would
-        delete positions that are still open. A full page has to be followed by the next one.
-        """
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair, "ETHUSDT": "ETH-USDT"})
-        )
-
-        def _position(symbol):
-            return {"symbol": symbol, "posSide": "long", "unrealisedPnl": "1",
-                    "avgPrice": "100", "total": "2", "leverage": "10"}
-
-        # A full first page (ETH padded out to the page size) then a short second page with BTC.
-        first_page = [_position("ETHUSDT")] * CONSTANTS.PAGINATION_LIMIT
-        second_page = [_position(self.exchange_trading_pair)]
-
-        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        mock_api.get(regex_url, body=json.dumps({
-            "code": "00000", "msg": "success",
-            "data": {"list": first_page, "cursor": "page2"},
-        }))
-        mock_api.get(regex_url, body=json.dumps({
-            "code": "00000", "msg": "success",
-            "data": {"list": second_page, "cursor": ""},
-        }))
-
-        self.async_run_with_timeout(self.exchange._update_positions())
-
-        # The BTC position lives on page two; reading only page one would have pruned it.
-        btc_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
-        eth_key = self.exchange._perpetual_trading.position_key("ETH-USDT", PositionSide.LONG)
-        self.assertIn(btc_key, self.exchange.account_positions)
-        self.assertIn(eth_key, self.exchange.account_positions)
-
-    @aioresponses()
-    def test_update_positions_stops_after_a_short_page(self, mock_api):
-        """A page shorter than the limit is the last one, whatever cursor comes back with it."""
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair})
-        )
-
-        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        # Only one response is registered: a second request would fail the test outright.
-        mock_api.get(regex_url, body=json.dumps({
-            "code": "00000", "msg": "success",
-            "data": {"list": [{"symbol": self.exchange_trading_pair, "posSide": "long",
-                               "unrealisedPnl": "1", "avgPrice": "100", "total": "2",
-                               "leverage": "10"}],
-                     "cursor": "1"},
-        }))
-
-        self.async_run_with_timeout(self.exchange._update_positions())
-
-        self.assertEqual(1, len(self.exchange.account_positions))
-        self.assertEqual(1, len(self._all_executed_requests(mock_api, url)))
-
-    @aioresponses()
-    def test_update_positions_skips_instruments_outside_the_symbol_map(self, mock_api):
-        """A dated futures position must not stop the poll from updating and pruning perpetual positions."""
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair, "ETHUSDT": "ETH-USDT"})
-        )
-        eth_key = self.exchange._perpetual_trading.position_key("ETH-USDT", PositionSide.LONG)
-        self.exchange._perpetual_trading.set_position(
-            eth_key,
-            Position(trading_pair="ETH-USDT", position_side=PositionSide.LONG,
-                     unrealized_pnl=Decimal("1"), entry_price=Decimal("3000"),
-                     amount=Decimal("2"), leverage=Decimal("10")),
-        )
-
-        def _position(symbol):
-            return {"symbol": symbol, "posSide": "long", "unrealisedPnl": "1",
-                    "avgPrice": "100", "total": "2", "leverage": "10"}
-
-        url = web_utils.private_rest_url(CONSTANTS.ALL_POSITIONS_ENDPOINT)
-        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?") + ".*")
-        mock_api.get(regex_url, body=json.dumps({
-            "code": "00000", "msg": "success",
-            "data": {"list": [_position("BTCUSDT0327"), _position(self.exchange_trading_pair)], "cursor": ""},
-        }))
-
-        self.async_run_with_timeout(self.exchange._update_positions())
-
-        btc_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
-        self.assertEqual([btc_key], list(self.exchange.account_positions.keys()))
-
-    def test_position_event_skips_instruments_outside_the_symbol_map(self):
-        """A dated futures entry must not stop the rest of the message, or the snapshot pruning, from applying."""
-        self.exchange._set_trading_pair_symbol_map(
-            bidict({self.exchange_trading_pair: self.trading_pair, "ETHUSDT": "ETH-USDT"})
-        )
-        eth_key = self.exchange._perpetual_trading.position_key("ETH-USDT", PositionSide.LONG)
-        self.exchange._perpetual_trading.set_position(
-            eth_key,
-            Position(trading_pair="ETH-USDT", position_side=PositionSide.LONG,
-                     unrealized_pnl=Decimal("1"), entry_price=Decimal("3000"),
-                     amount=Decimal("2"), leverage=Decimal("10")),
-        )
-
-        def _entry(symbol):
-            return {"symbol": symbol, "posSide": "long", "size": "1", "avgPrice": "29000",
-                    "leverage": "10", "unrealisedPnl": "5"}
-
-        self.async_run_with_timeout(
-            self.exchange._process_account_position_event(
-                [_entry("BTCUSDT0327"), _entry(self.exchange_trading_pair)], is_snapshot=True
-            )
-        )
-
-        btc_key = self.exchange._perpetual_trading.position_key(self.trading_pair, PositionSide.LONG)
-        self.assertEqual([btc_key], list(self.exchange.account_positions.keys()))

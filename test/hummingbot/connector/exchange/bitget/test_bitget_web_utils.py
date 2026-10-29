@@ -6,10 +6,7 @@ from unittest.mock import MagicMock
 
 from aioresponses import aioresponses
 
-from hummingbot.connector.exchange.bitget_unified import (
-    bitget_unified_constants as CONSTANTS,
-    bitget_unified_web_utils as web_utils,
-)
+from hummingbot.connector.exchange.bitget import bitget_constants as CONSTANTS, bitget_web_utils as web_utils
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.connector.utils import TimeSynchronizerRESTPreProcessor
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
@@ -18,7 +15,7 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
 
-class BitgetUnifiedWebUtilsTests(IsolatedAsyncioWrapperTestCase):
+class BitgetWebUtilsTests(IsolatedAsyncioWrapperTestCase):
 
     @staticmethod
     def _server_time_response(server_time_ms: int) -> Dict[str, Any]:

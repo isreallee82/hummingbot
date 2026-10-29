@@ -6,14 +6,12 @@ from unittest.mock import patch
 
 from aioresponses import CallbackResult, aioresponses
 
-import hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_constants as PERP_CONSTANTS
-import hummingbot.connector.exchange.bitget_unified.bitget_unified_constants as CONSTANTS
-import hummingbot.connector.exchange.bitget_unified.bitget_unified_web_utils as web_utils
-from hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_derivative import (
-    BitgetUnifiedPerpetualDerivative,
-)
-from hummingbot.connector.exchange.bitget_unified import bitget_unified_account
-from hummingbot.connector.exchange.bitget_unified.bitget_unified_exchange import BitgetUnifiedExchange
+import hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_constants as PERP_CONSTANTS
+import hummingbot.connector.exchange.bitget.bitget_constants as CONSTANTS
+import hummingbot.connector.exchange.bitget.bitget_web_utils as web_utils
+from hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_derivative import BitgetPerpetualDerivative
+from hummingbot.connector.exchange.bitget import bitget_account
+from hummingbot.connector.exchange.bitget.bitget_exchange import BitgetExchange
 
 API_KEY = "test_api_key"
 SECRET_KEY = "test_secret_key"
@@ -21,7 +19,7 @@ PASSPHRASE = "test_passphrase"
 USER_ID = "123456789"
 
 
-class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
+class BitgetAccountGroupTests(IsolatedAsyncioWrapperTestCase):
     """
     Bitget's UTA is one cross-margined wallet read by both connectors, so both report the same
     funds. They advertise a shared account id to stop that wallet being counted twice.
@@ -30,33 +28,35 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
     def setUp(self) -> None:
         super().setUp()
         # The learned user ids are process-wide, so other tests must not leak into these.
-        bitget_unified_account.forget_all()
+        bitget_account.forget_all()
 
     def tearDown(self) -> None:
-        bitget_unified_account.forget_all()
+        bitget_account.forget_all()
         super().tearDown()
 
     @staticmethod
     def _spot(api_key=API_KEY):
-        connector = BitgetUnifiedExchange(
-            bitget_unified_api_key=api_key,
-            bitget_unified_secret_key=SECRET_KEY,
-            bitget_unified_passphrase=PASSPHRASE,
+        connector = BitgetExchange(
+            bitget_api_key=api_key,
+            bitget_secret_key=SECRET_KEY,
+            bitget_passphrase=PASSPHRASE,
             trading_pairs=["BTC-USDT"],
             trading_required=False,
         )
+        connector._unified_account = True
         connector._time_synchronizer.add_time_offset_ms_sample(0)
         return connector
 
     @staticmethod
     def _perpetual(api_key=API_KEY):
-        connector = BitgetUnifiedPerpetualDerivative(
-            bitget_unified_perpetual_api_key=api_key,
-            bitget_unified_perpetual_secret_key=SECRET_KEY,
-            bitget_unified_perpetual_passphrase=PASSPHRASE,
+        connector = BitgetPerpetualDerivative(
+            bitget_perpetual_api_key=api_key,
+            bitget_perpetual_secret_key=SECRET_KEY,
+            bitget_perpetual_passphrase=PASSPHRASE,
             trading_pairs=["BTC-USDT"],
             trading_required=False,
         )
+        connector._unified_account = True
         connector._time_synchronizer.add_time_offset_ms_sample(0)
         return connector
 
@@ -170,7 +170,7 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
         await asyncio.gather(spot._update_account_uid(), perpetual._update_account_uid())
 
         self.assertEqual(2, self._user_info_requests(mock_api))
-        self.assertEqual(USER_ID, bitget_unified_account.known_user_id(API_KEY))
+        self.assertEqual(USER_ID, bitget_account.known_user_id(API_KEY))
         self.assertEqual(spot.account_group_id, perpetual.account_group_id)
         self.assertNotEqual(self._spot(api_key="unrelated_key").account_group_id, spot.account_group_id)
 
@@ -181,19 +181,19 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
         self._mock_user_id(mock_api, status=400)
         self._mock_user_id(mock_api)
 
-        with patch.object(bitget_unified_account, "_time", return_value=1000.0):
+        with patch.object(bitget_account, "_time", return_value=1000.0):
             await spot._update_account_uid()
             await spot._update_account_uid()
 
         self.assertEqual(key_based_id, spot.account_group_id)
         self.assertEqual(1, self._user_info_requests(mock_api))
 
-        retry_at = 1000.0 + bitget_unified_account.USER_ID_RETRY_INTERVAL_SECONDS
-        with patch.object(bitget_unified_account, "_time", return_value=retry_at):
+        retry_at = 1000.0 + bitget_account.USER_ID_RETRY_INTERVAL_SECONDS
+        with patch.object(bitget_account, "_time", return_value=retry_at):
             await spot._update_account_uid()
 
         self.assertEqual(2, self._user_info_requests(mock_api))
-        self.assertEqual(USER_ID, bitget_unified_account.known_user_id(API_KEY))
+        self.assertEqual(USER_ID, bitget_account.known_user_id(API_KEY))
         self.assertNotEqual(key_based_id, spot.account_group_id)
 
     @aioresponses()
@@ -202,7 +202,7 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
         key_based_id = spot.account_group_id
         mock_api.get(self._user_info_regex(), body=json.dumps({"code": "00000", "msg": "success", "data": {}}))
 
-        with patch.object(bitget_unified_account, "_time", return_value=1000.0):
+        with patch.object(bitget_account, "_time", return_value=1000.0):
             await spot._update_account_uid()
             await spot._update_account_uid()
 
@@ -225,5 +225,5 @@ class BitgetUnifiedAccountGroupTests(IsolatedAsyncioWrapperTestCase):
 
             await connector._update_balances()
 
-            self.assertEqual(USER_ID, bitget_unified_account.known_user_id(api_key))
+            self.assertEqual(USER_ID, bitget_account.known_user_id(api_key))
             self.assertEqual(10, connector.get_balance("USDT"))

@@ -201,9 +201,8 @@ class ExchangePyBase(ExchangeBase, ABC):
         Identifies the exchange-side account this connector reads, for connectors that are one of
         several views onto the same account.
 
-        Unified-account venues expose one wallet through more than one connector - Bitget's UTA
-        is read by both bitget_unified and bitget_unified_perpetual, and Bybit and OKX have the
-        same shape. Each connector reports that single wallet in full, so anything summing across
+        Unified-account venues expose one wallet through more than one connector - a Bitget UTA
+        is read by both bitget and bitget_perpetual, and Bybit and OKX have the same shape. Each connector reports that single wallet in full, so anything summing across
         connectors counts the same funds once per connector.
 
         Connectors backed by the same account return the same id, and it must be derived from the

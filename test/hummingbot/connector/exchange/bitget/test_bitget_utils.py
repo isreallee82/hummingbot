@@ -1,12 +1,9 @@
 from unittest import TestCase
 
-from hummingbot.connector.exchange.bitget_unified import (
-    bitget_unified_constants as CONSTANTS,
-    bitget_unified_utils as utils,
-)
+from hummingbot.connector.exchange.bitget import bitget_constants as CONSTANTS, bitget_utils as utils
 
 
-class BitgetUnifiedUtilsTests(TestCase):
+class BitgetUtilsTests(TestCase):
 
     def test_is_exchange_information_valid(self):
         self.assertTrue(utils.is_exchange_information_valid({"symbol": "BTCUSDT"}))
