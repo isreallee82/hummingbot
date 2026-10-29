@@ -1,6 +1,6 @@
 import asyncio
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from bidict import bidict
 
@@ -19,6 +19,7 @@ from hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_per
     BitgetUnifiedPerpetualAuth,
 )
 from hummingbot.connector.derivative.bitget_unified_perpetual.bitget_unified_perpetual_constants import MarginMode
+from hummingbot.connector.derivative.perpetual_budget_checker import PerpetualBudgetChecker
 from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.exchange.bitget_unified import bitget_unified_account
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
@@ -28,6 +29,7 @@ from hummingbot.core.api_throttler.data_types import RateLimit
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
+from hummingbot.core.data_type.order_candidate import PerpetualOrderCandidate
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase, TradeFeeSchema
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.utils.estimate_fee import build_trade_fee
@@ -35,6 +37,22 @@ from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFa
 
 s_decimal_NaN = Decimal("nan")
 s_decimal_0 = Decimal(0)
+
+
+class BitgetUnifiedPerpetualBudgetChecker(PerpetualBudgetChecker):
+    """
+    The unified margin pool is reported in full under each collateral token that shares it (see
+    _set_unified_margin_balances), so margin locked for one candidate is locked under all of them. Otherwise a
+    USDT-margined and a USDC-margined order could each be approved against the same funds.
+    """
+
+    def _lock_available_collateral(self, order_candidate: PerpetualOrderCandidate):
+        if order_candidate.position_close:
+            return
+        pooled_tokens = self._exchange.pooled_margin_tokens
+        for token, amount in order_candidate.collateral_dict.items():
+            for locked_token in (pooled_tokens if token in pooled_tokens else {token}):
+                self._locked_collateral[locked_token] += amount
 
 
 class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
@@ -61,12 +79,20 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
         self._classic_account_mode_logged = False
 
         self._margin_mode = MarginMode.CROSS
+        # Collateral tokens that currently report the same unified margin pool
+        self._pooled_margin_tokens: Set[str] = set()
 
         super().__init__(balance_asset_limit, rate_limits_share_pct)
+        self._budget_checker = BitgetUnifiedPerpetualBudgetChecker(self)
 
     @property
     def name(self) -> str:
         return CONSTANTS.EXCHANGE_NAME
+
+    @property
+    def pooled_margin_tokens(self) -> Set[str]:
+        """The collateral tokens whose balances are all the one unified margin pool, so they share one budget."""
+        return self._pooled_margin_tokens
 
     @property
     def account_group_id(self) -> Optional[str]:
@@ -541,7 +567,8 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
         """
         UTA margin is one cross-collateral pool valued in USD (effEquity, net of haircuts), so it is reported
         under the collateral token of the USDT- and USDC-margined pairs traded, USDT when none is configured.
-        A coin-margined pair keeps its coin's own balance; the rest of the wallet is the spot connector's to list.
+        When that is both, they share one budget (see BitgetUnifiedPerpetualBudgetChecker). A coin-margined
+        pair keeps its coin's own balance; the rest of the wallet is the spot connector's to list.
         """
         pairs = [split_hb_trading_pair(trading_pair) for trading_pair in self._trading_pairs or []]
         margin_tokens = {quote for _, quote in pairs if quote in ("USDT", "USDC")} or {"USDT"}
@@ -553,7 +580,9 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
             for token in margin_tokens:
                 self._account_balances[token] = equity
                 self._account_available_balances[token] = available
+            self._pooled_margin_tokens = margin_tokens
         else:
+            self._pooled_margin_tokens = set()
             per_coin_tokens |= margin_tokens
 
         for coin_balance in coins:

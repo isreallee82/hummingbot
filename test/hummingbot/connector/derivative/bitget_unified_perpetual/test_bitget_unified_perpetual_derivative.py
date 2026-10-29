@@ -22,6 +22,7 @@ from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
 from hummingbot.core.data_type.funding_info import FundingInfo
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
+from hummingbot.core.data_type.order_candidate import PerpetualOrderCandidate
 from hummingbot.core.data_type.trade_fee import DeductedFromReturnsTradeFee, TokenAmount, TradeFeeBase, TradeFeeSchema
 from hummingbot.core.event.events import BuyOrderCompletedEvent, OrderFilledEvent
 
@@ -555,6 +556,36 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
 
         self.assertEqual(Decimal("0"), self.exchange.available_balances["USDT"])
         self.assertEqual(Decimal("40"), self.exchange.get_balance("USDT"))
+
+    @aioresponses()
+    def test_usdt_and_usdc_orders_share_the_unified_margin_budget(self, mock_api):
+        # Both tokens report the whole pool of 1000, so two orders needing 600 each cannot both be approved.
+        self.exchange._trading_pairs = ["BTC-USDT", "BTC-USDC"]
+        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity="1000", imr="0"))
+        self.async_run_with_timeout(self.exchange._update_balances())
+        self.assertEqual({"USDT": Decimal("1000"), "USDC": Decimal("1000")}, self.exchange.available_balances)
+
+        candidates = [
+            PerpetualOrderCandidate(
+                trading_pair=trading_pair, is_maker=True, order_type=OrderType.LIMIT, order_side=TradeType.BUY,
+                amount=Decimal("0.006"), price=Decimal("100000"), leverage=Decimal("1"))
+            for trading_pair in ("BTC-USDT", "BTC-USDC")
+        ]
+
+        approved = self.exchange.budget_checker.adjust_candidates(candidates, all_or_none=True)
+
+        self.assertEqual(Decimal("0.006"), approved[0].amount)
+        self.assertEqual(Decimal("0"), approved[1].amount)
+
+    @aioresponses()
+    def test_coin_balances_do_not_share_a_budget(self, mock_api):
+        self.exchange._trading_pairs = ["BTC-USDT", "BTC-USDC"]
+        self.exchange._pooled_margin_tokens = {"USDT", "USDC"}
+        self._mock_unified_assets(mock_api, self._unified_assets_response(eff_equity=None))
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        self.assertEqual(set(), self.exchange.pooled_margin_tokens)
 
     @property
     def expected_latest_price(self):
