@@ -1320,19 +1320,28 @@ class BitgetUnifiedPerpetualDerivative(PerpetualDerivativePyBase):
                     )
                     # V3 instruments field names (with V2 fallbacks): minTradeUSDT -> minOrderAmount,
                     # minTradeNum -> minOrderQty, pricePlace -> pricePrecision, sizeMultiplier ->
-                    # 1e-quantityPrecision. supportMarginCoins is gone; the collateral coin is the
+                    # quantityMultiplier. supportMarginCoins is gone; the collateral coin is the
                     # quote coin for USDT/USDC futures and the base coin for coin-margined futures.
                     max_order_qty = rule.get("maxOrderQty")
                     max_order_size = Decimal(str(max_order_qty)) if max_order_qty else None
                     min_order_value = rule.get("minOrderAmount", rule.get("minTradeUSDT"))
                     min_order_size = rule.get("minOrderQty", rule.get("minTradeNum"))
 
-                    if "pricePrecision" in rule:
+                    # The multipliers are the steps the exchange enforces, and can be coarser than the
+                    # precision: SHIBUSDT has quantityPrecision 0 but only takes multiples of 10000.
+                    price_multiplier = Decimal(str(rule.get("priceMultiplier") or 0))
+                    quantity_multiplier = Decimal(str(rule.get("quantityMultiplier") or 0))
+
+                    if price_multiplier > 0:
+                        min_price_increment = price_multiplier
+                    elif "pricePrecision" in rule:
                         min_price_increment = Decimal(f"1e-{int(rule['pricePrecision'])}")
                     else:
                         min_price_increment = Decimal(f"1e-{int(rule['pricePlace'])}")
 
-                    if "quantityPrecision" in rule:
+                    if quantity_multiplier > 0:
+                        min_base_amount_increment = quantity_multiplier
+                    elif "quantityPrecision" in rule:
                         min_base_amount_increment = Decimal(f"1e-{int(rule['quantityPrecision'])}")
                     else:
                         min_base_amount_increment = Decimal(str(rule["sizeMultiplier"]))

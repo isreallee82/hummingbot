@@ -2350,6 +2350,55 @@ class BitgetUnifiedPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.Per
         self.assertEqual(self.quote_asset, rule.buy_order_collateral_token)
         self.assertEqual(self.quote_asset, rule.sell_order_collateral_token)
 
+    def test_format_trading_rules_uses_the_exchange_multipliers_as_steps(self):
+        # Live SHIBUSDT: sizes must be multiples of 10000 although quantityPrecision is 0.
+        self.exchange._set_trading_pair_symbol_map(bidict({"SHIBUSDT": "SHIB-USDT"}))
+        instrument = {
+            "symbol": "SHIBUSDT",
+            "category": CONSTANTS.USDT_PRODUCT_TYPE,
+            "baseCoin": "SHIB",
+            "quoteCoin": "USDT",
+            "minOrderQty": "10000",
+            "maxOrderQty": "83000000000",
+            "pricePrecision": "9",
+            "quantityPrecision": "0",
+            "quotePrecision": "",
+            "priceMultiplier": "0.000000001",
+            "quantityMultiplier": "10000",
+            "minOrderAmount": "5",
+            "status": "online",
+            "deliveryPeriod": "",
+            "type": "perpetual",
+        }
+
+        rule = self.async_run_with_timeout(self.exchange._format_trading_rules([instrument]))[0]
+
+        self.assertEqual(Decimal("10000"), rule.min_base_amount_increment)
+        self.assertEqual(Decimal("0.000000001"), rule.min_price_increment)
+
+    def test_format_trading_rules_ignores_an_empty_multiplier(self):
+        self.exchange._set_trading_pair_symbol_map(bidict({self.exchange_trading_pair: self.trading_pair}))
+        instrument = {
+            "symbol": self.exchange_trading_pair,
+            "category": CONSTANTS.USDT_PRODUCT_TYPE,
+            "baseCoin": self.base_asset,
+            "quoteCoin": self.quote_asset,
+            "minOrderQty": "0.0001",
+            "pricePrecision": "1",
+            "quantityPrecision": "4",
+            "priceMultiplier": "",
+            "quantityMultiplier": "0",
+            "minOrderAmount": "5",
+            "status": "online",
+            "deliveryPeriod": "",
+            "type": "perpetual",
+        }
+
+        rule = self.async_run_with_timeout(self.exchange._format_trading_rules([instrument]))[0]
+
+        self.assertEqual(Decimal("0.0001"), rule.min_base_amount_increment)
+        self.assertEqual(Decimal("0.1"), rule.min_price_increment)
+
     def test_format_trading_rules_uses_base_coin_as_collateral_for_coin_futures(self):
         coin_pair = combine_to_hb_trading_pair(self.base_asset, "USD")
         self.exchange._set_trading_pair_symbol_map(
